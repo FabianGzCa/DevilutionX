@@ -1,0 +1,187 @@
+#include <array>
+#include <bit>
+#include <cstdint>
+
+#include <gtest/gtest.h>
+
+#include "engine/assets.hpp"
+#include "game_mode.hpp"
+#include "levels/dun_tile_data.hpp"
+#include "multi.h"
+#include "player.h"
+#include "portal.h"
+#include "storm/storm_net.hpp"
+#include "tables/playerdat.hpp"
+#include "utils/fixed_point.hpp"
+
+namespace devilution {
+namespace {
+
+class ClassicMultiplayerTest : public ::testing::Test {
+protected:
+	static void SetUpTestSuite()
+	{
+		LoadCoreArchives();
+		LoadPlayerDataFiles();
+	}
+
+	void SetUp() override
+	{
+		gbIsMultiplayer = true;
+		gbIsHellfire = false;
+		gbIsSpawn = false;
+		leveltype = DTYPE_CATHEDRAL;
+		Players.clear();
+		Players.resize(4);
+		MyPlayerId = 0;
+		MyPlayer = &Players[MyPlayerId];
+		for (Player &player : Players) {
+			player.setCharacterLevel(1);
+			player._pHitPoints = Fixed26_6::fromInt(100);
+			player._pMaxHP = player._pHitPoints;
+		}
+		InitPortals();
+		ASSERT_TRUE(SNetInitializeProvider(SELCONN_LOOPBACK, nullptr));
+	}
+
+	void TearDown() override
+	{
+		SNetDestroy();
+		InitPortals();
+		Players.clear();
+		MyPlayer = nullptr;
+		MyPlayerId = 0;
+		gbIsMultiplayer = false;
+		leveltype = DTYPE_TOWN;
+	}
+};
+
+TEST_F(ClassicMultiplayerTest, AdvertisesFourPlayerSlots)
+{
+	_SNETCAPS caps { };
+	SNetGetProviderCaps(&caps);
+	EXPECT_EQ(caps.maxplayers, 4U);
+}
+
+TEST_F(ClassicMultiplayerTest, TurnBuffersRespectTheSessionPlayerCount)
+{
+	for (const size_t count : { 1U, 4U }) {
+		SCOPED_TRACE(count);
+		Players.resize(count);
+		MyPlayer = &Players[0];
+		char sentinel = 0;
+		std::array<char *, 5> messages { };
+		messages.fill(&sentinel);
+		std::array<size_t, 5> sizes { };
+		sizes.fill(99);
+		std::array<uint32_t, 5> status { };
+
+		ASSERT_TRUE(SNetReceiveTurns(4, messages.data(), sizes.data(), status.data()));
+
+		for (size_t i = 0; i < count; i++) {
+			EXPECT_EQ(messages[i], nullptr);
+			EXPECT_EQ(sizes[i], 0U);
+		}
+		for (size_t i = count; i < messages.size(); i++) {
+			EXPECT_EQ(messages[i], &sentinel);
+			EXPECT_EQ(sizes[i], 99U);
+		}
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, ExperienceIsSharedOnlyAmongContributors)
+{
+	for (unsigned mask = 0; mask < 16; mask++) {
+		SCOPED_TRACE(mask);
+		const unsigned contributors = std::popcount(mask);
+		for (uint8_t localPlayer = 0; localPlayer < 4; localPlayer++) {
+			SCOPED_TRACE(localPlayer);
+			MyPlayerId = localPlayer;
+			MyPlayer = &Players[localPlayer];
+			for (Player &player : Players)
+				player._pExperience = 0;
+
+			AddPlrMonstExper(1, 37, static_cast<char>(mask));
+
+			const bool contributed = (mask & (1U << localPlayer)) != 0;
+			const unsigned expected = contributed ? 37 / contributors : 0;
+			EXPECT_EQ(MyPlayer->_pExperience, expected);
+			for (const Player &player : Players) {
+				if (&player != MyPlayer) {
+					EXPECT_EQ(player._pExperience, 0U);
+				}
+			}
+		}
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, MultiplayerExperienceRetainsThePowerLevelingCap)
+{
+	AddPlrMonstExper(1, 10000, 1);
+	EXPECT_EQ(MyPlayer->_pExperience, 100U);
+}
+
+TEST_F(ClassicMultiplayerTest, SinglePlayerIgnoresUnusedContributorSlots)
+{
+	Players.resize(1);
+	MyPlayer = &Players[0];
+	gbIsMultiplayer = false;
+
+	AddPlrMonstExper(1, 150, 15);
+
+	EXPECT_EQ(MyPlayer->_pExperience, 150U);
+}
+
+TEST_F(ClassicMultiplayerTest, DeadPlayersDoNotGainExperienceInTheDungeon)
+{
+	MyPlayer->_pHitPoints = Fixed26_6::fromInt(0);
+	AddPlrMonstExper(1, 37, 1);
+	EXPECT_EQ(MyPlayer->_pExperience, 0U);
+}
+
+TEST_F(ClassicMultiplayerTest, PortalTownArrivalPositionsRemainClassic)
+{
+	leveltype = DTYPE_TOWN;
+	const std::array<Point, 4> expected = { { { 58, 41 }, { 60, 41 }, { 62, 41 }, { 64, 41 } } };
+	for (size_t owner = 0; owner < expected.size(); owner++) {
+		SCOPED_TRACE(owner);
+		SetCurrentPortal(owner);
+		GetPortalLvlPos();
+		EXPECT_EQ(ViewPosition, expected[owner]);
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, PortalArrivalDistinguishesTheOwnerFromOtherPlayers)
+{
+	for (size_t owner = 0; owner < 4; owner++) {
+		SCOPED_TRACE(owner);
+		const Point destination { 40, 45 };
+		SetPortalStats(static_cast<int>(owner), true, destination, 5, DTYPE_CATACOMBS, false);
+		SetCurrentPortal(owner);
+		for (uint8_t visitor = 0; visitor < 4; visitor++) {
+			SCOPED_TRACE(visitor);
+			MyPlayerId = visitor;
+			MyPlayer = &Players[visitor];
+			GetPortalLvlPos();
+			const Point expected = visitor == owner ? destination : destination + Displacement { 1, 1 };
+			EXPECT_EQ(ViewPosition, expected);
+		}
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, ClosingAPortalDoesNotCloseOtherPlayersPortals)
+{
+	for (int owner = 0; owner < 4; owner++)
+		SetPortalStats(owner, true, { 40 + owner * 4, 45 }, 5, DTYPE_CATACOMBS, false);
+
+	DeactivatePortal(Players[2]);
+
+	for (int owner = 0; owner < 4; owner++) {
+		SCOPED_TRACE(owner);
+		EXPECT_EQ(PosOkPortal(5, { 40 + owner * 4, 45 }), owner != 2);
+		EXPECT_FALSE(PosOkPortal(6, { 40 + owner * 4, 45 }));
+	}
+}
+
+} // namespace
+} // namespace devilution

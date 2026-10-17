@@ -91,6 +91,11 @@ void RunTimedemo(std::string timedemoFolderName)
 
 	StartGame(false, true);
 
+	EXPECT_EQ(Players.size(), 1U);
+	EXPECT_EQ(MyPlayerId, 0);
+	EXPECT_EQ(MyPlayer, Players.data());
+	EXPECT_FALSE(gbIsMultiplayer);
+
 	const HeroCompareResult result = pfile_compare_hero_demo(demoNumber, true);
 	ASSERT_EQ(result.status, HeroCompareResult::Same) << result.message;
 	ASSERT_FALSE(gbRunGame);

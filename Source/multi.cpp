@@ -52,16 +52,16 @@
 namespace devilution {
 
 bool gbSomebodyWonGameKludge;
-uint16_t sgwPackPlrOffsetTbl[MAX_PLRS];
-bool sgbPlayerTurnBitTbl[MAX_PLRS];
-bool sgbPlayerLeftGameTbl[MAX_PLRS];
+uint16_t sgwPackPlrOffsetTbl[ClassicPlayerLimit];
+bool sgbPlayerTurnBitTbl[ClassicPlayerLimit];
+bool sgbPlayerLeftGameTbl[ClassicPlayerLimit];
 bool shareNextHighPriorityMessage;
 uint8_t gbActivePlayers;
 bool gbGameDestroyed;
-bool sgbSendDeltaTbl[MAX_PLRS];
+bool sgbSendDeltaTbl[ClassicPlayerLimit];
 bool gbSelectProvider;
 int sglTimeoutStart;
-leaveinfo_t sgdwPlayerLeftReasonTbl[MAX_PLRS];
+leaveinfo_t sgdwPlayerLeftReasonTbl[ClassicPlayerLimit];
 uint32_t sgdwGameLoops;
 bool sgbTimeout;
 std::string GameName;
@@ -69,8 +69,8 @@ std::string GamePassword;
 bool PublicGame;
 uint8_t gbDeltaSender;
 bool sgbNetInited;
-uint32_t player_state[MAX_PLRS];
-Uint32 playerInfoTimers[MAX_PLRS];
+uint32_t player_state[ClassicPlayerLimit];
+Uint32 playerInfoTimers[ClassicPlayerLimit];
 bool IsLoopback;
 
 /**
@@ -293,9 +293,9 @@ void PlayerLeftMsg(Player &player, bool left)
 		if (!IsLoopback) {
 			const uint8_t remainingPlayers = gbActivePlayers > 0 ? gbActivePlayers - 1 : 0;
 			if (player._pName[0] != '\0')
-				LogInfo("Player '{}' left the {} game ({}, {}/{} players)", player._pName, ConnectionNames[provider], reasonDescription, remainingPlayers, MAX_PLRS);
+				LogInfo("Player '{}' left the {} game ({}, {}/{} players)", player._pName, ConnectionNames[provider], reasonDescription, remainingPlayers, SessionPlayerLimit);
 			else
-				LogInfo("Player left the {} game ({}, {}/{} players)", ConnectionNames[provider], reasonDescription, remainingPlayers, MAX_PLRS);
+				LogInfo("Player left the {} game ({}, {}/{} players)", ConnectionNames[provider], reasonDescription, remainingPlayers, SessionPlayerLimit);
 		}
 		EventPlrMsg(FormatRuntime(pszFmt, player._pName));
 	}
@@ -488,7 +488,7 @@ void HandleEvents(_SNETEVENT *pEvt)
 		sgbSendDeltaTbl[playerId] = false;
 
 		if (gbDeltaSender == playerId)
-			gbDeltaSender = MAX_PLRS;
+			gbDeltaSender = NoDeltaSender;
 	} break;
 	case EVENT_TYPE_PLAYER_MESSAGE: {
 		std::string_view data(static_cast<const char *>(pEvt->data), pEvt->databytes);
@@ -518,7 +518,7 @@ void UnregisterNetEventHandlers()
 
 bool InitSingle(GameData *gameData)
 {
-	Players.resize(1);
+	ResizePlayersForSession(1);
 
 	if (!SNetInitializeProvider(SELCONN_LOOPBACK, gameData)) {
 		return false;
@@ -543,7 +543,7 @@ bool InitSingle(GameData *gameData)
 
 bool InitMulti(GameData *gameData)
 {
-	Players.resize(MAX_PLRS);
+	ResizePlayersForSession(SessionPlayerLimit);
 
 	int playerId;
 
@@ -823,6 +823,7 @@ void NetClose()
 	if (!demo::IsRunning()) {
 		Players.clear();
 		MyPlayer = nullptr;
+		InspectPlayer = nullptr;
 	}
 }
 
@@ -838,6 +839,7 @@ bool NetInit(bool bSinglePlayer)
 		memset(sgbSendDeltaTbl, 0, sizeof(sgbSendDeltaTbl));
 		Players.clear();
 		MyPlayer = nullptr;
+		InspectPlayer = nullptr;
 		memset(sgwPackPlrOffsetTbl, 0, sizeof(sgwPackPlrOffsetTbl));
 		SNetSetBasePlayer(0);
 		if (bSinglePlayer) {
@@ -906,7 +908,7 @@ bool NetInit(bool bSinglePlayer)
 
 void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 {
-	static PlayerNetPack PackedPlayerBuffer[MAX_PLRS];
+	static PlayerNetPack PackedPlayerBuffer[ClassicPlayerLimit];
 
 	if (&player == MyPlayer) {
 		return;
@@ -951,7 +953,7 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	if (sgbPlayerTurnBitTbl[pnum]) {
 		szEvent = _("Player '{:s}' (level {:d}) just joined the game");
 		if (!IsLoopback)
-			LogInfo("Player '{}' joined the {} game (level {}, {}/{} players)", player._pName, ConnectionNames[provider], player.getCharacterLevel(), gbActivePlayers, MAX_PLRS);
+			LogInfo("Player '{}' joined the {} game (level {}, {}/{} players)", player._pName, ConnectionNames[provider], player.getCharacterLevel(), gbActivePlayers, SessionPlayerLimit);
 	} else {
 		szEvent = _("Player '{:s}' (level {:d}) is already in the game");
 	}

@@ -90,7 +90,7 @@ protected:
 	virtual bool IsGameHost() = 0;
 
 private:
-	std::array<PlayerState, MAX_PLRS> playerStateTable_;
+	std::array<PlayerState, ClassicPlayerLimit> playerStateTable_;
 	bool awaitingSequenceNumber_ = true;
 	uint32_t lastEchoTime = 0;
 

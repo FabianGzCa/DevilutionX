@@ -28,7 +28,7 @@ extern std::optional<TextInputState> ChatInputState;
 extern char TalkMessage[MAX_SEND_STR_LEN];
 extern bool TalkButtonsDown[3];
 extern int sgbPlrTalkTbl;
-extern bool WhisperList[MAX_PLRS];
+extern bool WhisperList[SessionPlayerLimit];
 
 bool CheckChatCommand(std::string_view text);
 

@@ -37,6 +37,8 @@ struct Missile;
 struct Player;
 
 constexpr size_t MaxMonsters = 200;
+// Zhar uses a fixed classic monster slot independent of player capacity.
+constexpr size_t ZharMonsterIndex = 4;
 constexpr size_t MaxLvlMTypes = 24;
 
 enum monster_flag : uint16_t {

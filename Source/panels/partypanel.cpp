@@ -32,7 +32,7 @@ OptionalOwnedClxSpriteList PartyMemberFrame;
 OptionalOwnedClxSpriteList PlayerTags;
 
 Point PartyPanelPos = { 8, 8 };
-Rectangle PortraitFrameRects[MAX_PLRS];
+Rectangle PortraitFrameRects[SessionPlayerLimit];
 int RightClickedPortraitIndex = -1;
 constexpr int HealthBarHeight = 7;
 constexpr int ManaBarHeight = 7;

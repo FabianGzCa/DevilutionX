@@ -175,7 +175,7 @@ std::expected<void, PacketError> base::HandleEchoReply(packet &pkt)
 {
 	const uint32_t now = SDL_GetTicks();
 	plr_t src = pkt.Source();
-	if (src >= MAX_PLRS) return {};
+	if (src >= ClassicPlayerLimit) return { };
 	return pkt.Time().transform([&](cookie_t &&pktTime) {
 		PlayerState &playerState = playerStateTable_[src];
 		playerState.roundTripLatency = now - pktTime;
@@ -215,7 +215,7 @@ bool base::IsConnected(plr_t player) const
 
 std::expected<void, PacketError> base::RecvLocal(packet &pkt)
 {
-	if (pkt.Source() < MAX_PLRS) {
+	if (pkt.Source() < ClassicPlayerLimit) {
 		if (std::expected<void, PacketError> result = Connect(pkt.Source());
 		    !result.has_value()) {
 			return result;
@@ -268,7 +268,7 @@ bool base::SNetReceiveMessage(uint8_t *sender, void **data, size_t *size)
 
 bool base::SNetSendMessage(uint8_t playerId, void *data, size_t size)
 {
-	if (playerId != SNPLAYER_OTHERS && playerId >= MAX_PLRS)
+	if (playerId != SNPLAYER_OTHERS && playerId >= ClassicPlayerLimit)
 		abort();
 	auto *rawMessage = reinterpret_cast<unsigned char *>(data);
 	const buffer_t message(rawMessage, rawMessage + size);
@@ -466,7 +466,7 @@ void base::SNetGetProviderCaps(struct _SNETCAPS *caps)
 	caps->flags = 0;                 // unused
 	caps->maxmessagesize = 512;      // capped to 512; underflow if < 24
 	caps->maxqueuesize = 0;          // unused
-	caps->maxplayers = MAX_PLRS;     // capped to 4
+	caps->maxplayers = ClassicPlayerLimit; // capped to the classic protocol limit
 	caps->bytessec = 1000000;        // ?
 	caps->latencyms = 0;             // unused
 	caps->defaultturnssec = 10;      // ?

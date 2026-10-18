@@ -4,6 +4,7 @@
  * Implementation of player functionality, leveling, actions, creation, loading, etc.
  */
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 
@@ -66,6 +67,13 @@ Player *MyPlayer;
 std::vector<Player> Players;
 Player *InspectPlayer;
 bool MyPlayerIsDead;
+
+void ResizePlayersForSession(size_t count)
+{
+	assert(count <= static_cast<size_t>(SessionPlayerLimit));
+	Players.reserve(PlayerStorageCapacity);
+	Players.resize(count);
+}
 
 namespace {
 

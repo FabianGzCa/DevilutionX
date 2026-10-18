@@ -827,7 +827,7 @@ void DrawDungeon(const Surface &out, const Lightmap &lightmap, Point tilePositio
 	Player *player = PlayerAtPosition(tilePosition);
 	if (player != nullptr) {
 		const uint8_t pid = player->getId();
-		assert(pid < MAX_PLRS);
+		assert(pid < Players.size());
 		int playerId = static_cast<int>(pid) + 1;
 		// If sprite is moving southwards or east, we want to draw it offset from the tile it's moving to, so we need negative ID
 		// This respests the order that tiles are drawn. By using the negative id, we ensure that the sprite is drawn with priority

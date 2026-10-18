@@ -3141,13 +3141,13 @@ void OperateBookcase(Object &bookcase, bool sendmsg, bool sendLootMsg)
 	CreateTypeItem(bookcase.position, false, ItemType::Misc, IMISC_BOOK, sendLootMsg, false);
 
 	if (Quests[Q_ZHAR].IsAvailable()) {
-		Monster &zhar = Monsters[MAX_PLRS];
+		Monster &zhar = Monsters[ZharMonsterIndex];
 		if (zhar.mode == MonsterMode::Stand // prevents playing the "angry" message for the second time if zhar got aggroed by losing vision and talking again
 		    && zhar.uniqueType == UniqueMonsterType::Zhar
 		    && zhar.activeForTicks == UINT8_MAX
 		    && zhar.hitPoints > 0) {
 			zhar.talkMsg = TEXT_ZHAR2;
-			M_StartStand(zhar, zhar.direction); // BUGFIX: first parameter in call to M_StartStand should be MAX_PLRS, not 0. (fixed)
+			M_StartStand(zhar, zhar.direction); // BUGFIX: Start Zhar in its reserved slot, not monster 0. (fixed)
 			zhar.goal = MonsterGoal::Attack;
 			if (sendmsg)
 				zhar.mode = MonsterMode::Talk;

@@ -19,7 +19,7 @@ std::optional<TextInputState> ChatInputState;
 char TalkMessage[MAX_SEND_STR_LEN];
 bool TalkButtonsDown[3];
 int sgbPlrTalkTbl;
-bool WhisperList[MAX_PLRS];
+bool WhisperList[SessionPlayerLimit];
 OptionalOwnedClxSpriteList talkButtons;
 
 namespace {

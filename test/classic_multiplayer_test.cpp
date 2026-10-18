@@ -7,6 +7,7 @@
 #include "engine/assets.hpp"
 #include "game_mode.hpp"
 #include "levels/dun_tile_data.hpp"
+#include "monster.h"
 #include "multi.h"
 #include "player.h"
 #include "portal.h"
@@ -32,9 +33,10 @@ protected:
 		gbIsSpawn = false;
 		leveltype = DTYPE_CATHEDRAL;
 		Players.clear();
-		Players.resize(4);
+		ResizePlayersForSession(SessionPlayerLimit);
 		MyPlayerId = 0;
 		MyPlayer = &Players[MyPlayerId];
+		InspectPlayer = MyPlayer;
 		for (Player &player : Players) {
 			player.setCharacterLevel(1);
 			player._pHitPoints = Fixed26_6::fromInt(100);
@@ -50,6 +52,7 @@ protected:
 		InitPortals();
 		Players.clear();
 		MyPlayer = nullptr;
+		InspectPlayer = nullptr;
 		MyPlayerId = 0;
 		gbIsMultiplayer = false;
 		leveltype = DTYPE_TOWN;
@@ -63,20 +66,45 @@ TEST_F(ClassicMultiplayerTest, AdvertisesFourPlayerSlots)
 	EXPECT_EQ(caps.maxplayers, 4U);
 }
 
+TEST_F(ClassicMultiplayerTest, PlayerLimitsAndReservedMonsterSlotRemainDistinct)
+{
+	EXPECT_EQ(ClassicPlayerLimit, 4);
+	EXPECT_EQ(SessionPlayerLimit, 4);
+	EXPECT_EQ(NoDeltaSender, SessionPlayerLimit);
+	EXPECT_EQ(PlayerStorageCapacity, 8);
+	EXPECT_EQ(ZharMonsterIndex, 4U);
+	EXPECT_EQ(Players.size(), static_cast<size_t>(SessionPlayerLimit));
+	EXPECT_GE(Players.capacity(), static_cast<size_t>(PlayerStorageCapacity));
+}
+
+TEST_F(ClassicMultiplayerTest, GrowingPlayerStorageDoesNotMoveSessionPointers)
+{
+	ResizePlayersForSession(1);
+	MyPlayer = &Players[0];
+	InspectPlayer = MyPlayer;
+	Player *const localPlayer = MyPlayer;
+
+	Players.resize(PlayerStorageCapacity);
+
+	EXPECT_EQ(Players.size(), static_cast<size_t>(PlayerStorageCapacity));
+	EXPECT_EQ(MyPlayer, localPlayer);
+	EXPECT_EQ(InspectPlayer, localPlayer);
+}
+
 TEST_F(ClassicMultiplayerTest, TurnBuffersRespectTheSessionPlayerCount)
 {
-	for (const size_t count : { 1U, 4U }) {
+	for (const size_t count : { size_t { 1 }, static_cast<size_t>(SessionPlayerLimit) }) {
 		SCOPED_TRACE(count);
 		Players.resize(count);
 		MyPlayer = &Players[0];
 		char sentinel = 0;
-		std::array<char *, 5> messages { };
+		std::array<char *, ClassicPlayerLimit + 1> messages { };
 		messages.fill(&sentinel);
-		std::array<size_t, 5> sizes { };
+		std::array<size_t, ClassicPlayerLimit + 1> sizes { };
 		sizes.fill(99);
-		std::array<uint32_t, 5> status { };
+		std::array<uint32_t, ClassicPlayerLimit + 1> status { };
 
-		ASSERT_TRUE(SNetReceiveTurns(4, messages.data(), sizes.data(), status.data()));
+		ASSERT_TRUE(SNetReceiveTurns(ClassicPlayerLimit, messages.data(), sizes.data(), status.data()));
 
 		for (size_t i = 0; i < count; i++) {
 			EXPECT_EQ(messages[i], nullptr);
@@ -91,10 +119,10 @@ TEST_F(ClassicMultiplayerTest, TurnBuffersRespectTheSessionPlayerCount)
 
 TEST_F(ClassicMultiplayerTest, ExperienceIsSharedOnlyAmongContributors)
 {
-	for (unsigned mask = 0; mask < 16; mask++) {
+	for (unsigned mask = 0; mask < (1U << ClassicPlayerLimit); mask++) {
 		SCOPED_TRACE(mask);
 		const unsigned contributors = std::popcount(mask);
-		for (uint8_t localPlayer = 0; localPlayer < 4; localPlayer++) {
+		for (uint8_t localPlayer = 0; localPlayer < ClassicPlayerLimit; localPlayer++) {
 			SCOPED_TRACE(localPlayer);
 			MyPlayerId = localPlayer;
 			MyPlayer = &Players[localPlayer];
@@ -142,7 +170,7 @@ TEST_F(ClassicMultiplayerTest, DeadPlayersDoNotGainExperienceInTheDungeon)
 TEST_F(ClassicMultiplayerTest, PortalTownArrivalPositionsRemainClassic)
 {
 	leveltype = DTYPE_TOWN;
-	const std::array<Point, 4> expected = { { { 58, 41 }, { 60, 41 }, { 62, 41 }, { 64, 41 } } };
+	const std::array<Point, ClassicPlayerLimit> expected = { { { 58, 41 }, { 60, 41 }, { 62, 41 }, { 64, 41 } } };
 	for (size_t owner = 0; owner < expected.size(); owner++) {
 		SCOPED_TRACE(owner);
 		SetCurrentPortal(owner);
@@ -153,12 +181,12 @@ TEST_F(ClassicMultiplayerTest, PortalTownArrivalPositionsRemainClassic)
 
 TEST_F(ClassicMultiplayerTest, PortalArrivalDistinguishesTheOwnerFromOtherPlayers)
 {
-	for (size_t owner = 0; owner < 4; owner++) {
+	for (size_t owner = 0; owner < ClassicPlayerLimit; owner++) {
 		SCOPED_TRACE(owner);
 		const Point destination { 40, 45 };
 		SetPortalStats(static_cast<int>(owner), true, destination, 5, DTYPE_CATACOMBS, false);
 		SetCurrentPortal(owner);
-		for (uint8_t visitor = 0; visitor < 4; visitor++) {
+		for (uint8_t visitor = 0; visitor < ClassicPlayerLimit; visitor++) {
 			SCOPED_TRACE(visitor);
 			MyPlayerId = visitor;
 			MyPlayer = &Players[visitor];
@@ -171,12 +199,12 @@ TEST_F(ClassicMultiplayerTest, PortalArrivalDistinguishesTheOwnerFromOtherPlayer
 
 TEST_F(ClassicMultiplayerTest, ClosingAPortalDoesNotCloseOtherPlayersPortals)
 {
-	for (int owner = 0; owner < 4; owner++)
+	for (int owner = 0; owner < ClassicPlayerLimit; owner++)
 		SetPortalStats(owner, true, { 40 + owner * 4, 45 }, 5, DTYPE_CATACOMBS, false);
 
 	DeactivatePortal(Players[2]);
 
-	for (int owner = 0; owner < 4; owner++) {
+	for (int owner = 0; owner < ClassicPlayerLimit; owner++) {
 		SCOPED_TRACE(owner);
 		EXPECT_EQ(PosOkPortal(5, { 40 + owner * 4, 45 }), owner != 2);
 		EXPECT_FALSE(PosOkPortal(6, { 40 + owner * 4, 45 }));

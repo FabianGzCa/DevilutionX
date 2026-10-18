@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -22,8 +23,14 @@ using net::leaveinfo_t;
 // Defined in player.h, forward declared here to allow for functions which operate in the context of a player.
 struct Player;
 
-// must be unsigned to generate unsigned comparisons with pnum
-#define MAX_PLRS 4
+// The classic protocol and currently available session size are both four, but
+// remain separate so the protocol limit does not define engine storage.
+constexpr int ClassicPlayerLimit = 4;
+constexpr int SessionPlayerLimit = 4;
+constexpr uint8_t NoDeltaSender = static_cast<uint8_t>(SessionPlayerLimit);
+// Reserve eight Player objects without changing the current four-slot session.
+constexpr int PlayerStorageCapacity = 8;
+static_assert(SessionPlayerLimit <= PlayerStorageCapacity);
 
 /* @brief Contains info of running public game (for game list browsing) */
 struct GameInfo {
@@ -35,15 +42,15 @@ struct GameInfo {
 };
 
 extern bool gbSomebodyWonGameKludge;
-extern uint16_t sgwPackPlrOffsetTbl[MAX_PLRS];
-extern uint8_t gbActivePlayers;
+extern uint16_t sgwPackPlrOffsetTbl[ClassicPlayerLimit];
+extern uint8_t gbActivePlayers; // Live participants, not the session limit.
 extern bool gbGameDestroyed;
 extern bool gbSelectProvider;
 extern std::string GameName;
 extern std::string GamePassword;
 extern bool PublicGame;
 extern uint8_t gbDeltaSender;
-extern uint32_t player_state[MAX_PLRS];
+extern uint32_t player_state[ClassicPlayerLimit];
 extern bool IsLoopback;
 
 void SwapGameDataLE(GameData &gameData);

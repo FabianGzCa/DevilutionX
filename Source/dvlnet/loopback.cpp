@@ -1,7 +1,11 @@
 #include "dvlnet/loopback.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 
+#include "dvlnet/limits.hpp"
+#include "dvlnet/session.hpp"
 #include "multi.h"
 #include "player.h"
 #include "utils/language.h"
@@ -34,9 +38,15 @@ bool loopback::SNetReceiveMessage(uint8_t *sender, void **data, size_t *size)
 
 bool loopback::SNetSendMessage(uint8_t dest, void *data, size_t size)
 {
+	if (size > MaxMessageSize || (data == nullptr && size != 0))
+		return false;
+	// Remote destinations are successful no-ops, as in classic single player.
 	if (dest == plr_single) {
-		auto *rawMessage = reinterpret_cast<unsigned char *>(data);
-		const buffer_t message(rawMessage, rawMessage + size);
+		if (message_queue.size() >= MaxQueuedPackets)
+			return false;
+		buffer_t message(size);
+		if (size != 0)
+			std::memcpy(message.data(), data, size);
 		message_queue.push(message);
 	}
 	return true;
@@ -44,7 +54,7 @@ bool loopback::SNetSendMessage(uint8_t dest, void *data, size_t size)
 
 bool loopback::SNetReceiveTurns(char **data, size_t *size, uint32_t * /*status*/)
 {
-	for (size_t i = 0; i < Players.size(); ++i) {
+	for (size_t i = 0; i < std::min(Players.size(), static_cast<size_t>(playerLimit_)); ++i) {
 		size[i] = 0;
 		data[i] = nullptr;
 	}
@@ -60,9 +70,9 @@ void loopback::SNetGetProviderCaps(struct _SNETCAPS *caps)
 {
 	caps->size = 0;                  // engine writes only ?!?
 	caps->flags = 0;                 // unused
-	caps->maxmessagesize = 512;      // capped to 512; underflow if < 24
+	caps->maxmessagesize = MaxMessageSize; // capped to 512; underflow if < 24
 	caps->maxqueuesize = 0;          // unused
-	caps->maxplayers = ClassicPlayerLimit; // capped to the classic protocol limit
+	caps->maxplayers = playerLimit_; // negotiated buffer capacity
 	caps->bytessec = 1000000;        // ?
 	caps->latencyms = 0;             // unused
 	caps->defaultturnssec = 10;      // ?
@@ -88,6 +98,8 @@ bool loopback::SNetUnregisterEventHandler(event_type /*evtype*/)
 bool loopback::SNetLeaveGame(net::leaveinfo_t /*type*/)
 {
 	IsLoopback = false;
+	message_queue = { };
+	message_last.clear();
 	return true;
 }
 
@@ -98,6 +110,7 @@ bool loopback::SNetDropPlayer(int /*playerid*/, net::leaveinfo_t /*flags*/)
 
 void loopback::setup_gameinfo(buffer_t info)
 {
+	playerLimit_ = SessionCapacity(info);
 }
 
 bool loopback::SNetGetOwnerTurnsWaiting(uint32_t *turns)

@@ -160,7 +160,7 @@ TEST_F(PeerSessionCompatibility, InvalidDiscoveryDataIsNotListed)
 		EXPECT_TRUE(host_.get_gamelist().empty());
 	}
 	buffer_t info = Encode(Game(true));
-	info.resize(sizeof(GameData) + PlayerNameLength * ClassicPlayerLimit);
+	info.resize(sizeof(GameData) + PlayerNameLength * ExtendedSessionRules.maxPlayers);
 	info.push_back('x');
 	auto wrongKind = factory_.make_packet<PT_INFO_REPLY>(PLR_BROADCAST, PLR_MASTER, info);
 	ASSERT_TRUE(wrongKind.has_value());

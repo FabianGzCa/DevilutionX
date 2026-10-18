@@ -199,6 +199,7 @@ class packet_in : public packet_proc<packet_in> {
 public:
 	using packet_proc<packet_in>::packet_proc;
 	std::expected<void, PacketError> Create(buffer_t buf);
+	bool FullyRead() const { return decrypted_buffer.empty(); }
 	std::expected<void, PacketError> process_element(buffer_t &x);
 	template <class T>
 	std::expected<void, PacketError> process_element(T &x);
@@ -534,6 +535,8 @@ inline std::expected<std::unique_ptr<packet>, PacketError> packet_factory::make_
 	if (const std::expected<void, PacketError> result = ret->process_data(); !result.has_value()) {
 		return std::unexpected(result.error());
 	}
+	if (!ret->FullyRead())
+		return std::unexpected("Unexpected trailing packet data");
 	return ret;
 }
 

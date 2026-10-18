@@ -59,6 +59,8 @@ std::string_view GameDataErrorMessage(GameDataError error)
 		return _("The client and host game versions do not match.");
 	case GameDataError::EditionMismatch:
 		return _("The client and host game editions do not match.");
+	case GameDataError::SessionFull:
+		return _("The multiplayer game is full.");
 	case GameDataError::SessionMismatch:
 		return _("The client and host must use the same classic or extended multiplayer mode.");
 	}

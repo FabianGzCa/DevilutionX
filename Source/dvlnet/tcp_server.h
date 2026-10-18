@@ -3,6 +3,7 @@
 #include <array>
 #include <expected>
 #include <memory>
+#include <set>
 #include <string>
 
 #include <asio/ts/buffer.hpp>
@@ -14,11 +15,10 @@
 #include "dvlnet/abstract_net.h"
 #include "dvlnet/frame_queue.h"
 #include "dvlnet/packet.h"
+#include "dvlnet/send_queue.hpp"
 #include "multi.h"
 
 namespace devilution::net {
-
-constexpr uint16_t TcpErrorCodeFlags = 0x8000;
 
 inline PacketError ServerError()
 {
@@ -47,6 +47,9 @@ private:
 		asio::steady_timer timer;
 		int timeout;
 		bool rejecting = false;
+		bool closed = false;
+		bool closeAfterSend = false;
+		send_queue outgoing;
 		client_connection(asio::io_context &ioc)
 		    : socket(ioc)
 		    , timer(ioc)
@@ -59,7 +62,10 @@ private:
 	asio::io_context &ioc;
 	packet_factory &pktfty;
 	std::unique_ptr<asio::ip::tcp::acceptor> acceptor;
-	std::array<scc, ClassicPlayerLimit> connections;
+	std::array<scc, PlayerStorageCapacity> connections;
+	std::set<scc> pending_;
+	uint8_t playerLimit_;
+	bool closing_ = false;
 	buffer_t game_init_info;
 
 	std::optional<PacketError> ioHandlerResult;
@@ -71,11 +77,12 @@ private:
 	void StartReceive(const scc &con);
 	void HandleReceive(const scc &con, const asio::error_code &ec, size_t bytesRead);
 	std::expected<void, PacketError> HandleReceiveNewPlayer(const scc &con, packet &pkt);
-	std::expected<void, PacketError> HandleReceivePacket(packet &pkt);
+	std::expected<void, PacketError> HandleReceivePacket(const scc &con, packet &pkt);
 	std::expected<void, PacketError> SendPacket(packet &pkt);
 	std::expected<void, PacketError> StartSend(const scc &con, packet &pkt);
 	std::expected<void, PacketError> StartSend(const scc &con, PacketError::ErrorCode errorCode);
 	std::expected<void, PacketError> StartSend(const scc &con, buffer_t pktData, uint16_t flags, bool closeAfterSend = false);
+	void WriteNext(const scc &con);
 	void HandleSend(const scc &con, const asio::error_code &ec, size_t bytesSent);
 	void StartTimeout(const scc &con);
 	void HandleTimeout(const scc &con, const asio::error_code &ec);

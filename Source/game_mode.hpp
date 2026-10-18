@@ -64,6 +64,7 @@ enum class GameDataError : uint8_t {
 	VersionMismatch,
 	EditionMismatch,
 	SessionMismatch,
+	SessionFull,
 };
 
 DVL_API_FOR_TEST std::optional<GameDataError> ValidateGameData(const GameData &data);

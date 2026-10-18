@@ -5,7 +5,8 @@
 Classic sessions retain four player slots and the existing wire layout. The
 extended descriptor reserves an eight-player protocol and balance revision;
 it does not enable eight-player gameplay or change balancing by itself. The
-transport and public menus remain limited to four players at this stage.
+transport supports eight slots internally; engine synchronization and public
+menus remain limited to four players until their implementation is complete.
 
 ## GameData contract
 
@@ -52,7 +53,7 @@ New kinds use the existing serialization and encryption:
 | Extended discovery reply | `0x24` | GameData, existing player names, game name |
 
 Rejection codes are 0: size, 1: settings, 2: unsupported rules, 3: version,
-4: edition, 5: session mismatch. They are translated locally. Unknown codes
+4: edition, 5: session mismatch, 6: session full. They are translated locally. Unknown codes
 are invalid. Only the joining client's cookie can complete or reject its join.
 
 TCP pins the host descriptor when creating the server. TCP and the peer protocol
@@ -89,3 +90,42 @@ checking classic admission and payload exchange in both directions, rejection
 of original/extended pairs, and equal/different extended rules. Record the exact
 reference revision and observed outcomes outside the source tree. The in-memory
 peer tests do not establish real ZeroTier connectivity or eight-player gameplay.
+
+## Transport capacity and resource bounds
+
+Transport tables reserve eight slots and use the validated session capacity,
+independently of the engine's `Players` vector. Classic rooms stop at four;
+extended rooms assign IDs 0–7. `0xFE` remains the master sentinel and `0xFF`
+remains broadcast/unassigned. The source of an admitted TCP packet must match
+its socket's assigned ID. Addresses and embedded control IDs are checked before
+indexing tables. Rejoining a peer already assigned an ID does not allocate another.
+
+Discovery carries exactly four or eight fixed player-name fields according to
+the advertised descriptor, followed by the game name. Game names are limited to
+128 bytes and the browser retains at most 128 games. The single-player loopback
+retains its local-only message semantics and respects the negotiated buffer
+capacity; it does not create additional participants.
+
+TCP uses one write at a time per socket and retains each frame until completion.
+Partial frames and coalesced frames preserve stream order. Receive and send
+queues are bounded by 4 MiB and 4096 entries. Application messages retain the
+provider's 512-byte limit; turn queues are bounded to 128 entries because turn
+sequence numbers wrap at 256. Queue exhaustion returns an error or disconnects
+the affected network peer rather than growing memory without limit. Empty frames,
+unknown frame flags and trailing data in fixed-size packet kinds are rejected.
+
+TCP tracks at most one capacity's worth of pending admissions and releases them
+on EOF, failure, shutdown or the existing 30-second admission timeout. Active
+connections retain the 60-second timeout. Disconnect callbacks are idempotent,
+so delayed cancellation cannot clear a newly reused player slot. ZeroTier stream
+queues use the same bounds, retain partial writes, recognize EOF and expire idle
+streams after 60 seconds; the native provider limits pending/active endpoints to
+16. Real ZeroTier connectivity still requires separate integration testing.
+
+`ctest --preset classic-tests -R 'Network|Transport' -V` exercises the TCP listener
+and eight real TCP clients on an ephemeral localhost port, with and without
+passwords. It verifies directed/broadcast order, turns, room limits, all reused
+slots, fragmented input, corrupt headers, forged IDs, pending joins and incorrect
+passwords. Peer protocol tests use an in-memory byte transport to exercise eight
+participants, discovery, turns, duplicate joins and control IDs. They do not
+establish that a real ZeroTier network is reachable.

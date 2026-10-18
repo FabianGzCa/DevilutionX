@@ -21,6 +21,33 @@ inline std::expected<GameData, GameDataError> DecodeGameData(std::span<const uns
 	return data;
 }
 
+/** Invalid or absent local setup cannot advertise extended slots. Joins still validate it. */
+inline uint8_t SessionCapacity(const buffer_t &info)
+{
+	const auto data = DecodeGameData(info);
+	return data.has_value() && data->isExtended() ? data->rules.maxPlayers : ClassicPlayerLimit;
+}
+
+/** Check addresses before any table is indexed, including control packet IDs. */
+inline std::expected<void, PacketError> ValidatePacketAddresses(packet &pkt, uint8_t capacity)
+{
+	if (pkt.Destination() != PLR_BROADCAST && pkt.Destination() >= capacity)
+		return std::unexpected("Invalid packet destination");
+	if (pkt.Source() >= capacity && pkt.Source() != PLR_MASTER)
+		return std::unexpected("Invalid packet source");
+	if ((pkt.Type() == PT_MESSAGE || pkt.Type() == PT_TURN || pkt.Type() == PT_ECHO_REQUEST || pkt.Type() == PT_ECHO_REPLY)
+	    && pkt.Source() >= capacity)
+		return std::unexpected("Invalid gameplay packet source");
+	if (pkt.Type() == PT_CONNECT || pkt.Type() == PT_DISCONNECT || pkt.Type() == PT_JOIN_ACCEPT || pkt.Type() == PT_JOIN_ACCEPT_EXTENDED) {
+		const auto player = pkt.NewPlayer();
+		if (!player.has_value())
+			return std::unexpected(player.error());
+		if (*player >= capacity)
+			return std::unexpected("Invalid player ID in control packet");
+	}
+	return { };
+}
+
 inline bool IsExtendedSession(const buffer_t &info)
 {
 	const auto data = DecodeGameData(info);

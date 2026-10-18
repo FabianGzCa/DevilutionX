@@ -13,6 +13,7 @@
 
 #include "dvlnet/frame_queue.h"
 #include "dvlnet/packet.h"
+#include "dvlnet/send_queue.hpp"
 #include "utils/log.hpp"
 
 namespace devilution {
@@ -101,11 +102,14 @@ private:
 
 	struct peer_state {
 		int fd = -1;
-		std::deque<buffer_t> send_queue;
+		send_queue outgoing;
+		size_t sentBytes = 0;
+		uint64_t lastActivity = 0;
 		frame_queue recv_queue;
 	};
 
 	std::deque<std::pair<endpoint, buffer_t>> oob_recv_queue;
+	size_t oobQueueBytes_ = 0;
 	std::deque<endpoint> disconnect_queue;
 
 	ankerl::unordered_dense::map<endpoint, peer_state, EndpointHash> peer_list;
@@ -121,6 +125,7 @@ private:
 
 	std::expected<bool, PacketError> send_queued_peer(const endpoint &peer);
 	bool recv_peer(const endpoint &peer);
+	void MarkDisconnected(const endpoint &peer);
 	bool send_queued_all();
 	bool recv_from_peers();
 	bool recv_from_udp();

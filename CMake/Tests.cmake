@@ -24,6 +24,7 @@ set(tests
   drlg_l2_test
   drlg_l3_test
   drlg_l4_test
+  dvlnet_test
   effects_test
   inv_test
   items_test

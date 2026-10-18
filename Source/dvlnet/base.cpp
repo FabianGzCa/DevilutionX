@@ -86,7 +86,11 @@ std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 		if (!newPlayerPkt.has_value())
 			return std::unexpected(newPlayerPkt.error());
 		plr_self = *std::move(newPlayerPkt);
-		Connect(plr_self);
+		if (std::expected<void, PacketError> result = Connect(plr_self); !result.has_value()) {
+			DisconnectNet(plr_self);
+			plr_self = PLR_BROADCAST;
+			return result;
+		}
 	}
 	std::expected<const buffer_t *, PacketError> infoPkt = pkt.Info();
 	if (!infoPkt.has_value())
@@ -110,8 +114,8 @@ std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 
 std::expected<void, PacketError> base::HandleConnect(packet &pkt)
 {
-	return pkt.NewPlayer().transform([this](plr_t &&newPlayer) {
-		Connect(newPlayer);
+	return pkt.NewPlayer().and_then([this](plr_t &&newPlayer) {
+		return Connect(newPlayer);
 	});
 }
 
@@ -120,9 +124,9 @@ std::expected<void, PacketError> base::HandleTurn(packet &pkt)
 	const plr_t src = pkt.Source();
 	PlayerState &playerState = playerStateTable_[src];
 	std::deque<turn_t> &turnQueue = playerState.turnQueue;
-	return pkt.Turn().transform([&](turn_t &&turn) {
+	return pkt.Turn().and_then([&](turn_t &&turn) {
 		turnQueue.push_back(turn);
-		MakeReady(turn.SequenceNumber);
+		return MakeReady(turn.SequenceNumber);
 	});
 }
 
@@ -194,8 +198,12 @@ std::expected<void, PacketError> base::Connect(plr_t player)
 	const bool wasConnected = playerState.isConnected;
 	playerState.isConnected = true;
 
-	if (!wasConnected)
-		return SendFirstTurnIfReady(player);
+	if (!wasConnected) {
+		if (std::expected<void, PacketError> result = SendFirstTurnIfReady(player); !result.has_value()) {
+			playerState.isConnected = false;
+			return result;
+		}
+	}
 	return {};
 }
 
@@ -241,8 +249,10 @@ bool base::SNetReceiveMessage(uint8_t *sender, void **data, size_t *size)
 	uint32_t now = SDL_GetTicks();
 	if (now == 0) now++;
 	if (lastEchoTime == 0 || now - lastEchoTime > 5000) {
-		for (plr_t i = 0; i < Players.size(); i++)
-			SendEchoRequest(i);
+		for (plr_t i = 0; i < Players.size(); i++) {
+			if (std::expected<void, PacketError> result = SendEchoRequest(i); !result.has_value())
+				LogError("SendEchoRequest: {}", result.error().what());
+		}
 		lastEchoTime = now;
 	}
 	process_network_packets();
@@ -379,7 +389,12 @@ bool base::SNetSendTurn(char *data, size_t size)
 	PlayerState &playerState = playerStateTable_[plr_self];
 	std::deque<turn_t> &turnQueue = playerState.turnQueue;
 	turnQueue.push_back(turn);
-	SendTurnIfReady(turn);
+	if (std::expected<void, PacketError> result = SendTurnIfReady(turn); !result.has_value()) {
+		turnQueue.pop_back();
+		next_turn = turn.SequenceNumber;
+		LogError("SendTurnIfReady: {}", result.error().what());
+		return false;
+	}
 	return true;
 }
 

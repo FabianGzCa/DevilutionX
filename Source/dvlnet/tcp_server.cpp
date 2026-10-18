@@ -94,8 +94,10 @@ void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
 		std::expected<std::unique_ptr<packet>, PacketError> pkt = pktfty.make_packet(*pktData);
 		if (!pkt.has_value()) {
 			Log("make_packet: {}", pkt.error().what());
-			if (pkt.error().code() == PacketError::ErrorCode::DecryptionFailed)
-				StartSend(con, pkt.error().code());
+			if (pkt.error().code() == PacketError::ErrorCode::DecryptionFailed) {
+				if (std::expected<void, PacketError> result = StartSend(con, pkt.error().code()); !result.has_value())
+					LogError("StartSend decryption error response: {}", result.error().what());
+			}
 			DropConnection(con);
 			return;
 		}
@@ -282,7 +284,8 @@ void tcp_server::DropConnection(const scc &con)
 	    = pktfty.make_packet<PT_DISCONNECT>(PLR_MASTER, PLR_BROADCAST,
 	        plr, leaveinfo_t::LEAVE_DROP);
 	if (pkt.has_value()) {
-		SendPacket(**pkt);
+		if (std::expected<void, PacketError> result = SendPacket(**pkt); !result.has_value())
+			LogError("SendPacket<PT_DISCONNECT>: {}", result.error().what());
 	} else {
 		LogError("make_packet<PT_DISCONNECT>: {}", pkt.error().what());
 	}

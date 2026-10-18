@@ -7,15 +7,17 @@
 #include <utility>
 
 #include "dvlnet/base.h"
+#include "dvlnet/session.hpp"
 #include "player.h"
 #include "utils/log.hpp"
 
 namespace devilution::net {
 
 tcp_server::tcp_server(asio::io_context &ioc, const std::string &bindaddr,
-    unsigned short port, packet_factory &pktfty)
+    unsigned short port, packet_factory &pktfty, buffer_t gameInfo)
     : ioc(ioc)
     , pktfty(pktfty)
+    , game_init_info(std::move(gameInfo))
 {
 	auto addr = asio::ip::make_address(bindaddr);
 	auto ep = asio::ip::tcp::endpoint(addr, port);
@@ -49,14 +51,6 @@ plr_t tcp_server::NextFree()
 		if (!connections[i])
 			return i;
 	return PLR_BROADCAST;
-}
-
-bool tcp_server::Empty()
-{
-	for (plr_t i = 0; i < Players.size(); ++i)
-		if (connections[i])
-			return false;
-	return true;
 }
 
 void tcp_server::StartReceive(const scc &con)
@@ -108,6 +102,8 @@ void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
 				DropConnection(con);
 				return;
 			}
+			if (con->rejecting)
+				return;
 		} else {
 			con->timeout = timeout_active;
 			std::expected<void, PacketError> result = HandleReceivePacket(**pkt);
@@ -123,16 +119,19 @@ void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
 
 std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &con, packet &inPkt)
 {
-	auto newplr = NextFree();
+	const auto info = inPkt.Info();
+	if (!info.has_value())
+		return std::unexpected(info.error());
+	if (auto error = ValidateJoinRequest(game_init_info, inPkt)) {
+		auto reply = MakeJoinReject(pktfty, PLR_MASTER, inPkt, *error);
+		if (!reply.has_value())
+			return std::unexpected(reply.error());
+		con->rejecting = true;
+		return StartSend(con, (*reply)->Data(), 0, true);
+	}
+	const auto newplr = NextFree();
 	if (newplr == PLR_BROADCAST)
 		return std::unexpected(ServerError());
-
-	if (Empty()) {
-		std::expected<const buffer_t *, PacketError> pktInfo = inPkt.Info();
-		if (!pktInfo.has_value())
-			return std::unexpected(pktInfo.error());
-		game_init_info = **pktInfo;
-	}
 
 	for (plr_t player = 0; player < Players.size(); player++) {
 		if (connections[player]) {
@@ -148,7 +147,7 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 
 	std::expected<void, PacketError> result
 	    = inPkt.Cookie()
-	          .and_then([&](cookie_t &&cookie) { return pktfty.make_packet<PT_JOIN_ACCEPT>(PLR_MASTER, PLR_BROADCAST, cookie, newplr, game_init_info); })
+	          .and_then([&](cookie_t &&cookie) { return MakeJoinAccept(pktfty, PLR_MASTER, cookie, newplr, game_init_info); })
 	          .and_then([&](std::unique_ptr<packet> &&pkt) { return StartSend(con, *pkt); });
 	if (!result.has_value())
 		return result;
@@ -194,7 +193,7 @@ std::expected<void, PacketError> tcp_server::StartSend(const scc &con, PacketErr
 	return StartSend(con, pktData, TcpErrorCodeFlags);
 }
 
-std::expected<void, PacketError> tcp_server::StartSend(const scc &con, buffer_t pktData, uint16_t flags)
+std::expected<void, PacketError> tcp_server::StartSend(const scc &con, buffer_t pktData, uint16_t flags, bool closeAfterSend)
 {
 	std::expected<buffer_t, PacketError> frame = frame_queue::MakeFrame(pktData, flags);
 	if (!frame.has_value())
@@ -202,8 +201,11 @@ std::expected<void, PacketError> tcp_server::StartSend(const scc &con, buffer_t 
 	std::unique_ptr<buffer_t> framePtr = std::make_unique<buffer_t>(*frame);
 	const asio::mutable_buffer buf = asio::buffer(*framePtr);
 	asio::async_write(con->socket, buf,
-	    [this, con, frame = std::move(framePtr)](const asio::error_code &ec, size_t bytesSent) {
-		    HandleSend(con, ec, bytesSent);
+	    [this, con, closeAfterSend, frame = std::move(framePtr)](const asio::error_code &ec, size_t bytesSent) {
+		    if (closeAfterSend)
+			    DropConnection(con);
+		    else
+			    HandleSend(con, ec, bytesSent);
 	    });
 	return {};
 }

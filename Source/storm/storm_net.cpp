@@ -197,6 +197,10 @@ bool SNetJoinGame(char *pszGameName, char *pszGamePassword, int *playerID)
 		DvlNet_SetPassword(pszGamePassword);
 	else
 		DvlNet_ClearPassword();
+	GameData localGame = sgGameInitInfo;
+	SwapGameDataLE(localGame);
+	const auto *bytes = reinterpret_cast<const unsigned char *>(&localGame);
+	dvlnet_inst->setup_gameinfo(net::buffer_t(bytes, bytes + sizeof(localGame)));
 	const int joinedPlayerId = dvlnet_inst->join(pszGameName);
 	if (joinedPlayerId == -1)
 		return false;

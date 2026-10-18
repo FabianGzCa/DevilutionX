@@ -25,7 +25,6 @@ int cdwrap::create(std::string_view addrstr)
 
 int cdwrap::join(std::string_view addrstr)
 {
-	game_init_info = buffer_t();
 	reset();
 	return dvlnet_wrap->join(addrstr);
 }

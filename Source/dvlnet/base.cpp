@@ -12,6 +12,7 @@
 #include <SDL.h>
 #endif
 
+#include "dvlnet/session.hpp"
 #include "player.h"
 
 namespace devilution {
@@ -78,38 +79,64 @@ std::expected<void, PacketError> base::SendEchoRequest(plr_t player)
 
 std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 {
-	if (plr_self != PLR_BROADCAST) {
+	if (plr_self != PLR_BROADCAST)
 		return {}; // already have player id
+	const auto cookie = pkt.Cookie();
+	if (!cookie.has_value())
+		return std::unexpected(cookie.error());
+	if (*cookie != cookie_self)
+		return { }; // acceptance for a different joining client
+	const auto info = pkt.Info();
+	if (!info.has_value())
+		return std::unexpected(info.error());
+	const auto host = DecodeGameData(**info);
+	if (!host.has_value())
+		return std::unexpected(GameDataErrorMessage(host.error()));
+	const auto local = DecodeGameData(game_init_info);
+	if (!local.has_value())
+		return std::unexpected(GameDataErrorMessage(local.error()));
+	if (auto error = CheckGameCompatibility(*host, *local))
+		return std::unexpected(GameDataErrorMessage(*error));
+	if (host->isExtended() != (pkt.Type() == PT_JOIN_ACCEPT_EXTENDED))
+		return std::unexpected(GameDataErrorMessage(GameDataError::SessionMismatch));
+	const auto newPlayer = pkt.NewPlayer();
+	if (!newPlayer.has_value())
+		return std::unexpected(newPlayer.error());
+	if (*newPlayer >= ClassicPlayerLimit)
+		return std::unexpected("Invalid player ID in join acceptance");
+	plr_self = *newPlayer;
+	if (auto result = Connect(plr_self); !result.has_value()) {
+		DisconnectNet(plr_self);
+		plr_self = PLR_BROADCAST;
+		return result;
 	}
-	if (pkt.Cookie() == cookie_self) {
-		std::expected<plr_t, PacketError> newPlayerPkt = pkt.NewPlayer();
-		if (!newPlayerPkt.has_value())
-			return std::unexpected(newPlayerPkt.error());
-		plr_self = *std::move(newPlayerPkt);
-		if (std::expected<void, PacketError> result = Connect(plr_self); !result.has_value()) {
-			DisconnectNet(plr_self);
-			plr_self = PLR_BROADCAST;
-			return result;
-		}
-	}
-	std::expected<const buffer_t *, PacketError> infoPkt = pkt.Info();
-	if (!infoPkt.has_value())
-		return std::unexpected(infoPkt.error());
-	const buffer_t &info = **infoPkt;
-	if (game_init_info != info) {
-		if (info.size() != sizeof(GameData)) {
-			ABORT();
-		}
-		// we joined and did not create
-		game_init_info = info;
-		_SNETEVENT ev;
-		ev.eventid = EVENT_TYPE_PLAYER_CREATE_GAME;
-		ev.playerid = plr_self;
-		ev.data = const_cast<unsigned char *>(info.data());
-		ev.databytes = info.size();
-		RunEventHandler(ev);
-	}
+	if (game_init_info == **info)
+		return { };
+	// Publish game state only after the full identity and assigned ID are validated.
+	game_init_info = **info;
+	_SNETEVENT ev;
+	ev.eventid = EVENT_TYPE_PLAYER_CREATE_GAME;
+	ev.playerid = plr_self;
+	ev.data = game_init_info.data();
+	ev.databytes = game_init_info.size();
+	RunEventHandler(ev);
 	return {};
+}
+
+std::expected<void, PacketError> base::HandleReject(packet &pkt)
+{
+	const auto cookie = pkt.Cookie();
+	if (!cookie.has_value())
+		return std::unexpected(cookie.error());
+	if (plr_self != PLR_BROADCAST || *cookie != cookie_self)
+		return { };
+	const auto info = pkt.Info();
+	if (!info.has_value())
+		return std::unexpected(info.error());
+	if ((*info)->size() != 1 || (**info)[0] > static_cast<uint8_t>(GameDataError::SessionMismatch))
+		return std::unexpected("Invalid join rejection");
+	joinError_.emplace(GameDataErrorMessage(static_cast<GameDataError>((**info)[0])));
+	return std::unexpected(*joinError_);
 }
 
 std::expected<void, PacketError> base::HandleConnect(packet &pkt)
@@ -194,6 +221,8 @@ void base::ClearMsg(plr_t plr)
 
 std::expected<void, PacketError> base::Connect(plr_t player)
 {
+	if (player >= playerStateTable_.size())
+		return std::unexpected("Invalid player ID");
 	PlayerState &playerState = playerStateTable_[player];
 	const bool wasConnected = playerState.isConnected;
 	playerState.isConnected = true;
@@ -215,6 +244,14 @@ bool base::IsConnected(plr_t player) const
 
 std::expected<void, PacketError> base::RecvLocal(packet &pkt)
 {
+	// Join messages must not mark their sender connected before validation.
+	if (pkt.Type() == PT_JOIN_ACCEPT || pkt.Type() == PT_JOIN_ACCEPT_EXTENDED)
+		return HandleAccept(pkt);
+	if (pkt.Type() == PT_JOIN_REJECT)
+		return HandleReject(pkt);
+	if ((pkt.Type() == PT_TURN || pkt.Type() == PT_MESSAGE)
+	    && (plr_self == PLR_BROADCAST || pkt.Source() >= playerStateTable_.size()))
+		return std::unexpected("Gameplay packet received before a valid join");
 	if (pkt.Source() < ClassicPlayerLimit) {
 		if (std::expected<void, PacketError> result = Connect(pkt.Source());
 		    !result.has_value()) {
@@ -228,8 +265,6 @@ std::expected<void, PacketError> base::RecvLocal(packet &pkt)
 		});
 	case PT_TURN:
 		return HandleTurn(pkt);
-	case PT_JOIN_ACCEPT:
-		return HandleAccept(pkt);
 	case PT_CONNECT:
 		return HandleConnect(pkt);
 	case PT_DISCONNECT:

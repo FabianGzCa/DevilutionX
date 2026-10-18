@@ -17,6 +17,7 @@
 
 #include <asio/connect.hpp>
 
+#include "dvlnet/session.hpp"
 #include "options.h"
 #include "utils/language.h"
 #include "utils/str_cat.hpp"
@@ -27,7 +28,7 @@ namespace devilution::net {
 int tcp_client::create(std::string_view addrstr)
 {
 	auto port = *GetOptions().Network.port;
-	local_server = std::make_unique<tcp_server>(ioc, std::string(addrstr), port, *pktfty);
+	local_server = std::make_unique<tcp_server>(ioc, std::string(addrstr), port, *pktfty, game_init_info);
 	return join(local_server->LocalhostSelf());
 }
 
@@ -92,8 +93,7 @@ int tcp_client::join(std::string_view addrstr)
 	{
 		cookie_self = packet_out::GenerateCookie();
 		std::expected<std::unique_ptr<packet>, PacketError> pkt
-		    = pktfty->make_packet<PT_JOIN_REQUEST>(
-		        PLR_BROADCAST, PLR_MASTER, cookie_self, game_init_info);
+		    = MakeJoinRequest(*pktfty, cookie_self, game_init_info);
 		if (!pkt.has_value()) {
 			const std::string_view message = pkt.error().what();
 			SDL_SetError("make_packet: %.*s", static_cast<int>(message.size()), message.data());

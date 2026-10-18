@@ -28,7 +28,7 @@ inline PacketError ServerError()
 class tcp_server {
 public:
 	tcp_server(asio::io_context &ioc, const std::string &bindaddr,
-	    unsigned short port, packet_factory &pktfty);
+	    unsigned short port, packet_factory &pktfty, buffer_t gameInfo);
 	std::string LocalhostSelf();
 	std::expected<void, PacketError> CheckIoHandlerError();
 	void DisconnectNet(plr_t plr);
@@ -46,6 +46,7 @@ private:
 		asio::ip::tcp::socket socket;
 		asio::steady_timer timer;
 		int timeout;
+		bool rejecting = false;
 		client_connection(asio::io_context &ioc)
 		    : socket(ioc)
 		    , timer(ioc)
@@ -65,7 +66,6 @@ private:
 
 	scc MakeConnection();
 	plr_t NextFree();
-	bool Empty();
 	void StartAccept();
 	void HandleAccept(const scc &con, const asio::error_code &ec);
 	void StartReceive(const scc &con);
@@ -75,7 +75,7 @@ private:
 	std::expected<void, PacketError> SendPacket(packet &pkt);
 	std::expected<void, PacketError> StartSend(const scc &con, packet &pkt);
 	std::expected<void, PacketError> StartSend(const scc &con, PacketError::ErrorCode errorCode);
-	std::expected<void, PacketError> StartSend(const scc &con, buffer_t pktData, uint16_t flags);
+	std::expected<void, PacketError> StartSend(const scc &con, buffer_t pktData, uint16_t flags, bool closeAfterSend = false);
 	void HandleSend(const scc &con, const asio::error_code &ec, size_t bytesSent);
 	void StartTimeout(const scc &con);
 	void HandleTimeout(const scc &con, const asio::error_code &ec);

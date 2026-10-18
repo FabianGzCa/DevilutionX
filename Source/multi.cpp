@@ -462,12 +462,16 @@ void HandleEvents(_SNETEVENT *pEvt)
 	switch (pEvt->eventid) {
 	case EVENT_TYPE_PLAYER_CREATE_GAME: {
 		GameData gameData;
-		if (pEvt->databytes < sizeof(GameData))
-			app_fatal(StrCat("Invalid packet size (<sizeof(GameData)): ", pEvt->databytes));
+		if (pEvt->data == nullptr || pEvt->databytes != sizeof(GameData) || playerId >= ClassicPlayerLimit) {
+			LogError("Invalid game creation event");
+			return;
+		}
 		std::memcpy(&gameData, pEvt->data, sizeof(gameData));
 		SwapGameDataLE(gameData);
-		if (gameData.size != sizeof(GameData))
-			app_fatal(StrCat("Invalid size of game data: ", gameData.size));
+		if (auto error = ValidateGameData(gameData)) {
+			LogError("{}", GameDataErrorMessage(*error));
+			return;
+		}
 		sgGameInitInfo = gameData;
 		sgbPlayerTurnBitTbl[playerId] = true;
 	} break;
@@ -601,6 +605,9 @@ void InitGameInfo()
 
 	sgGameInitInfo.size = sizeof(sgGameInitInfo);
 	sgGameInitInfo.isSpawn = gbIsSpawn ? 1 : 0;
+	sgGameInitInfo.rules = ClassicSessionRules;
+	sgGameInitInfo.isHellfire = gbIsHellfire ? 1 : 0;
+	sgGameInitInfo.reserved = 0;
 	sgGameInitInfo.programid = GetGameId();
 	sgGameInitInfo.versionMajor = PROJECT_VERSION_MAJOR;
 	sgGameInitInfo.versionMinor = PROJECT_VERSION_MINOR;

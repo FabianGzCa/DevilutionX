@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <ankerl/unordered_dense.h>
@@ -48,6 +49,7 @@ public:
 protected:
 	ankerl::unordered_dense::map<event_type, SEVTHANDLER> registered_handlers;
 	buffer_t game_init_info;
+	std::optional<PacketError> joinError_;
 
 	struct message_t {
 		uint8_t sender;
@@ -102,6 +104,7 @@ private:
 	void ClearMsg(plr_t plr);
 
 	std::expected<void, PacketError> HandleAccept(packet &pkt);
+	std::expected<void, PacketError> HandleReject(packet &pkt);
 	std::expected<void, PacketError> HandleConnect(packet &pkt);
 	std::expected<void, PacketError> HandleTurn(packet &pkt);
 	std::expected<void, PacketError> HandleDisconnect(packet &pkt);

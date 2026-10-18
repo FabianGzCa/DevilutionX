@@ -88,17 +88,30 @@ void selgame_Free()
 	selgame_FreeVectors();
 }
 
+std::optional<GameDataError> GameCompatibilityError(const GameData &data)
+{
+	GameData local = sgGameInitInfo;
+	local.size = sizeof(GameData);
+	local.versionMajor = PROJECT_VERSION_MAJOR;
+	local.versionMinor = PROJECT_VERSION_MINOR;
+	local.versionPatch = PROJECT_VERSION_PATCH;
+	local.isSpawn = gbIsSpawn ? 1 : 0;
+	local.isHellfire = gbIsHellfire ? 1 : 0;
+	return CheckGameCompatibility(data, local);
+}
+
 bool IsGameCompatible(const GameData &data)
 {
-	// TODO GetGameId is now only used cosmetic (gamelist icon), we need to check the enabled mods in addition to the below check
-	return data.versionMajor == PROJECT_VERSION_MAJOR
-	    && data.versionMinor == PROJECT_VERSION_MINOR
-	    && data.versionPatch == PROJECT_VERSION_PATCH
-	    && data.isSpawn == (gbIsSpawn ? 1 : 0);
+	// Mod identity beyond edition and session rules still needs its own handshake.
+	return !GameCompatibilityError(data).has_value();
 }
 
 static std::string GetErrorMessageIncompatibility(const GameData &data)
 {
+	if (auto error = GameCompatibilityError(data); error && *error != GameDataError::VersionMismatch && *error != GameDataError::EditionMismatch)
+		return std::string(GameDataErrorMessage(*error));
+	if (data.isExtended() && data.isHellfire != (gbIsHellfire ? 1 : 0))
+		return std::string(GameDataErrorMessage(GameDataError::EditionMismatch));
 	if (data.isSpawn != (gbIsSpawn ? 1 : 0)) {
 		if (data.isSpawn)
 			return std::string(_("The host is running the shareware edition."));

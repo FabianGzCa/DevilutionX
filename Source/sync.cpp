@@ -12,6 +12,7 @@
 #include "monster.h"
 #include "monsters/validation.hpp"
 #include "player.h"
+#include "storm/storm_net.hpp"
 #include "utils/endian_swap.hpp"
 #include "utils/is_of.hpp"
 
@@ -290,7 +291,10 @@ size_t OnSyncData(const TSyncHeader &header, size_t maxCmdSize, const Player &pl
 		return wLen + sizeof(header);
 	}
 
-	assert(header.wLen % sizeof(TSyncMonster) == 0);
+	if (wLen % sizeof(TSyncMonster) != 0) {
+		SNetDropPlayer(player.getId(), leaveinfo_t::LEAVE_DROP);
+		return wLen + sizeof(header);
+	}
 	const int monsterCount = static_cast<int>(wLen / sizeof(TSyncMonster));
 
 	const uint8_t level = header.bLevel;

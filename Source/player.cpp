@@ -70,7 +70,7 @@ bool MyPlayerIsDead;
 
 void ResizePlayersForSession(size_t count)
 {
-	assert(count <= static_cast<size_t>(SessionPlayerLimit));
+	assert(count <= static_cast<size_t>(PlayerStorageCapacity));
 	Players.reserve(PlayerStorageCapacity);
 	Players.resize(count);
 }

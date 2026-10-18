@@ -73,7 +73,7 @@ TEST_F(ClassicMultiplayerTest, PlayerLimitsAndReservedMonsterSlotRemainDistinct)
 {
 	EXPECT_EQ(ClassicPlayerLimit, 4);
 	EXPECT_EQ(SessionPlayerLimit, 4);
-	EXPECT_EQ(NoDeltaSender, SessionPlayerLimit);
+	EXPECT_GE(NoDeltaSender, PlayerStorageCapacity);
 	EXPECT_EQ(PlayerStorageCapacity, 8);
 	EXPECT_EQ(ZharMonsterIndex, 4U);
 	EXPECT_EQ(Players.size(), static_cast<size_t>(SessionPlayerLimit));

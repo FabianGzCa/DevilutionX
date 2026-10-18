@@ -22,6 +22,7 @@
 #include <config.h>
 
 #include "DiabloUI/diabloui.h"
+#include "cursor.h"
 #include "diablo.h"
 #include "engine/demomode.h"
 #include "engine/point.hpp"
@@ -52,16 +53,16 @@
 namespace devilution {
 
 bool gbSomebodyWonGameKludge;
-uint16_t sgwPackPlrOffsetTbl[ClassicPlayerLimit];
-bool sgbPlayerTurnBitTbl[ClassicPlayerLimit];
-bool sgbPlayerLeftGameTbl[ClassicPlayerLimit];
+uint16_t sgwPackPlrOffsetTbl[PlayerStorageCapacity];
+bool sgbPlayerTurnBitTbl[PlayerStorageCapacity];
+bool sgbPlayerLeftGameTbl[PlayerStorageCapacity];
 bool shareNextHighPriorityMessage;
 uint8_t gbActivePlayers;
 bool gbGameDestroyed;
-bool sgbSendDeltaTbl[ClassicPlayerLimit];
+bool sgbSendDeltaTbl[PlayerStorageCapacity];
 bool gbSelectProvider;
 int sglTimeoutStart;
-leaveinfo_t sgdwPlayerLeftReasonTbl[ClassicPlayerLimit];
+leaveinfo_t sgdwPlayerLeftReasonTbl[PlayerStorageCapacity];
 uint32_t sgdwGameLoops;
 bool sgbTimeout;
 std::string GameName;
@@ -69,8 +70,8 @@ std::string GamePassword;
 bool PublicGame;
 uint8_t gbDeltaSender;
 bool sgbNetInited;
-uint32_t player_state[ClassicPlayerLimit];
-Uint32 playerInfoTimers[ClassicPlayerLimit];
+uint32_t player_state[PlayerStorageCapacity];
+Uint32 playerInfoTimers[PlayerStorageCapacity];
 bool IsLoopback;
 
 /**
@@ -242,7 +243,7 @@ void HandleTurnUpperBit(uint8_t pnum)
 	if (MyPlayerId == i) {
 		sgbSendDeltaTbl[pnum] = true;
 	} else if (pnum == MyPlayerId) {
-		gbDeltaSender = i;
+		gbDeltaSender = i < Players.size() ? i : NoDeltaSender;
 	}
 }
 
@@ -263,16 +264,23 @@ void PlayerLeftMsg(Player &player, bool left)
 {
 	if (&player == InspectPlayer)
 		InspectPlayer = MyPlayer;
+	if (&player == PlayerUnderCursor)
+		PlayerUnderCursor = nullptr;
 
 	if (&player == MyPlayer)
 		return;
-	if (!player.plractive)
+	if (!player.plractive) {
+		player = { };
 		return;
+	}
 
 	FixPlrWalkTags(player);
-	RemovePortalMissile(player);
-	DeactivatePortal(player);
-	delta_close_portal(player);
+	// Portal storage is expanded separately, before extended games become public.
+	if (player.getId() < MAXPORTAL) {
+		RemovePortalMissile(player);
+		DeactivatePortal(player);
+		delta_close_portal(player);
+	}
 	RemoveEnemyReferences(player);
 	RemovePlrMissiles(player);
 	if (left) {
@@ -293,15 +301,13 @@ void PlayerLeftMsg(Player &player, bool left)
 		if (!IsLoopback) {
 			const uint8_t remainingPlayers = gbActivePlayers > 0 ? gbActivePlayers - 1 : 0;
 			if (player._pName[0] != '\0')
-				LogInfo("Player '{}' left the {} game ({}, {}/{} players)", player._pName, ConnectionNames[provider], reasonDescription, remainingPlayers, SessionPlayerLimit);
+				LogInfo("Player '{}' left the {} game ({}, {}/{} players)", player._pName, ConnectionNames[provider], reasonDescription, remainingPlayers, Players.size());
 			else
-				LogInfo("Player left the {} game ({}, {}/{} players)", ConnectionNames[provider], reasonDescription, remainingPlayers, SessionPlayerLimit);
+				LogInfo("Player left the {} game ({}, {}/{} players)", ConnectionNames[provider], reasonDescription, remainingPlayers, Players.size());
 		}
 		EventPlrMsg(FormatRuntime(pszFmt, player._pName));
 	}
-	player.plractive = false;
-	player._pName[0] = '\0';
-	ResetPlayerGFX(player);
+	player = { };
 	gbActivePlayers--;
 }
 
@@ -311,8 +317,17 @@ void ClearPlayerLeftState()
 		if (sgbPlayerLeftGameTbl[i]) {
 			if (gbBufferMsgs == 1)
 				msg_send_drop_pkt(i, sgdwPlayerLeftReasonTbl[i]);
-			else
+			else {
 				PlayerLeftMsg(Players[i], true);
+				sgwPackPlrOffsetTbl[i] = 0;
+				playerInfoTimers[i] = 0;
+				player_state[i] = 0;
+				gdwMsgLenTbl[i] = 0;
+				glpMsgTbl[i] = 0;
+				// Preserve classic XP divisors, including departed contributors.
+				if (sgGameInitInfo.rules == ExtendedSessionRules)
+					delta_remove_player(i);
+			}
 
 			sgbPlayerLeftGameTbl[i] = false;
 			sgdwPlayerLeftReasonTbl[i] = static_cast<leaveinfo_t>(0);
@@ -462,7 +477,7 @@ void HandleEvents(_SNETEVENT *pEvt)
 	switch (pEvt->eventid) {
 	case EVENT_TYPE_PLAYER_CREATE_GAME: {
 		GameData gameData;
-		if (pEvt->data == nullptr || pEvt->databytes != sizeof(GameData) || playerId >= ClassicPlayerLimit) {
+		if (pEvt->data == nullptr || pEvt->databytes != sizeof(GameData) || playerId >= PlayerStorageCapacity) {
 			LogError("Invalid game creation event");
 			return;
 		}
@@ -472,10 +487,17 @@ void HandleEvents(_SNETEVENT *pEvt)
 			LogError("{}", GameDataErrorMessage(*error));
 			return;
 		}
+		const size_t capacity = gameData.rules == ExtendedSessionRules ? PlayerStorageCapacity : ClassicPlayerLimit;
+		if (playerId >= capacity) {
+			LogError("Player ID exceeds session capacity");
+			return;
+		}
 		sgGameInitInfo = gameData;
 		sgbPlayerTurnBitTbl[playerId] = true;
 	} break;
 	case EVENT_TYPE_PLAYER_LEAVE_GAME: {
+		if (playerId >= Players.size())
+			return;
 		sgbPlayerLeftGameTbl[playerId] = true;
 		sgbPlayerTurnBitTbl[playerId] = false;
 
@@ -492,7 +514,7 @@ void HandleEvents(_SNETEVENT *pEvt)
 		sgbSendDeltaTbl[playerId] = false;
 
 		if (gbDeltaSender == playerId)
-			gbDeltaSender = NoDeltaSender;
+			delta_reset_transfer();
 	} break;
 	case EVENT_TYPE_PLAYER_MESSAGE: {
 		std::string_view data(static_cast<const char *>(pEvt->data), pEvt->databytes);
@@ -563,6 +585,7 @@ bool InitMulti(GameData *gameData)
 		gbSelectProvider = true;
 	}
 
+	ResizePlayersForSession(sgGameInitInfo.rules == ExtendedSessionRules ? PlayerStorageCapacity : ClassicPlayerLimit);
 	if (static_cast<size_t>(playerId) >= Players.size()) {
 		return false;
 	}
@@ -672,15 +695,24 @@ void multi_msg_countdown()
 {
 	for (uint8_t i = 0; i < Players.size(); i++) {
 		if ((player_state[i] & PS_TURN_ARRIVED) != 0) {
-			if (gdwMsgLenTbl[i] == sizeof(int32_t))
-				ParseTurn(i, *(int32_t *)glpMsgTbl[i]);
+			if (gdwMsgLenTbl[i] == sizeof(uint32_t) && glpMsgTbl[i] != 0) {
+				uint32_t turn;
+				memcpy(&turn, reinterpret_cast<const void *>(glpMsgTbl[i]), sizeof(turn));
+				ParseTurn(i, turn);
+			}
 		}
 	}
 }
 
 void multi_player_left(uint8_t pnum, leaveinfo_t reason)
 {
+	if (pnum >= Players.size() || pnum == MyPlayerId)
+		return;
 	sgbPlayerLeftGameTbl[pnum] = true;
+	sgbPlayerTurnBitTbl[pnum] = false;
+	sgbSendDeltaTbl[pnum] = false;
+	if (gbDeltaSender == pnum)
+		delta_reset_transfer();
 	sgdwPlayerLeftReasonTbl[pnum] = reason;
 	ClearPlayerLeftState();
 }
@@ -702,6 +734,9 @@ bool multi_handle_delta()
 		if (sgbSendDeltaTbl[i]) {
 			sgbSendDeltaTbl[i] = false;
 			DeltaExportData(i);
+			// Let the transport drain between large snapshots for concurrent joins.
+			if (sgGameInitInfo.rules == ExtendedSessionRules)
+				break;
 		}
 	}
 
@@ -784,6 +819,10 @@ void multi_send_zero_packet(uint8_t pnum, _cmd_id bCmd, const std::byte *data, s
 	assert(pnum != MyPlayerId);
 	assert(data != nullptr);
 	assert(size <= 0x0ffff);
+	if (size > 0x0ffff || gdwLargestMsgSize <= sizeof(TPktHdr) + sizeof(TCmdPlrInfoHdr) || gdwLargestMsgSize > sizeof(TPkt)) {
+		nthread_terminate_game("Invalid fragment size");
+		return;
+	}
 
 	for (size_t offset = 0; offset < size;) {
 		TPkt pkt {};
@@ -830,6 +869,7 @@ void NetClose()
 		Players.clear();
 		MyPlayer = nullptr;
 		InspectPlayer = nullptr;
+		PlayerUnderCursor = nullptr;
 	}
 }
 
@@ -846,7 +886,12 @@ bool NetInit(bool bSinglePlayer)
 		Players.clear();
 		MyPlayer = nullptr;
 		InspectPlayer = nullptr;
+		PlayerUnderCursor = nullptr;
 		memset(sgwPackPlrOffsetTbl, 0, sizeof(sgwPackPlrOffsetTbl));
+		memset(player_state, 0, sizeof(player_state));
+		memset(playerInfoTimers, 0, sizeof(playerInfoTimers));
+		memset(gdwMsgLenTbl, 0, sizeof(gdwMsgLenTbl));
+		memset(glpMsgTbl, 0, sizeof(glpMsgTbl));
 		SNetSetBasePlayer(0);
 		if (bSinglePlayer) {
 			if (!InitSingle(&sgGameInitInfo))
@@ -914,13 +959,20 @@ bool NetInit(bool bSinglePlayer)
 
 void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 {
-	static PlayerNetPack PackedPlayerBuffer[ClassicPlayerLimit];
+	static PlayerNetPack PackedPlayerBuffer[PlayerStorageCapacity];
 
 	if (&player == MyPlayer) {
 		return;
 	}
 	const uint8_t pnum = player.getId();
 	auto &packedPlayer = PackedPlayerBuffer[pnum];
+	const size_t offset = Swap16LE(header.wOffset);
+	const size_t bytes = Swap16LE(header.wBytes);
+	if (bytes == 0 || offset > sizeof(packedPlayer) || bytes > sizeof(packedPlayer) - offset) {
+		sgwPackPlrOffsetTbl[pnum] = 0;
+		SNetDropPlayer(pnum, leaveinfo_t::LEAVE_DROP);
+		return;
+	}
 
 	if (sgwPackPlrOffsetTbl[pnum] != Swap16LE(header.wOffset)) {
 		sgwPackPlrOffsetTbl[pnum] = 0;
@@ -932,6 +984,8 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 		SendPlayerInfo(pnum, CMD_ACK_PLRINFO);
 	}
 
+	if (offset == 0)
+		packedPlayer = { };
 	memcpy(reinterpret_cast<uint8_t *>(&packedPlayer) + Swap16LE(header.wOffset), reinterpret_cast<const uint8_t *>(&header) + sizeof(header), Swap16LE(header.wBytes));
 
 	sgwPackPlrOffsetTbl[pnum] += Swap16LE(header.wBytes);
@@ -959,7 +1013,7 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	if (sgbPlayerTurnBitTbl[pnum]) {
 		szEvent = _("Player '{:s}' (level {:d}) just joined the game");
 		if (!IsLoopback)
-			LogInfo("Player '{}' joined the {} game (level {}, {}/{} players)", player._pName, ConnectionNames[provider], player.getCharacterLevel(), gbActivePlayers, SessionPlayerLimit);
+			LogInfo("Player '{}' joined the {} game (level {}, {}/{} players)", player._pName, ConnectionNames[provider], player.getCharacterLevel(), gbActivePlayers, Players.size());
 	} else {
 		szEvent = _("Player '{:s}' (level {:d}) is already in the game");
 	}

@@ -34,6 +34,7 @@ set(tests
   math_test
   missiles_test
   multi_logging_test
+  multiplayer_sync_test
   pack_test
   player_test
   quests_test

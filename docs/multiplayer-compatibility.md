@@ -5,8 +5,10 @@
 Classic sessions retain four player slots and the existing wire layout. The
 extended descriptor reserves an eight-player protocol and balance revision;
 it does not enable eight-player gameplay or change balancing by itself. The
-transport supports eight slots internally; engine synchronization and public
-menus remain limited to four players until their implementation is complete.
+transport and engine synchronization support eight slots internally. Public
+menus still create classic sessions until the gameplay requirements are complete.
+See [Multiplayer synchronization](multiplayer-synchronization.md) for transfer
+limits and the remaining work.
 
 ## GameData contract
 

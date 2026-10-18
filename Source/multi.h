@@ -28,9 +28,9 @@ struct Player;
 // remain separate so the protocol limit does not define engine storage.
 constexpr int ClassicPlayerLimit = 4;
 constexpr int SessionPlayerLimit = 4;
-constexpr uint8_t NoDeltaSender = static_cast<uint8_t>(SessionPlayerLimit);
-// Reserve eight Player objects without changing the current four-slot session.
+// Engine storage is independent of the negotiated four- or eight-slot session.
 constexpr int PlayerStorageCapacity = 8;
+constexpr uint8_t NoDeltaSender = static_cast<uint8_t>(PlayerStorageCapacity);
 static_assert(SessionPlayerLimit <= PlayerStorageCapacity);
 static_assert(PlayerStorageCapacity <= static_cast<int>(PlayerExperienceMaskBitCount));
 static_assert(PlayerStorageCapacity <= static_cast<int>(PlayerRecipientMaskBitCount));
@@ -45,15 +45,15 @@ struct GameInfo {
 };
 
 extern bool gbSomebodyWonGameKludge;
-extern uint16_t sgwPackPlrOffsetTbl[ClassicPlayerLimit];
-extern uint8_t gbActivePlayers; // Live participants, not the session limit.
-extern bool gbGameDestroyed;
+extern DVL_API_FOR_TEST uint16_t sgwPackPlrOffsetTbl[PlayerStorageCapacity];
+extern DVL_API_FOR_TEST uint8_t gbActivePlayers; // Live participants, not the session limit.
+extern DVL_API_FOR_TEST bool gbGameDestroyed;
 extern bool gbSelectProvider;
 extern std::string GameName;
 extern std::string GamePassword;
 extern bool PublicGame;
-extern uint8_t gbDeltaSender;
-extern uint32_t player_state[ClassicPlayerLimit];
+extern DVL_API_FOR_TEST uint8_t gbDeltaSender;
+extern DVL_API_FOR_TEST uint32_t player_state[PlayerStorageCapacity];
 extern bool IsLoopback;
 
 void SwapGameDataLE(GameData &gameData);

@@ -922,7 +922,7 @@ extern DVL_API_FOR_TEST std::vector<Player> Players;
 /** Resizes session slots after reserving storage for the engine player capacity. */
 DVL_API_FOR_TEST void ResizePlayersForSession(size_t count);
 /** @brief What Player items and stats should be displayed? Normally this is identical to MyPlayer but can differ when /inspect was used. */
-extern Player *InspectPlayer;
+extern DVL_API_FOR_TEST Player *InspectPlayer;
 /** @brief Do we currently inspect a remote player (/inspect was used)? In this case the (remote) players items and stats can't be modified. */
 inline bool IsInspectingPlayer()
 {

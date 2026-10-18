@@ -12,12 +12,12 @@
 
 namespace devilution {
 
-extern uint8_t sgbNetUpdateRate;
-extern size_t gdwMsgLenTbl[ClassicPlayerLimit];
+extern DVL_API_FOR_TEST uint8_t sgbNetUpdateRate;
+extern DVL_API_FOR_TEST size_t gdwMsgLenTbl[PlayerStorageCapacity];
 extern uint32_t gdwTurnsInTransit;
-extern uintptr_t glpMsgTbl[ClassicPlayerLimit];
-extern uint32_t gdwLargestMsgSize;
-extern uint32_t gdwNormalMsgSize;
+extern DVL_API_FOR_TEST uintptr_t glpMsgTbl[PlayerStorageCapacity];
+extern DVL_API_FOR_TEST uint32_t gdwLargestMsgSize;
+extern DVL_API_FOR_TEST uint32_t gdwNormalMsgSize;
 /** @brief the progress as a fraction (see AnimationInfo::baseValueFraction) in time to the next game tick */
 extern DVL_API_FOR_TEST uint8_t ProgressToNextGameTick;
 extern int last_tick;

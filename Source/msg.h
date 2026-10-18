@@ -719,18 +719,24 @@ struct TPkt {
 };
 #pragma pack(pop)
 
-extern uint8_t gbBufferMsgs;
+extern DVL_API_FOR_TEST uint8_t gbBufferMsgs;
 extern int dwRecCount;
 
 void PrepareItemForNetwork(const Item &item, TItem &messageItem);
 void PrepareEarForNetwork(const Item &item, TEar &ear);
 void RecreateItem(const Player &player, const TItem &messageItem, Item &item);
 void msg_send_drop_pkt(uint8_t pnum, leaveinfo_t reason);
+/** Begin buffering player commands while receiving a fresh world snapshot. */
+void msg_start_resync();
 bool msg_wait_resync();
 void run_delta_info();
 void DeltaExportData(uint8_t pnum);
 void DeltaSyncJunk();
 void delta_init();
+/** Discard an incomplete snapshot when its donor disconnects. */
+void delta_reset_transfer();
+/** Clear damage contributions before a player slot can be reused. */
+void delta_remove_player(uint8_t playerId);
 void DeltaClearLevel(uint8_t level);
 void delta_kill_monster(const Monster &monster, Point position, const Player &player);
 void delta_monster_hp(const Monster &monster, const Player &player);

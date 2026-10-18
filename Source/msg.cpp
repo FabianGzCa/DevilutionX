@@ -5,13 +5,16 @@
  */
 #include "msg.h"
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <list>
 #include <memory>
+#include <utility>
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_timer.h>
@@ -239,6 +242,22 @@ struct DSpawnedMonster {
 	int16_t golemSpellLevel;
 };
 
+#pragma pack(push, 1)
+// Extended deltas must not transmit native size_t fields or structure padding.
+struct DSpawnedMonsterPack {
+	uint16_t typeIndex;
+	uint32_t seed;
+	uint8_t golemOwnerPlayerId;
+	uint16_t golemSpellLevel;
+};
+#pragma pack(pop)
+static_assert(sizeof(DSpawnedMonsterPack) == 9);
+
+size_t SpawnedMonsterDeltaSize()
+{
+	return sgGameInitInfo.rules == ExtendedSessionRules ? sizeof(DSpawnedMonsterPack) : sizeof(DSpawnedMonster);
+}
+
 struct DLevel {
 	TCmdPItem item[MAXITEMS];
 	ankerl::unordered_dense::map<WorldTilePosition, DObjectStr> object;
@@ -289,19 +308,29 @@ uint8_t sbLastCmd;
 /**
  * @brief buffer used to receive level deltas, size is the worst expected case assuming every object on a level was touched
  */
-std::byte sgRecvBuf[1U                                               /* marker byte, always 0 */
-    + sizeof(uint8_t)                                                /* level id */
-    + sizeof(DLevel::item)                                           /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
-    + sizeof(uint8_t)                                                /* count of object interactions which caused a state change since dungeon generation */
-    + ((sizeof(WorldTilePosition) + sizeof(_cmd_id)) * MAXOBJECTS)   /* location/action pairs for the object interactions */
-    + sizeof(DLevel::monster)                                        /* latest monster state */
-    + sizeof(uint16_t)                                               /* spawned monster count */
-    + ((sizeof(uint16_t) + sizeof(DSpawnedMonster)) * MaxMonsters)]; /* spawned monsters */
+constexpr size_t MaxLevelDeltaSize = 1U                                                                    /* marker byte, always 0 */
+    + sizeof(uint8_t)                                                                                      /* level id */
+    + sizeof(DLevel::item)                                                                                 /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
+    + sizeof(uint8_t)                                                                                      /* count of object interactions which caused a state change since dungeon generation */
+    + ((sizeof(WorldTilePosition) + sizeof(_cmd_id)) * MAXOBJECTS)                                         /* location/action pairs for the object interactions */
+    + sizeof(DLevel::monster)                                                                              /* latest monster state */
+    + sizeof(uint16_t)                                                                                     /* spawned monster count */
+    + ((sizeof(uint16_t) + std::max(sizeof(DSpawnedMonster), sizeof(DSpawnedMonsterPack))) * MaxMonsters); /* spawned monsters */
+// Reserve enough space for eight portals without changing the classic junk layout.
+constexpr size_t MaxJunkDeltaSize = 1 + sizeof(DJunk) + (PlayerStorageCapacity - MAXPORTAL) * sizeof(DPortal);
+std::byte sgRecvBuf[std::max(MaxLevelDeltaSize, MaxJunkDeltaSize)];
+static_assert(sizeof(sgRecvBuf) <= std::numeric_limits<uint16_t>::max());
 
 _cmd_id sgbRecvCmd;
 ankerl::unordered_dense::map<uint8_t, LocalLevel> LocalLevels;
 DJunk sgJunk;
+ankerl::unordered_dense::map<uint8_t, DLevel> PendingDeltaLevels;
+DJunk pendingJunk;
+uint8_t receivingDeltaSender = NoDeltaSender;
+bool receivedJunk;
+bool deltaTransferComplete;
 uint8_t sgbDeltaChunks;
+constexpr size_t MaxBufferedMegaPackets = 128;
 std::list<TMegaPkt> MegaPktList;
 Item ItemLimbo;
 
@@ -418,6 +447,18 @@ bool WasPlayerCmdAlreadyRequested(_cmd_id bCmd, Point position = {}, uint16_t wP
 	return false;
 }
 
+void ResetDeltaTransfer()
+{
+	sgdwRecvOffset = 0;
+	sgbRecvCmd = CMD_DLEVEL_END;
+	receivingDeltaSender = NoDeltaSender;
+	PendingDeltaLevels.clear();
+	memset(&pendingJunk, 0xFF, sizeof(pendingJunk));
+	receivedJunk = false;
+	deltaTransferComplete = false;
+	sgbDeltaChunks = 0;
+}
+
 void GetNextPacket()
 {
 	MegaPktList.emplace_back();
@@ -478,8 +519,14 @@ void PrePacket()
 
 void BufferMessage(const void *message, size_t messageSize)
 {
-	if (MegaPktList.back().spaceLeft < messageSize)
+	if (MegaPktList.back().spaceLeft < messageSize) {
+		if (MegaPktList.size() >= MaxBufferedMegaPackets) {
+			LogError("Too many commands buffered during resynchronization");
+			gbGameDestroyed = true;
+			return;
+		}
 		GetNextPacket();
+	}
 
 	TMegaPkt &currMegaPkt = MegaPktList.back();
 	memcpy(currMegaPkt.data + sizeof(currMegaPkt.data) - currMegaPkt.spaceLeft, message, messageSize);
@@ -531,15 +578,15 @@ int WaitForTurns()
 		return 100;
 	if (gbDeltaSender >= Players.size()) {
 		sgbDeltaChunks = 0;
-		sgbRecvCmd = CMD_DLEVEL_END;
+		ResetDeltaTransfer();
 		gbDeltaSender = MyPlayerId;
 		nthread_set_turn_upper_bit();
 	}
-	if (sgbDeltaChunks == MaxChunks - 1) {
+	if (deltaTransferComplete) {
 		sgbDeltaChunks = MaxChunks;
 		return 99;
 	}
-	return 100 * sgbDeltaChunks / static_cast<int>(MaxChunks);
+	return std::min(98, 100 * sgbDeltaChunks / static_cast<int>(MaxChunks));
 }
 
 std::byte *DeltaExportItem(std::byte *dst, const TCmdPItem *src)
@@ -560,13 +607,13 @@ const std::byte *DeltaImportItem(const std::byte *src, const std::byte *end, TCm
 {
 	size_t size = 0;
 	for (int i = 0; i < MAXITEMS; i++, dst++) {
-		if (&src[size] >= end)
+		if (size >= static_cast<size_t>(end - src))
 			return nullptr;
 		if (src[size] == std::byte { 0xFF }) {
 			memset(dst, 0xFF, sizeof(TCmdPItem));
 			size++;
 		} else {
-			if (&src[size] + sizeof(TCmdPItem) > end)
+			if (sizeof(TCmdPItem) > static_cast<size_t>(end - src) - size)
 				return nullptr;
 			memcpy(dst, &src[size], sizeof(TCmdPItem));
 			if (!IsItemDeltaValid(*dst))
@@ -602,7 +649,7 @@ const std::byte *DeltaImportObjects(const std::byte *src, const std::byte *end, 
 		return nullptr;
 
 	const size_t numBytes = (sizeof(WorldTilePosition) + sizeof(_cmd_id)) * numDeltas;
-	if (src + numBytes > end)
+	if (numBytes > static_cast<size_t>(end - src))
 		return nullptr;
 
 	dst.reserve(numDeltas);
@@ -637,13 +684,13 @@ const std::byte *DeltaImportMonster(const std::byte *src, const std::byte *end, 
 
 	size_t size = 0;
 	for (size_t i = 0; i < MaxMonsters; i++, dst++) {
-		if (&src[size] >= end)
+		if (size >= static_cast<size_t>(end - src))
 			return nullptr;
 		if (src[size] == std::byte { 0xFF }) {
 			memset(dst, 0xFF, sizeof(DMonsterStr));
 			size++;
 		} else {
-			if (&src[size] + sizeof(DMonsterStr) > end)
+			if (sizeof(DMonsterStr) > static_cast<size_t>(end - src) - size)
 				return nullptr;
 			memcpy(dst, &src[size], sizeof(DMonsterStr));
 			size += sizeof(DMonsterStr);
@@ -664,8 +711,17 @@ std::byte *DeltaExportSpawnedMonsters(std::byte *dst, const ankerl::unordered_de
 		memcpy(dst, &monsterId, sizeof(uint16_t));
 		dst += sizeof(uint16_t);
 
-		memcpy(dst, &deltaSpawnedMonster.second, sizeof(DSpawnedMonster));
-		dst += sizeof(DSpawnedMonster);
+		const auto &monster = deltaSpawnedMonster.second;
+		if (sgGameInitInfo.rules == ExtendedSessionRules) {
+			const DSpawnedMonsterPack packed {
+				Swap16LE(static_cast<uint16_t>(monster.typeIndex)), Swap32LE(monster.seed),
+				monster.golemOwnerPlayerId, Swap16LE(static_cast<uint16_t>(monster.golemSpellLevel))
+			};
+			memcpy(dst, &packed, sizeof(packed));
+		} else {
+			memcpy(dst, &monster, sizeof(monster));
+		}
+		dst += SpawnedMonsterDeltaSize();
 	}
 
 	return dst;
@@ -673,7 +729,7 @@ std::byte *DeltaExportSpawnedMonsters(std::byte *dst, const ankerl::unordered_de
 
 const std::byte *DeltaImportSpawnedMonsters(const std::byte *src, const std::byte *end, ankerl::unordered_dense::map<size_t, DSpawnedMonster> &spawnedMonsters)
 {
-	if (src == nullptr || src + sizeof(uint16_t) > end)
+	if (src == nullptr || static_cast<size_t>(end - src) < sizeof(uint16_t))
 		return nullptr;
 
 	uint16_t size;
@@ -683,19 +739,29 @@ const std::byte *DeltaImportSpawnedMonsters(const std::byte *src, const std::byt
 	if (size > MaxMonsters)
 		return nullptr;
 
-	const size_t requiredBytes = (sizeof(uint16_t) + sizeof(DSpawnedMonster)) * size;
-	if (src + requiredBytes > end)
+	const size_t requiredBytes = (sizeof(uint16_t) + SpawnedMonsterDeltaSize()) * size;
+	if (requiredBytes > static_cast<size_t>(end - src))
 		return nullptr;
 
 	for (size_t i = 0; i < size; i++) {
 		uint16_t monsterId;
 		memcpy(&monsterId, src, sizeof(uint16_t));
 		monsterId = Swap16LE(monsterId);
+		if (monsterId >= MaxMonsters || spawnedMonsters.contains(monsterId))
+			return nullptr;
 		src += sizeof(uint16_t);
 
-		DSpawnedMonster spawnedMonster;
-		memcpy(&spawnedMonster, src, sizeof(DSpawnedMonster));
-		src += sizeof(DSpawnedMonster);
+		DSpawnedMonster spawnedMonster { };
+		if (sgGameInitInfo.rules == ExtendedSessionRules) {
+			DSpawnedMonsterPack packed;
+			memcpy(&packed, src, sizeof(packed));
+			spawnedMonster = { Swap16LE(packed.typeIndex), Swap32LE(packed.seed), packed.golemOwnerPlayerId, static_cast<int16_t>(Swap16LE(packed.golemSpellLevel)) };
+		} else {
+			memcpy(&spawnedMonster, src, sizeof(spawnedMonster));
+		}
+		if (spawnedMonster.typeIndex >= MaxLvlMTypes || spawnedMonster.golemOwnerPlayerId >= Players.size() || spawnedMonster.golemSpellLevel < 0)
+			return nullptr;
+		src += SpawnedMonsterDeltaSize();
 		spawnedMonsters.emplace(monsterId, spawnedMonster);
 	}
 
@@ -731,16 +797,16 @@ std::byte *DeltaExportJunk(std::byte *dst)
 	return dst;
 }
 
-const std::byte *DeltaImportJunk(const std::byte *src, const std::byte *end)
+const std::byte *DeltaImportJunk(const std::byte *src, const std::byte *end, DJunk &junk)
 {
-	for (DPortal &portal : sgJunk.portal) {
+	for (DPortal &portal : junk.portal) {
 		if (src >= end)
 			return nullptr;
 		if (*src == std::byte { 0xFF }) {
 			memset(&portal, 0xFF, sizeof(DPortal));
 			src++;
 		} else {
-			if (src + sizeof(DPortal) > end)
+			if (static_cast<size_t>(end - src) < sizeof(DPortal))
 				return nullptr;
 			memcpy(&portal, src, sizeof(DPortal));
 			if (!IsPortalDeltaValid(portal))
@@ -754,12 +820,12 @@ const std::byte *DeltaImportJunk(const std::byte *src, const std::byte *end)
 		if (QuestsData[qidx].isSinglePlayerOnly && UseMultiplayerQuests()) {
 			continue;
 		}
-		if (src + sizeof(MultiQuests) > end) {
+		if (static_cast<size_t>(end - src) < sizeof(MultiQuests)) {
 			return nullptr;
 		}
-		memcpy(&sgJunk.quests[q], src, sizeof(MultiQuests));
-		if (!IsQuestDeltaValid(static_cast<quest_id>(qidx), sgJunk.quests[q])) {
-			sgJunk.quests[q].qstate = QUEST_INVALID;
+		memcpy(&junk.quests[q], src, sizeof(MultiQuests));
+		if (!IsQuestDeltaValid(static_cast<quest_id>(qidx), junk.quests[q])) {
+			junk.quests[q].qstate = QUEST_INVALID;
 		}
 		src += sizeof(MultiQuests);
 		q++;
@@ -783,46 +849,52 @@ uint32_t CompressData(std::byte *buffer, std::byte *end)
 #endif
 }
 
-void DeltaImportData(_cmd_id cmd, uint32_t recvOffset, int pnum)
+bool DeltaImportData(_cmd_id cmd, uint32_t recvOffset)
 {
-	size_t deltaSize = recvOffset;
-
+	if (recvOffset < 2 || recvOffset > sizeof(sgRecvBuf))
+		return false;
+	const auto marker = static_cast<uint8_t>(sgRecvBuf[0]);
+	if (marker > 1)
+		return false;
+	size_t deltaSize = recvOffset - 1;
 #ifdef USE_PKWARE
-	if (sgRecvBuf[0] != std::byte { 0 }) {
+	if (marker != 0) {
 		deltaSize = PkwareDecompress(&sgRecvBuf[1], static_cast<uint32_t>(deltaSize), sizeof(sgRecvBuf) - 1);
-		if (deltaSize == 0) {
-			Log("PKWare decompression failure, dropping player {}", pnum);
-			SNetDropPlayer(pnum, leaveinfo_t::LEAVE_DROP);
-			return;
-		}
+		if (deltaSize == 0)
+			return false;
 	}
+#else
+	if (marker != 0)
+		return false;
 #endif
 
 	const std::byte *src = &sgRecvBuf[1];
 	const std::byte *end = src + deltaSize;
 	if (cmd == CMD_DLEVEL_JUNK) {
-		src = DeltaImportJunk(src, end);
+		if (receivedJunk)
+			return false;
+		src = DeltaImportJunk(src, end, pendingJunk);
+		if (src != end)
+			return false;
+		receivedJunk = true;
 	} else if (cmd == CMD_DLEVEL) {
-		auto i = static_cast<uint8_t>(src[0]);
-		src += sizeof(uint8_t);
-		DLevel &deltaLevel = GetDeltaLevel(i);
+		const auto level = static_cast<uint8_t>(*src++);
+		if (!IsValidLevelForMultiplayer(level) || receivedJunk || PendingDeltaLevels.contains(level))
+			return false;
+		DLevel deltaLevel;
 		src = DeltaImportItem(src, end, deltaLevel.item);
 		src = DeltaImportObjects(src, end, deltaLevel.object);
 		src = DeltaImportMonster(src, end, deltaLevel.monster);
 		src = DeltaImportSpawnedMonsters(src, end, deltaLevel.spawnedMonsters);
+		if (src != end)
+			return false;
+		PendingDeltaLevels.emplace(level, std::move(deltaLevel));
 	} else {
-		Log("Received invalid deltas, dropping player {}", pnum);
-		SNetDropPlayer(pnum, leaveinfo_t::LEAVE_DROP);
-		return;
-	}
-
-	if (src == nullptr) {
-		Log("Received invalid deltas, dropping player {}", pnum);
-		SNetDropPlayer(pnum, leaveinfo_t::LEAVE_DROP);
-		return;
+		return false;
 	}
 
 	sgbDeltaChunks++;
+	return true;
 }
 
 void DeltaLoadSpawnedMonsters(const DLevel &deltaLevel)
@@ -968,53 +1040,62 @@ void DeltaLoadItems(const DLevel &deltaLevel)
 
 size_t OnLevelData(const TCmdPlrInfoHdr &message, size_t maxCmdSize, const Player &player)
 {
-	const uint16_t wBytes = Swap16LE(message.wBytes);
-	const uint16_t wOffset = Swap16LE(message.wOffset);
-
-	if (!ValidateCmdSize(wBytes + sizeof(message), maxCmdSize, player.getId()))
+	const uint16_t bytes = Swap16LE(message.wBytes);
+	const uint16_t offset = Swap16LE(message.wOffset);
+	const size_t size = bytes + sizeof(message);
+	const uint8_t playerId = player.getId();
+	if (!ValidateCmdSize(size, maxCmdSize, playerId))
 		return maxCmdSize;
+	if (gbBufferMsgs != 1 || playerId == MyPlayerId)
+		return size;
 
-	if (gbDeltaSender != player.getId()) {
-		if (message.bCmd != CMD_DLEVEL_END && (message.bCmd != CMD_DLEVEL || wOffset != 0)) {
-			return wBytes + sizeof(message);
-		}
-
-		gbDeltaSender = player.getId();
-		sgbRecvCmd = CMD_DLEVEL_END;
+	// The selected donor owns the transfer until it leaves. Other peers cannot
+	// replace a partially received snapshot by sending their own first fragment.
+	if (gbDeltaSender != playerId) {
+		if (gbDeltaSender < Players.size() && gbDeltaSender != MyPlayerId)
+			return size;
+		if (offset != 0 || IsNoneOf(message.bCmd, CMD_DLEVEL, CMD_DLEVEL_JUNK))
+			return size;
+		gbDeltaSender = playerId;
+	}
+	if (receivingDeltaSender != playerId) {
+		ResetDeltaTransfer();
+		receivingDeltaSender = playerId;
+		sgbDeltaChunks = 1;
 	}
 
-	if (sgbRecvCmd == CMD_DLEVEL_END) {
-		if (message.bCmd == CMD_DLEVEL_END) {
-			sgbDeltaChunks = MaxChunks - 1;
-			return wBytes + sizeof(message);
-		}
-		if (message.bCmd != CMD_DLEVEL || wOffset != 0) {
-			return wBytes + sizeof(message);
-		}
+	const auto reject = [&]() {
+		Log("Received invalid deltas, dropping player {}", playerId);
+		ResetDeltaTransfer();
+		gbDeltaSender = NoDeltaSender;
+		SNetDropPlayer(playerId, leaveinfo_t::LEAVE_DROP);
+		return size;
+	};
 
+	if (bytes == 0)
+		return reject();
+	if (sgbRecvCmd != message.bCmd || offset == 0) {
+		if (sgbRecvCmd != CMD_DLEVEL_END && !DeltaImportData(sgbRecvCmd, sgdwRecvOffset))
+			return reject();
+		if (message.bCmd == CMD_DLEVEL_END) {
+			if (!receivedJunk || bytes != 1 || offset != 0 || *reinterpret_cast<const std::byte *>(&message + 1) != std::byte { 0 })
+				return reject();
+			DeltaLevels = std::move(PendingDeltaLevels);
+			sgJunk = pendingJunk;
+			ResetDeltaTransfer();
+			sgbDeltaChunks = MaxChunks - 1;
+			deltaTransferComplete = true;
+			return size;
+		}
 		sgdwRecvOffset = 0;
 		sgbRecvCmd = message.bCmd;
-	} else if (sgbRecvCmd != message.bCmd || wOffset == 0) {
-		DeltaImportData(sgbRecvCmd, sgdwRecvOffset, player.getId());
-		if (message.bCmd == CMD_DLEVEL_END) {
-			sgbDeltaChunks = MaxChunks - 1;
-			sgbRecvCmd = CMD_DLEVEL_END;
-			return wBytes + sizeof(message);
-		}
-		sgdwRecvOffset = 0;
-		sgbRecvCmd = message.bCmd;
 	}
 
-	if (sgdwRecvOffset + wBytes > sizeof(sgRecvBuf)) {
-		Log("Received too many deltas, dropping player {}", player.getId());
-		SNetDropPlayer(player.getId(), leaveinfo_t::LEAVE_DROP);
-		return wBytes + sizeof(message);
-	}
-
-	assert(wOffset == sgdwRecvOffset);
-	memcpy(&sgRecvBuf[sgdwRecvOffset], &message + 1, wBytes);
-	sgdwRecvOffset += wBytes;
-	return wBytes + sizeof(message);
+	if (offset != sgdwRecvOffset || bytes > sizeof(sgRecvBuf) - sgdwRecvOffset)
+		return reject();
+	memcpy(&sgRecvBuf[sgdwRecvOffset], &message + 1, bytes);
+	sgdwRecvOffset += bytes;
+	return size;
 }
 
 void DeltaLeaveSync(uint8_t bLevel)
@@ -2092,6 +2173,8 @@ size_t OnPlayerDamage(const TCmdDamage &message, Player &player)
 {
 	const uint32_t damage = Swap32LE(message.dwDam);
 
+	if (message.bPlr >= Players.size())
+		return sizeof(message);
 	Player &target = Players[message.bPlr];
 	if (&target == MyPlayer && leveltype != DTYPE_TOWN && gbBufferMsgs != 1) {
 		if (player.isOnActiveLevel() && damage <= 192000 && !target.hasNoLife()) {
@@ -2618,14 +2701,15 @@ size_t OnSpawnMonster(const TCmdSpawnMonster &message, const Player &player)
 	auto typeIndex = static_cast<size_t>(Swap16LE(message.typeIndex));
 	auto monsterId = static_cast<size_t>(Swap16LE(message.monsterId));
 	const uint8_t golemOwnerPlayerId = message.golemOwnerPlayerId;
-	if (golemOwnerPlayerId >= Players.size()) {
+	if (monsterId >= MaxMonsters || typeIndex >= MaxLvlMTypes || !InDungeonBounds(position) || golemOwnerPlayerId >= Players.size()) {
 		return sizeof(message);
 	}
 	const uint8_t golemSpellLevel = std::min(message.golemSpellLevel, static_cast<uint8_t>(MaxSpellLevel + Players[golemOwnerPlayerId]._pISplLvlAdd));
 
 	DLevel &deltaLevel = GetDeltaLevel(player);
 
-	deltaLevel.spawnedMonsters[monsterId] = { typeIndex, message.seed, golemOwnerPlayerId, golemSpellLevel };
+	const uint32_t seed = sgGameInitInfo.rules == ExtendedSessionRules ? Swap32LE(message.seed) : message.seed;
+	deltaLevel.spawnedMonsters[monsterId] = { typeIndex, seed, golemOwnerPlayerId, golemSpellLevel };
 	// Override old monster delta information
 	auto &deltaMonster = deltaLevel.monster[monsterId];
 	deltaMonster.position = position;
@@ -2634,7 +2718,7 @@ size_t OnSpawnMonster(const TCmdSpawnMonster &message, const Player &player)
 	deltaMonster.mactive = 0;
 
 	if (player.isOnActiveLevel() && &player != MyPlayer)
-		InitializeSpawnedMonster(position, message.dir, typeIndex, monsterId, message.seed, golemOwnerPlayerId, golemSpellLevel);
+		InitializeSpawnedMonster(position, message.dir, typeIndex, monsterId, seed, golemOwnerPlayerId, golemSpellLevel);
 	return sizeof(message);
 }
 
@@ -2732,17 +2816,21 @@ void msg_send_drop_pkt(uint8_t pnum, leaveinfo_t reason)
 	BufferMessage(pnum, &cmd, sizeof(cmd));
 }
 
-bool msg_wait_resync()
+void msg_start_resync()
 {
-	bool success;
-
+	FreePackets();
 	GetNextPacket();
 	sgbDeltaChunks = 0;
 	sgnCurrMegaPlayer = -1;
-	sgbRecvCmd = CMD_DLEVEL_END;
+	ResetDeltaTransfer();
 	gbBufferMsgs = 1;
 	sgdwOwnerWait = SDL_GetTicks();
-	success = UiProgressDialog(WaitForTurns);
+}
+
+bool msg_wait_resync()
+{
+	msg_start_resync();
+	const bool success = UiProgressDialog(WaitForTurns);
 	gbBufferMsgs = 0;
 	if (!success) {
 		FreePackets();
@@ -2755,7 +2843,7 @@ bool msg_wait_resync()
 		return false;
 	}
 
-	if (sgbDeltaChunks != MaxChunks) {
+	if (!deltaTransferComplete || sgbDeltaChunks != MaxChunks) {
 		UiErrorOkDialog(PROJECT_NAME, _("Unable to get level data"), /*error=*/false);
 		FreePackets();
 		return false;
@@ -2778,14 +2866,18 @@ void run_delta_info()
 void DeltaExportData(uint8_t pnum)
 {
 	for (const auto &[levelNum, deltaLevel] : DeltaLevels) {
-		const size_t bufferSize = 1U                                                              /* marker byte, always 0 */
-		    + sizeof(uint8_t)                                                                     /* level id */
-		    + sizeof(deltaLevel.item)                                                             /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
-		    + sizeof(uint8_t)                                                                     /* count of object interactions which caused a state change since dungeon generation */
-		    + ((sizeof(WorldTilePosition) + sizeof(DObjectStr)) * deltaLevel.object.size())       /* location/action pairs for the object interactions */
-		    + sizeof(deltaLevel.monster)                                                          /* latest monster state */
-		    + sizeof(uint16_t)                                                                    /* spawned monster count */
-		    + ((sizeof(uint16_t) + sizeof(DSpawnedMonster)) * deltaLevel.spawnedMonsters.size()); /* spawned monsters */
+		const size_t bufferSize = 1U                                                                /* marker byte, always 0 */
+		    + sizeof(uint8_t)                                                                       /* level id */
+		    + sizeof(deltaLevel.item)                                                               /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
+		    + sizeof(uint8_t)                                                                       /* count of object interactions which caused a state change since dungeon generation */
+		    + ((sizeof(WorldTilePosition) + sizeof(DObjectStr)) * deltaLevel.object.size())         /* location/action pairs for the object interactions */
+		    + sizeof(deltaLevel.monster)                                                            /* latest monster state */
+		    + sizeof(uint16_t)                                                                      /* spawned monster count */
+		    + ((sizeof(uint16_t) + SpawnedMonsterDeltaSize()) * deltaLevel.spawnedMonsters.size()); /* spawned monsters */
+		if (bufferSize > sizeof(sgRecvBuf) || deltaLevel.object.size() > MAXOBJECTS || deltaLevel.spawnedMonsters.size() > MaxMonsters) {
+			nthread_terminate_game("Delta exceeds transfer capacity");
+			return;
+		}
 		const std::unique_ptr<std::byte[]> dst { new std::byte[bufferSize] };
 
 		std::byte *dstEnd = &dst.get()[1];
@@ -2814,6 +2906,30 @@ void delta_init()
 	memset(&sgJunk, 0xFF, sizeof(sgJunk));
 	DeltaLevels.clear();
 	LocalLevels.clear();
+	ResetDeltaTransfer();
+}
+
+void delta_reset_transfer()
+{
+	ResetDeltaTransfer();
+	gbDeltaSender = NoDeltaSender;
+}
+
+void delta_remove_player(uint8_t playerId)
+{
+	const auto clearBit = [playerId](PlayerExperienceMask mask) {
+		return PlayerExperienceMaskFromByte(PlayerExperienceMaskToByte(mask) & ~PlayerExperienceBit(playerId).bits);
+	};
+	for (Monster &monster : Monsters)
+		monster.whoHit = clearBit(monster.whoHit);
+	const auto clearLevels = [&](auto &levels) {
+		for (auto &[level, delta] : levels) {
+			for (DMonsterStr &monster : delta.monster)
+				monster.mWhoHit = clearBit(monster.mWhoHit);
+		}
+	};
+	clearLevels(DeltaLevels);
+	clearLevels(PendingDeltaLevels);
 }
 
 void DeltaClearLevel(uint8_t level)
@@ -3344,6 +3460,8 @@ bool ValidateCmdSize(size_t requiredCmdSize, size_t maxCmdSize, size_t playerId)
 
 size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize)
 {
+	if (pnum >= Players.size() || maxCmdSize < sizeof(TCmd))
+		return 0;
 	sbLastCmd = pCmd->bCmd;
 	if (sgwPackPlrOffsetTbl[pnum] != 0 && sbLastCmd != CMD_ACK_PLRINFO && sbLastCmd != CMD_SEND_PLRINFO)
 		return 0;

@@ -24,6 +24,7 @@
 #include "engine/world_tile.hpp"
 #include "game_mode.hpp"
 #include "levels/dun_tile.hpp"
+#include "player_mask.hpp"
 #include "tables/misdat.h"
 #include "tables/monstdat.h"
 #include "tables/spelldat.h"
@@ -276,7 +277,7 @@ struct Monster { // note: missing field _mAFNum
 	UniqueMonsterType uniqueType;
 	uint8_t uniqTrans;
 	int8_t corpseId;
-	int8_t whoHit;
+	PlayerExperienceMask whoHit;
 	uint8_t minDamage;
 	uint8_t maxDamage;
 	uint8_t minDamageSpecial;

@@ -38,14 +38,14 @@ void ResetChatMessage()
 	if (CheckChatCommand(TalkMessage))
 		return;
 
-	uint32_t pmask = 0;
+	PlayerRecipientMask recipients { 0 };
 
 	for (size_t i = 0; i < Players.size(); i++) {
 		if (WhisperList[i])
-			pmask |= 1 << i;
+			recipients = AddPlayerToRecipientMask(recipients, i);
 	}
 
-	NetSendCmdString(pmask, TalkMessage);
+	NetSendCmdString(recipients, TalkMessage);
 }
 
 void ControlPressEnter()
@@ -302,7 +302,7 @@ void DiabloHotkeyMsg(uint32_t dwMsg)
 #endif
 		char charMsg[MAX_SEND_STR_LEN];
 		CopyUtf8(charMsg, msg, sizeof(charMsg));
-		NetSendCmdString(0xFFFFFF, charMsg);
+		NetSendCmdString(AllPlayerRecipients(), charMsg);
 	}
 }
 

@@ -226,7 +226,7 @@ void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point positio
 	monster.lightId = NO_LIGHT;
 	monster.rndItemSeed = AdvanceRndSeed();
 	monster.aiSeed = AdvanceRndSeed();
-	monster.whoHit = 0;
+	monster.whoHit = { };
 	monster.minDamage = monster.data().minDamage;
 	monster.maxDamage = monster.data().maxDamage;
 	monster.minDamageSpecial = monster.data().minDamageSpecial;
@@ -4980,7 +4980,7 @@ bool Monster::isPossibleToHit() const
 
 void Monster::tag(const Player &tagger)
 {
-	whoHit |= 1 << tagger.getId();
+	whoHit = AddPlayerToExperienceMask(whoHit, tagger.getId());
 }
 
 bool Monster::tryLiftGargoyle()

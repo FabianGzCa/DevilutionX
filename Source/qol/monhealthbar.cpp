@@ -175,10 +175,14 @@ void DrawMonsterHealthBar(const Surface &out)
 	if (Players.size() > 1) {
 		int tagOffset = 5;
 		for (size_t i = 0; i < Players.size(); i++) {
-			if (((1U << i) & monster.whoHit) != 0) {
-				RenderClxSprite(out, (*playerExpTags)[i + 1], position + Displacement { tagOffset, height - 31 });
-			} else if (Players[i].plractive) {
-				RenderClxSprite(out, (*playerExpTags)[0], position + Displacement { tagOffset, height - 31 });
+			const size_t playerTag = i + 1;
+			// The original art only contains distinct tags for the four classic players.
+			if (playerTag < (*playerExpTags).numSprites()) {
+				if (IsPlayerInExperienceMask(monster.whoHit, i)) {
+					RenderClxSprite(out, (*playerExpTags)[playerTag], position + Displacement { tagOffset, height - 31 });
+				} else if (Players[i].plractive) {
+					RenderClxSprite(out, (*playerExpTags)[0], position + Displacement { tagOffset, height - 31 });
+				}
 			}
 			tagOffset += (*playerExpTags)[0].width();
 		}

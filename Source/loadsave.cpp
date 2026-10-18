@@ -722,7 +722,7 @@ bool gbSkipSync = false;
 	monster.uniqTrans = file->NextLE<uint8_t>();
 	monster.corpseId = file->NextLE<int8_t>();
 
-	monster.whoHit = file->NextLE<int8_t>();
+	monster.whoHit = PlayerExperienceMaskFromByte(file->NextLE<uint8_t>());
 	if (monsterConversionData != nullptr)
 		monsterConversionData->monsterLevel = file->NextLE<int8_t>();
 	else
@@ -1571,7 +1571,7 @@ void SaveMonster(SaveHelper *file, Monster &monster, MonsterConversionData *mons
 	file->WriteLE<uint8_t>(monster.uniqTrans);
 	file->WriteLE<int8_t>(monster.corpseId);
 
-	file->WriteLE<int8_t>(monster.whoHit);
+	file->WriteLE<uint8_t>(PlayerExperienceMaskToByte(monster.whoHit));
 	if (monsterConversionData != nullptr)
 		file->WriteLE<int8_t>(monsterConversionData->monsterLevel);
 	else

@@ -644,16 +644,15 @@ void NetSendHiPri(uint8_t playerId, const std::byte *data, size_t size)
 	}
 }
 
-void multi_send_msg_packet(uint32_t pmask, const std::byte *data, size_t size)
+void multi_send_msg_packet(PlayerRecipientMask recipients, const std::byte *data, size_t size)
 {
 	TPkt pkt;
 	NetReceivePlayerData(&pkt);
 	const size_t len = size + sizeof(pkt.hdr);
 	pkt.hdr.wLen = Swap16LE(static_cast<uint16_t>(len));
 	memcpy(pkt.body, data, size);
-	uint8_t playerID = 0;
-	for (uint32_t v = 1; playerID < Players.size(); playerID++, v <<= 1) {
-		if ((v & pmask) != 0) {
+	for (uint8_t playerID = 0; playerID < Players.size(); playerID++) {
+		if (IsPlayerInRecipientMask(recipients, playerID)) {
 			if (!SNetSendMessage(playerID, &pkt.hdr, len)) {
 				nthread_terminate_game("SNetSendMessage");
 				return;

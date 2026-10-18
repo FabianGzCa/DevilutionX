@@ -46,7 +46,7 @@ uint32_t GetLifelessPlayersMask()
 	uint32_t mask = 0;
 	for (const Player &player : Players) {
 		if (player.hasNoLife())
-			mask |= 1U << player.getId();
+			mask |= uint32_t { 1 } << player.getId();
 	}
 	return mask;
 }

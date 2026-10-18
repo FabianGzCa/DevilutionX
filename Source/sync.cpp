@@ -204,7 +204,7 @@ void SyncMonster(bool isOwner, const TSyncMonster &monsterSync)
 	}
 
 	decode_enemy(monster, enemyId);
-	monster.whoHit = static_cast<int8_t>(monster.whoHit | monsterSync.mWhoHit);
+	monster.whoHit = MergePlayerExperienceMasks(monster.whoHit, monsterSync.mWhoHit);
 }
 
 bool IsTSyncMonsterValid(const TSyncMonster &monsterSync)

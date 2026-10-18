@@ -14,6 +14,7 @@
 #include "dvlnet/leaveinfo.hpp"
 #include "game_mode.hpp"
 #include "msg.h"
+#include "player_mask.hpp"
 #include "utils/attributes.h"
 
 namespace devilution {
@@ -31,6 +32,8 @@ constexpr uint8_t NoDeltaSender = static_cast<uint8_t>(SessionPlayerLimit);
 // Reserve eight Player objects without changing the current four-slot session.
 constexpr int PlayerStorageCapacity = 8;
 static_assert(SessionPlayerLimit <= PlayerStorageCapacity);
+static_assert(PlayerStorageCapacity <= static_cast<int>(PlayerExperienceMaskBitCount));
+static_assert(PlayerStorageCapacity <= static_cast<int>(PlayerRecipientMaskBitCount));
 
 /* @brief Contains info of running public game (for game list browsing) */
 struct GameInfo {
@@ -60,7 +63,7 @@ std::string FormatGameSeed(const uint32_t gameSeed[4]);
 void InitGameInfo();
 void NetSendLoPri(uint8_t playerId, const std::byte *data, size_t size);
 void NetSendHiPri(uint8_t playerId, const std::byte *data, size_t size);
-void multi_send_msg_packet(uint32_t pmask, const std::byte *data, size_t size);
+void multi_send_msg_packet(PlayerRecipientMask recipients, const std::byte *data, size_t size);
 void multi_msg_countdown();
 void multi_player_left(uint8_t pnum, leaveinfo_t reason);
 void multi_net_ping();

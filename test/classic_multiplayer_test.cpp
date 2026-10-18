@@ -1,6 +1,8 @@
 #include <array>
 #include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include <gtest/gtest.h>
 
@@ -10,6 +12,7 @@
 #include "monster.h"
 #include "multi.h"
 #include "player.h"
+#include "player_mask.hpp"
 #include "portal.h"
 #include "storm/storm_net.hpp"
 #include "tables/playerdat.hpp"
@@ -129,9 +132,10 @@ TEST_F(ClassicMultiplayerTest, ExperienceIsSharedOnlyAmongContributors)
 			for (Player &player : Players)
 				player._pExperience = 0;
 
-			AddPlrMonstExper(1, 37, static_cast<char>(mask));
+			const PlayerExperienceMask contributorsMask = PlayerExperienceMaskFromByte(static_cast<uint8_t>(mask));
+			AddPlrMonstExper(1, 37, contributorsMask);
 
-			const bool contributed = (mask & (1U << localPlayer)) != 0;
+			const bool contributed = IsPlayerInExperienceMask(contributorsMask, localPlayer);
 			const unsigned expected = contributed ? 37 / contributors : 0;
 			EXPECT_EQ(MyPlayer->_pExperience, expected);
 			for (const Player &player : Players) {
@@ -143,9 +147,115 @@ TEST_F(ClassicMultiplayerTest, ExperienceIsSharedOnlyAmongContributors)
 	}
 }
 
+TEST_F(ClassicMultiplayerTest, ExperienceMasksDistributeAcrossAllEightPlayers)
+{
+	Players.resize(PlayerStorageCapacity);
+	for (Player &player : Players) {
+		player.setCharacterLevel(1);
+		player._pHitPoints = Fixed26_6::fromInt(100);
+	}
+	for (unsigned rawMask = 0; rawMask < (1U << PlayerExperienceMaskBitCount); rawMask++) {
+		SCOPED_TRACE(rawMask);
+		const PlayerExperienceMask contributorsMask = PlayerExperienceMaskFromByte(static_cast<uint8_t>(rawMask));
+		const unsigned contributorCount = std::popcount(rawMask);
+		for (uint8_t localPlayer = 0; localPlayer < PlayerStorageCapacity; localPlayer++) {
+			SCOPED_TRACE(localPlayer);
+			MyPlayerId = localPlayer;
+			MyPlayer = &Players[localPlayer];
+			for (Player &player : Players)
+				player._pExperience = 0;
+
+			AddPlrMonstExper(1, 37, contributorsMask);
+
+			const bool contributed = IsPlayerInExperienceMask(contributorsMask, localPlayer);
+			const unsigned expected = contributed ? 37 / contributorCount : 0;
+			EXPECT_EQ(MyPlayer->_pExperience, expected);
+			for (const Player &player : Players) {
+				if (&player != MyPlayer) {
+					EXPECT_EQ(player._pExperience, 0U);
+				}
+			}
+		}
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, ExperienceUsesCurrentParticipantCountNotStorageCapacity)
+{
+	ASSERT_GE(Players.capacity(), static_cast<size_t>(PlayerStorageCapacity));
+	const PlayerExperienceMask contributorsMask = PlayerExperienceMaskFromByte(0xFF);
+	for (const size_t participantCount : { size_t { 1 }, static_cast<size_t>(ClassicPlayerLimit), static_cast<size_t>(PlayerStorageCapacity) }) {
+		SCOPED_TRACE(participantCount);
+		Players.resize(participantCount);
+		for (Player &player : Players) {
+			player.setCharacterLevel(1);
+			player._pHitPoints = Fixed26_6::fromInt(100);
+			player._pExperience = 0;
+		}
+		MyPlayerId = static_cast<uint8_t>(participantCount - 1);
+		MyPlayer = &Players[MyPlayerId];
+		MyPlayer->_pExperience = 0;
+
+		AddPlrMonstExper(1, 37, contributorsMask);
+
+		EXPECT_EQ(MyPlayer->_pExperience, 37 / participantCount);
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, MonsterDamageMaskTracksAllEightPlayers)
+{
+	Players.resize(PlayerStorageCapacity);
+	Monster monster { };
+	for (size_t playerId = 0; playerId < Players.size(); playerId++) {
+		monster.tag(Players[playerId]);
+		EXPECT_EQ(PlayerExperienceMaskToByte(monster.whoHit), (1U << (playerId + 1)) - 1);
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, ExperienceMaskByteAndSyncPacketRoundTripAllValues)
+{
+	for (unsigned rawMask = 0; rawMask < (1U << PlayerExperienceMaskBitCount); rawMask++) {
+		SCOPED_TRACE(rawMask);
+		const uint8_t rawByte = static_cast<uint8_t>(rawMask);
+		const PlayerExperienceMask mask = PlayerExperienceMaskFromByte(rawByte);
+		EXPECT_EQ(PlayerExperienceMaskToByte(mask), rawByte);
+		const PlayerExperienceMask complement = PlayerExperienceMaskFromByte(static_cast<uint8_t>(0xFFU ^ rawMask));
+		EXPECT_EQ(PlayerExperienceMaskToByte(MergePlayerExperienceMasks(mask, complement)), 0xFFU);
+
+		TSyncMonster sent { };
+		sent.mWhoHit = mask;
+		std::array<std::byte, sizeof(TSyncMonster)> packet { };
+		std::memcpy(packet.data(), &sent, sizeof(sent));
+		EXPECT_EQ(packet[offsetof(TSyncMonster, mWhoHit)], std::byte { rawByte });
+
+		TSyncMonster received { };
+		std::memcpy(&received, packet.data(), sizeof(received));
+		EXPECT_EQ(PlayerExperienceMaskToByte(received.mWhoHit), rawByte);
+	}
+}
+
+TEST_F(ClassicMultiplayerTest, RecipientMasksCoverAllEightPlayerBits)
+{
+	PlayerRecipientMask allRecipients { 0 };
+	for (size_t playerId = 0; playerId < PlayerStorageCapacity; playerId++)
+		allRecipients = AddPlayerToRecipientMask(allRecipients, playerId);
+
+	EXPECT_EQ(allRecipients.bits, 0xFFU);
+	EXPECT_EQ(AllPlayerRecipients().bits, UINT32_MAX);
+	EXPECT_FALSE(IsPlayerInRecipientMask(allRecipients, PlayerStorageCapacity));
+
+	for (unsigned rawMask = 0; rawMask < (1U << PlayerStorageCapacity); rawMask++) {
+		SCOPED_TRACE(rawMask);
+		const PlayerRecipientMask recipients { rawMask };
+		for (size_t playerId = 0; playerId < PlayerStorageCapacity; playerId++) {
+			const bool expected = (rawMask & (1U << playerId)) != 0;
+			EXPECT_EQ(IsPlayerInRecipientMask(recipients, playerId), expected);
+		}
+	}
+}
+
 TEST_F(ClassicMultiplayerTest, MultiplayerExperienceRetainsThePowerLevelingCap)
 {
-	AddPlrMonstExper(1, 10000, 1);
+	AddPlrMonstExper(1, 10000, PlayerExperienceMaskFromByte(1));
 	EXPECT_EQ(MyPlayer->_pExperience, 100U);
 }
 
@@ -155,7 +265,7 @@ TEST_F(ClassicMultiplayerTest, SinglePlayerIgnoresUnusedContributorSlots)
 	MyPlayer = &Players[0];
 	gbIsMultiplayer = false;
 
-	AddPlrMonstExper(1, 150, 15);
+	AddPlrMonstExper(1, 150, PlayerExperienceMaskFromByte(15));
 
 	EXPECT_EQ(MyPlayer->_pExperience, 150U);
 }
@@ -163,7 +273,7 @@ TEST_F(ClassicMultiplayerTest, SinglePlayerIgnoresUnusedContributorSlots)
 TEST_F(ClassicMultiplayerTest, DeadPlayersDoNotGainExperienceInTheDungeon)
 {
 	MyPlayer->_pHitPoints = Fixed26_6::fromInt(0);
-	AddPlrMonstExper(1, 37, 1);
+	AddPlrMonstExper(1, 37, PlayerExperienceMaskFromByte(1));
 	EXPECT_EQ(MyPlayer->_pExperience, 0U);
 }
 

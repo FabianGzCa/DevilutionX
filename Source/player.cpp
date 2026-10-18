@@ -2465,18 +2465,18 @@ void Player::_addExperience(uint32_t experience, int levelDelta)
 	NetSendCmdParam1(false, CMD_PLRLEVEL, getCharacterLevel());
 }
 
-void AddPlrMonstExper(int lvl, unsigned exp, char pmask)
+void AddPlrMonstExper(int lvl, unsigned exp, PlayerExperienceMask contributors)
 {
 	unsigned totplrs = 0;
 	for (size_t i = 0; i < Players.size(); i++) {
-		if (((1 << i) & pmask) != 0) {
+		if (IsPlayerInExperienceMask(contributors, i)) {
 			totplrs++;
 		}
 	}
 
 	if (totplrs != 0) {
 		const unsigned e = exp / totplrs;
-		if ((pmask & (1 << MyPlayerId)) != 0)
+		if (IsPlayerInExperienceMask(contributors, MyPlayerId))
 			MyPlayer->addExperience(e, lvl);
 	}
 }

@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "dvlnet/leaveinfo.hpp"
@@ -12,6 +13,7 @@
 #include "items.h"
 #include "monster.h"
 #include "objects.h"
+#include "player_mask.hpp"
 #include "portal.h"
 #include "quests.h"
 
@@ -688,8 +690,11 @@ struct TSyncMonster {
 	uint8_t _menemy;
 	uint8_t _mdelta;
 	int32_t _mhitpoints;
-	int8_t mWhoHit;
+	PlayerExperienceMask mWhoHit;
 };
+
+static_assert(sizeof(TSyncMonster) == 10);
+static_assert(offsetof(TSyncMonster, mWhoHit) == 9);
 
 struct TPktHdr {
 	uint8_t px;
@@ -758,7 +763,7 @@ void NetSendCmdChInvItem(bool bHiPri, int invGridIndex);
 void NetSendCmdChBeltItem(bool bHiPri, int beltIndex);
 void NetSendCmdDamage(bool bHiPri, const Player &player, uint32_t dwDam, DamageType damageType);
 void NetSendCmdMonDmg(bool bHiPri, uint16_t wMon, uint32_t dwDam);
-void NetSendCmdString(uint32_t pmask, const char *pszStr);
+void NetSendCmdString(PlayerRecipientMask recipients, const char *pszStr);
 void delta_close_portal(const Player &player);
 bool ValidateCmdSize(size_t requiredCmdSize, size_t maxCmdSize, size_t playerId);
 size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize);

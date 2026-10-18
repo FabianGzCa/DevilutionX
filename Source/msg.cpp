@@ -7,6 +7,7 @@
 
 #include <climits>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <list>
@@ -220,9 +221,12 @@ struct DMonsterStr {
 	uint8_t menemy;
 	uint8_t mactive;
 	int32_t hitPoints;
-	int8_t mWhoHit;
+	PlayerExperienceMask mWhoHit;
 };
 #pragma pack(pop)
+
+static_assert(sizeof(DMonsterStr) == 9);
+static_assert(offsetof(DMonsterStr, mWhoHit) == 8);
 
 struct DObjectStr {
 	_cmd_id bCmd;
@@ -3314,13 +3318,13 @@ void NetSendCmdMonDmg(bool bHiPri, uint16_t wMon, uint32_t dwDam)
 		NetSendLoPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 }
 
-void NetSendCmdString(uint32_t pmask, const char *pszStr)
+void NetSendCmdString(PlayerRecipientMask recipients, const char *pszStr)
 {
 	TCmdString cmd;
 
 	cmd.bCmd = CMD_STRING;
 	CopyUtf8(cmd.str, pszStr, sizeof(cmd.str));
-	multi_send_msg_packet(pmask, reinterpret_cast<std::byte *>(&cmd), strlen(cmd.str) + 2);
+	multi_send_msg_packet(recipients, reinterpret_cast<std::byte *>(&cmd), strlen(cmd.str) + 2);
 }
 
 void delta_close_portal(const Player &player)

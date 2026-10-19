@@ -37,6 +37,7 @@ set(tests
   multiplayer_sync_test
   pack_test
   player_test
+  portal_test
   quests_test
   reencode_dun_cels_test
   scrollrt_test

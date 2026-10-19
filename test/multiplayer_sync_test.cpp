@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <span>
@@ -411,6 +412,118 @@ TEST_F(MultiplayerSyncTest, ImportsJunkEvenWhenNoLevelHasChanged)
 		Receive(7, message);
 	EXPECT_EQ(gbDeltaSender, 7);
 	gbBufferMsgs = 0;
+	EXPECT_EQ(Canonical(Export()), expected);
+}
+
+TEST_F(MultiplayerSyncTest, PortalSnapshotsPreserveClassicAndExtendedQuestOffsets)
+{
+	for (const SessionRules rules : { ClassicSessionRules, ExtendedSessionRules }) {
+		SCOPED_TRACE(rules.maxPlayers);
+		sgGameInitInfo.rules = rules;
+		delta_init();
+		InitPortals();
+		// Keep the receiving map separate from all portal destinations.
+		currlevel = 16;
+		leveltype = DTYPE_HELL;
+		const size_t count = rules == ClassicSessionRules ? ClassicPortalCount : MAXPORTAL;
+		for (uint8_t owner = 0; owner < Players.size(); ++owner) {
+			const TCmdLocParam3 command { CMD_ACTIVATEPORTAL, static_cast<uint8_t>(40 + owner), 50, Swap16LE(5), Swap16LE(DTYPE_CATACOMBS), 0 };
+			ASSERT_EQ(ParseCmd(owner, reinterpret_cast<const TCmd *>(&command), sizeof(command)), sizeof(command));
+		}
+		Quests[Q_SKELKING]._qactive = QUEST_ACTIVE;
+		Quests[Q_SKELKING]._qvar1 = 37;
+		const auto snapshot = Export();
+		const auto expected = Canonical(snapshot);
+		const Message &junk = expected.at(256);
+		for (size_t owner = 0; owner < count; ++owner) {
+			const Message portal { static_cast<std::byte>(40 + owner), std::byte { 50 }, std::byte { 5 }, static_cast<std::byte>(DTYPE_CATACOMBS), std::byte { 0 } };
+			EXPECT_TRUE(std::equal(portal.begin(), portal.end(), junk.begin() + owner * portal.size()));
+		}
+		const size_t questCount = std::count_if(std::begin(Quests), std::end(Quests), [](const Quest &quest) { return !QuestsData[quest._qidx].isSinglePlayerOnly || !UseMultiplayerQuests(); });
+		EXPECT_EQ(junk.size(), count * 5 + questCount * 6);
+		delta_init();
+		InitPortals();
+		Quests[Q_SKELKING]._qvar1 = 0;
+		gbDeltaSender = 7;
+		msg_start_resync();
+		for (const auto &message : snapshot)
+			Receive(7, message);
+		ASSERT_EQ(gbDeltaSender, 7);
+		gbBufferMsgs = 0;
+		DeltaSyncJunk();
+		for (size_t owner = 0; owner < Players.size(); ++owner) {
+			SCOPED_TRACE(owner);
+			EXPECT_EQ(Portals[owner].open, owner < count);
+			if (owner < count) {
+				EXPECT_EQ(Portals[owner].position, Point(40 + static_cast<int>(owner), 50));
+				EXPECT_EQ(Portals[owner].level, 5);
+			}
+		}
+		EXPECT_EQ(Quests[Q_SKELKING]._qvar1, 37);
+		EXPECT_EQ(Canonical(Export()), expected);
+	}
+}
+
+TEST_F(MultiplayerSyncTest, InvalidExtendedPortalRecordsDoNotShiftQuestsOrOtherOwners)
+{
+	currlevel = 16;
+	leveltype = DTYPE_HELL;
+	for (uint8_t owner = 0; owner < Players.size(); ++owner) {
+		const TCmdLocParam3 command { CMD_ACTIVATEPORTAL, static_cast<uint8_t>(40 + owner), 50, Swap16LE(5), Swap16LE(DTYPE_CATACOMBS), 0 };
+		ASSERT_EQ(ParseCmd(owner, reinterpret_cast<const TCmd *>(&command), sizeof(command)), sizeof(command));
+	}
+	Quests[Q_SKELKING]._qactive = QUEST_ACTIVE;
+	Quests[Q_SKELKING]._qvar1 = 73;
+	const Message valid = Canonical(Export()).at(256);
+	for (const size_t field : { size_t { 0 }, size_t { 2 }, size_t { 3 }, size_t { 4 } }) {
+		SCOPED_TRACE(field);
+		Message junk = valid;
+		// 0xFF in x is a compressed closed record, not a five-byte invalid record.
+		junk[7 * 5 + field] = field == 0 ? std::byte { 200 } : std::byte { 254 };
+		junk.insert(junk.begin(), std::byte { 0 });
+		delta_init();
+		InitPortals();
+		Quests[Q_SKELKING]._qvar1 = 0;
+		gbDeltaSender = 7;
+		msg_start_resync();
+		Receive(7, Fragment(CMD_DLEVEL_JUNK, 0, junk));
+		Receive(7, Fragment(CMD_DLEVEL_END, 0, Message { std::byte { 0 } }));
+		ASSERT_EQ(gbDeltaSender, 7);
+		gbBufferMsgs = 0;
+		DeltaSyncJunk();
+		EXPECT_FALSE(Portals[7].open);
+		for (size_t owner = 0; owner < 7; ++owner)
+			EXPECT_TRUE(Portals[owner].open);
+		EXPECT_EQ(Quests[Q_SKELKING]._qvar1, 73);
+	}
+}
+
+TEST_F(MultiplayerSyncTest, ClosedAndDepartedHighPortalSlotsStayClosedAfterSnapshotImport)
+{
+	currlevel = 16;
+	leveltype = DTYPE_HELL;
+	for (uint8_t owner = 0; owner < Players.size(); ++owner) {
+		Players[owner].plractive = true;
+		Players[owner].setLevel(5);
+		const TCmdLocParam3 command { CMD_ACTIVATEPORTAL, static_cast<uint8_t>(40 + owner), 50, Swap16LE(5), Swap16LE(DTYPE_CATACOMBS), 0 };
+		ASSERT_EQ(ParseCmd(owner, reinterpret_cast<const TCmd *>(&command), sizeof(command)), sizeof(command));
+	}
+	const TCmd close { CMD_DEACTIVATEPORTAL };
+	ASSERT_EQ(ParseCmd(5, &close, sizeof(close)), sizeof(close));
+	multi_player_left(7, leaveinfo_t::LEAVE_DROP);
+	const auto snapshot = Export();
+	const auto expected = Canonical(snapshot);
+	delta_init();
+	InitPortals();
+	gbDeltaSender = 6;
+	msg_start_resync();
+	for (const auto &message : snapshot)
+		Receive(6, message);
+	ASSERT_EQ(gbDeltaSender, 6);
+	gbBufferMsgs = 0;
+	DeltaSyncJunk();
+	for (size_t owner = 0; owner < Players.size(); ++owner)
+		EXPECT_EQ(Portals[owner].open, owner != 5 && owner != 7);
 	EXPECT_EQ(Canonical(Export()), expected);
 }
 

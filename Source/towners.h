@@ -80,7 +80,7 @@ struct Towner {
 	}
 };
 
-extern std::vector<Towner> Towners;
+extern DVL_API_FOR_TEST std::vector<Towner> Towners;
 
 /**
  * @brief Returns the number of unique towner types found in TSV data.

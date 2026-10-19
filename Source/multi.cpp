@@ -271,18 +271,15 @@ void PlayerLeftMsg(Player &player, bool left)
 	if (&player == MyPlayer)
 		return;
 	DeactivateVision(player.getId());
+	RemovePortalMissile(player);
+	DeactivatePortal(player);
+	delta_close_portal(player);
 	if (!player.plractive) {
 		player = { };
 		return;
 	}
 
 	FixPlrWalkTags(player);
-	// Portal storage is expanded separately, before extended games become public.
-	if (player.getId() < MAXPORTAL) {
-		RemovePortalMissile(player);
-		DeactivatePortal(player);
-		delta_close_portal(player);
-	}
 	RemoveEnemyReferences(player);
 	RemovePlrMissiles(player);
 	if (left) {

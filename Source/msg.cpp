@@ -316,8 +316,7 @@ constexpr size_t MaxLevelDeltaSize = 1U                                         
     + sizeof(DLevel::monster)                                                                              /* latest monster state */
     + sizeof(uint16_t)                                                                                     /* spawned monster count */
     + ((sizeof(uint16_t) + std::max(sizeof(DSpawnedMonster), sizeof(DSpawnedMonsterPack))) * MaxMonsters); /* spawned monsters */
-// Reserve enough space for eight portals without changing the classic junk layout.
-constexpr size_t MaxJunkDeltaSize = 1 + sizeof(DJunk) + (PlayerStorageCapacity - MAXPORTAL) * sizeof(DPortal);
+constexpr size_t MaxJunkDeltaSize = 1 + sizeof(DJunk);
 std::byte sgRecvBuf[std::max(MaxLevelDeltaSize, MaxJunkDeltaSize)];
 static_assert(sizeof(sgRecvBuf) <= std::numeric_limits<uint16_t>::max());
 
@@ -347,7 +346,7 @@ bool IsMonsterDeltaValid(const DMonsterStr &monster)
 bool IsPortalDeltaValid(const DPortal &portal)
 {
 	const WorldTilePosition position { portal.x, portal.y };
-	return IsPortalDeltaValid(position, portal.level, portal.ltype, portal.setlvl != 0);
+	return portal.setlvl <= 1 && IsPortalDeltaValid(position, portal.level, portal.ltype, portal.setlvl != 0);
 }
 
 bool IsQuestDeltaValid(quest_id qidx, const MultiQuests &quest)
@@ -768,9 +767,15 @@ const std::byte *DeltaImportSpawnedMonsters(const std::byte *src, const std::byt
 	return src;
 }
 
+size_t PortalDeltaCount()
+{
+	return sgGameInitInfo.rules == ExtendedSessionRules ? MAXPORTAL : ClassicPortalCount;
+}
+
 std::byte *DeltaExportJunk(std::byte *dst)
 {
-	for (auto &portal : sgJunk.portal) {
+	for (size_t i = 0; i < PortalDeltaCount(); ++i) {
+		const DPortal &portal = sgJunk.portal[i];
 		if (portal.x == 0xFF) {
 			*dst++ = std::byte { 0xFF };
 		} else {
@@ -799,7 +804,10 @@ std::byte *DeltaExportJunk(std::byte *dst)
 
 const std::byte *DeltaImportJunk(const std::byte *src, const std::byte *end, DJunk &junk)
 {
-	for (DPortal &portal : junk.portal) {
+	// Clear slots absent from a classic delta before applying the snapshot.
+	memset(junk.portal, 0xFF, sizeof(junk.portal));
+	for (size_t i = 0; i < PortalDeltaCount(); ++i) {
+		DPortal &portal = junk.portal[i];
 		if (src >= end)
 			return nullptr;
 		if (*src == std::byte { 0xFF }) {
@@ -2090,8 +2098,11 @@ size_t OnWarp(const TCmdParam1 &message, Player &player)
 
 	if (gbBufferMsgs == 1) {
 		BufferMessage(player, &message, sizeof(message));
-	} else if (portalIdx < MAXPORTAL) {
-		StartWarpLvl(player, portalIdx);
+	} else if (portalIdx < Players.size() && portalIdx < PortalDeltaCount()) {
+		const Portal &portal = Portals[portalIdx];
+		// A valid warp may already be queued when the owner closes the portal.
+		if (IsPortalDeltaValid(portal.position, portal.level, portal.ltype, portal.setlvl))
+			StartWarpLvl(player, portalIdx);
 	}
 
 	return sizeof(message);
@@ -2439,30 +2450,23 @@ size_t OnPlayerJoinLevel(const TCmdLocParam2 &message, Player &player)
 size_t OnActivatePortal(const TCmdLocParam3 &message, Player &player)
 {
 	const Point position { message.x, message.y };
-	const auto level = static_cast<uint8_t>(Swap16LE(message.wParam1));
+	const uint16_t level = Swap16LE(message.wParam1);
 	const uint16_t dungeonTypeIdx = Swap16LE(message.wParam2);
-	const bool isSetLevel = message.wParam3 != 0;
+	const uint16_t setLevelFlag = Swap16LE(message.wParam3);
+	const bool isSetLevel = setLevelFlag != 0;
 
 	if (gbBufferMsgs == 1) {
 		BufferMessage(player, &message, sizeof(message));
-	} else if (InDungeonBounds(position) && IsValidLevel(level, isSetLevel) && dungeonTypeIdx <= DTYPE_LAST) {
+	} else if (player.getId() < PortalDeltaCount() && setLevelFlag <= 1 && IsPortalDeltaValid(position, level, dungeonTypeIdx, isSetLevel)) {
 		auto dungeonType = static_cast<dungeon_type>(dungeonTypeIdx);
 
 		ActivatePortal(player, position, level, dungeonType, isSetLevel);
 		if (&player != MyPlayer) {
 			if (leveltype == DTYPE_TOWN) {
 				AddPortalInTown(player);
-			} else if (player.isOnActiveLevel()) {
-				bool addPortal = true;
-				for (auto &missile : Missiles) {
-					if (missile._mitype == MissileID::TownPortal && &Players[missile._misource] == &player) {
-						addPortal = false;
-						break;
-					}
-				}
-				if (addPortal) {
-					AddPortalMissile(player, position, false);
-				}
+			} else if (PortalOnLevel(player)) {
+				RemovePortalMissile(player);
+				AddPortalMissile(player, position, false);
 			} else {
 				RemovePortalMissile(player);
 			}

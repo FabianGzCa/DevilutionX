@@ -9,12 +9,15 @@
 #include "missiles.h"
 #include "multi.h"
 #include "player.h"
+#include "portals/validation.hpp"
 #include "tables/misdat.h"
 
 namespace devilution {
 
 /** In-game state of portals. */
 Portal Portals[MAXPORTAL];
+static_assert(MAXPORTAL == PlayerStorageCapacity);
+static_assert(ClassicPortalCount == ClassicPlayerLimit);
 
 namespace {
 
@@ -22,24 +25,32 @@ namespace {
 size_t portalindex;
 
 /** Coordinate of each player's portal in town. */
-Point PortalTownPosition[MAXPORTAL] = {
+constexpr Point PortalTownPosition[MAXPORTAL] = {
 	{ 57, 40 },
 	{ 59, 40 },
 	{ 61, 40 },
 	{ 63, 40 },
+	{ 57, 44 },
+	{ 59, 44 },
+	{ 61, 44 },
+	{ 63, 44 },
 };
 
 } // namespace
 
 void InitPortals()
 {
-	for (auto &portal : Portals) {
-		portal.open = false;
-	}
+	for (auto &portal : Portals)
+		portal = { };
+	portalindex = 0;
 }
 
 void SetPortalStats(int i, bool o, Point position, int lvl, dungeon_type lvltype, bool isSetLevel)
 {
+	if (i < 0 || i >= MAXPORTAL)
+		return;
+	if (o && !IsPortalDeltaValid(position, lvl, lvltype, isSetLevel))
+		o = false;
 	Portals[i].open = o;
 	Portals[i].position = position;
 	Portals[i].level = lvl;
@@ -55,14 +66,15 @@ void AddPortalMissile(const Player &player, Point position, bool sync)
 		if (sync)
 			missile->setFrameGroup<PortalFrame>(PortalFrame::Idle);
 
-		if (leveltype != DTYPE_TOWN)
+		// Opening portals allocate their light on the first animation tick.
+		if (leveltype != DTYPE_TOWN && sync)
 			missile->_mlid = AddLight(missile->position.tile, 15);
 	}
 }
 
 void SyncPortals()
 {
-	for (int i = 0; i < MAXPORTAL; i++) {
+	for (size_t i = 0; i < Players.size() && i < MAXPORTAL; i++) {
 		if (!Portals[i].open)
 			continue;
 		const Player &player = Players[i];
@@ -86,6 +98,8 @@ void AddPortalInTown(const Player &player)
 void ActivatePortal(const Player &player, Point position, int lvl, dungeon_type dungeonType, bool isSetLevel)
 {
 	Portal &portal = Portals[player.getId()];
+	if (lvl != 0 && !IsPortalDeltaValid(position, lvl, dungeonType, isSetLevel))
+		return;
 	portal.open = true;
 
 	if (lvl != 0) {
@@ -128,7 +142,8 @@ void RemovePortalMissile(const Player &player)
 
 void SetCurrentPortal(size_t p)
 {
-	portalindex = p;
+	if (p < Players.size() && p < MAXPORTAL)
+		portalindex = p;
 }
 
 void GetPortalLevel()

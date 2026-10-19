@@ -13,7 +13,9 @@ namespace devilution {
 // Defined in player.h, forward declared here to allow for functions which operate in the context of a player.
 struct Player;
 
-#define MAXPORTAL 4
+/** Number of portal records in classic saves and classic network deltas. */
+constexpr int ClassicPortalCount = 4;
+#define MAXPORTAL 8
 
 struct Portal {
 	bool open;
@@ -23,7 +25,7 @@ struct Portal {
 	bool setlvl;
 };
 
-extern Portal Portals[MAXPORTAL];
+extern DVL_API_FOR_TEST Portal Portals[MAXPORTAL];
 
 void InitPortals();
 void SetPortalStats(int i, bool o, Point position, int lvl, dungeon_type lvltype, bool isSetLevel);

@@ -6,9 +6,7 @@
 
 #include "portals/validation.hpp"
 
-#include <cstdint>
-
-#include "engine/world_tile.hpp"
+#include "game_mode.hpp"
 #include "levels/gendung.h"
 #include "levels/setmaps.h"
 #include "quests.h"
@@ -34,15 +32,21 @@ dungeon_type GetSetLevelType(_setlevels setLevel)
 
 } // namespace
 
-bool IsPortalDeltaValid(WorldTilePosition location, uint8_t level, uint8_t ltype, bool isOnSetLevel)
+bool IsPortalDeltaValid(Point location, int level, int ltype, bool isOnSetLevel)
 {
 	if (!InDungeonBounds(location))
 		return false;
-	const auto levelType = static_cast<dungeon_type>(ltype);
-	if (levelType == DTYPE_NONE)
+	if (ltype <= DTYPE_TOWN || ltype > DTYPE_LAST || level <= 0)
 		return false;
-	if (isOnSetLevel)
+	const auto levelType = static_cast<dungeon_type>(ltype);
+	if (isOnSetLevel) {
+		if (level > SL_LAST)
+			return false;
 		return levelType == GetSetLevelType(static_cast<_setlevels>(level));
+	}
+	const int maxLevel = gbIsHellfire ? 24 : 16;
+	if (level > maxLevel || (gbIsSpawn && level > 4))
+		return false;
 	return levelType == GetLevelType(level);
 }
 

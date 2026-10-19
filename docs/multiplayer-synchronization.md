@@ -55,6 +55,31 @@ Multibyte fields are little endian, without native padding or `size_t` fields.
 Classic sessions retain their existing native spawned-monster representation;
 this compatibility path does not acquire cross-architecture guarantees.
 
+## Town portals
+
+Portal storage has eight entries, one per player ID. Classic snapshots write
+four portal records before quest state; extended revision 1 snapshots write
+eight. An open record is five bytes (x, y, level, dungeon type, set-level flag);
+a closed record is a single `0xFF` byte. Import validates each record and clears
+slots absent from classic snapshots without moving the quest-data boundary.
+Portal commands reject unavailable owners and invalid destinations, including
+level values that would become valid only after integer truncation. A closed
+portal retains its validated destination so a warp already queued before the
+closure can finish. New sessions and classic save loads clear stale entries.
+
+The first four town positions remain (57,40), (59,40), (61,40), (63,40).
+The additional row uses (57,44), (59,44), (61,44), (63,44). Town arrival remains
+one tile southeast of the selected portal; dungeon visitors retain the same
+offset, while the owner arrives at the portal itself. Map tests load the actual
+town tiles and collision data, check NPC/entrance clearance, and verify walking
+access to services with the portal tiles excluded from through routes.
+
+The disk `game` entry always contains **four 24-byte portal records**, followed
+immediately by monster kill counts. Loading clears all eight runtime entries
+before reading the four classic records. Extended portals belong to the live
+session snapshot; multiplayer games persist heroes rather than world sessions,
+so no disk extension or new save version is introduced.
+
 ## Regression coverage and remaining work
 
 `multiplayer_sync_test` exercises real TCP delivery to the engine with eight
@@ -64,6 +89,6 @@ fragments, and compressed/uncompressed maximum-section deltas. Packet sizes and
 transfer measurements are included as GoogleTest XML properties.
 
 These are synchronization tests, not complete eight-player gameplay sessions.
-Vision, full portal storage/persistence, spawning, UI and balancing must be
-completed before enabling the extended session selector. Until portal storage
-is expanded, player departure only accesses existing portal slots.
+Safe simultaneous spawning, UI and balancing must be completed before enabling
+the extended session selector. Full gameplay and visual integration checks also
+remain part of that work.

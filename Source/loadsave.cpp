@@ -35,6 +35,7 @@
 #include "mpq/mpq_common.hpp"
 #include "pfile.h"
 #include "plrmsg.h"
+#include "portals/validation.hpp"
 #include "qol/stash.h"
 #include "stores.h"
 #include "tables/playerdat.hpp"
@@ -1039,10 +1040,22 @@ void LoadPortal(LoadHelper *file, int i)
 	pPortal->position.x = file->NextLE<int32_t>();
 	pPortal->position.y = file->NextLE<int32_t>();
 	pPortal->level = file->NextLE<int32_t>();
-	pPortal->ltype = static_cast<dungeon_type>(file->NextLE<int32_t>());
-	pPortal->setlvl = file->NextBool32();
+	const int32_t savedLevelType = file->NextLE<int32_t>();
+	const uint32_t savedSetLevel = file->NextLE<uint32_t>();
+	pPortal->ltype = savedLevelType >= DTYPE_TOWN && savedLevelType <= DTYPE_LAST ? static_cast<dungeon_type>(savedLevelType) : DTYPE_NONE;
+	pPortal->setlvl = savedSetLevel != 0;
 	if (!pPortal->setlvl)
 		pPortal->ltype = GetLevelType(pPortal->level);
+	if (pPortal->open && (savedLevelType < DTYPE_TOWN || savedLevelType > DTYPE_LAST || savedSetLevel > 1 || !IsPortalDeltaValid(pPortal->position, pPortal->level, pPortal->ltype, pPortal->setlvl)))
+		pPortal->open = false;
+}
+
+void LoadPortals(LoadHelper &file)
+{
+	// Classic game saves always contain four records, including single player.
+	InitPortals();
+	for (int i = 0; i < ClassicPortalCount; i++)
+		LoadPortal(&file, i);
 }
 
 void GetLevelNames(std::string_view prefix, char *out)
@@ -2530,8 +2543,7 @@ std::expected<void, std::string> LoadGame(bool firstflag)
 
 	for (int i = 0; i < giNumberQuests; i++)
 		LoadQuest(&file, i);
-	for (int i = 0; i < MAXPORTAL; i++)
-		LoadPortal(&file, i);
+	LoadPortals(file);
 
 	if (gbIsHellfireSaveGame != gbIsHellfire) {
 		RETURN_IF_ERROR(pfile_convert_levels());
@@ -2829,7 +2841,7 @@ void SaveGameData(SaveWriter &saveWriter)
 
 	for (int i = 0; i < giNumberQuests; i++)
 		SaveQuest(&file, i);
-	for (int i = 0; i < MAXPORTAL; i++)
+	for (int i = 0; i < ClassicPortalCount; i++)
 		SavePortal(&file, i);
 	for (size_t i = 0; i < MonstersData.size(); ++i) {
 		const int monstkill = MonsterKillCounts[i];

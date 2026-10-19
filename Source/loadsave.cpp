@@ -429,6 +429,8 @@ void LoadPlayer(LoadHelper &file, Player &player)
 	player.AnimInfo.currentFrame = file.NextLENarrow<int32_t, int8_t>(-1);
 	file.Skip<uint32_t>(3); // Skip _pAnimWidth, _pAnimWidth2, _peflag
 	player.lightId = file.NextLE<int32_t>();
+	if (!IsValidLightId(player.lightId))
+		player.lightId = NO_LIGHT;
 	file.Skip<int32_t>(); // _pvid
 
 	player.queuedSpell.spellId = static_cast<SpellID>(file.NextLE<int32_t>());
@@ -763,6 +765,8 @@ bool gbSkipSync = false;
 	monster.lightId = file->NextLE<int8_t>();
 	if (monster.lightId == 0)
 		monster.lightId = NO_LIGHT; // Correct incorrect values in old saves
+	if (!IsValidLightId(monster.lightId))
+		monster.lightId = NO_LIGHT;
 
 	// Omit pointer name;
 
@@ -802,7 +806,7 @@ void LoadMonsters(LoadHelper &file, ankerl::unordered_dense::set<unsigned> &remo
 			continue;
 		}
 
-		if (applyLight && monster.isUnique() && monster.lightId != NO_LIGHT)
+		if (applyLight && monster.isUnique() && IsValidLightId(monster.lightId))
 			Lights[monster.lightId].isInvalid = false;
 
 		i++;
@@ -2100,7 +2104,7 @@ std::expected<void, std::string> LoadLevel(LevelConversionData *levelConversionD
 	}
 
 	for (const Player &player : Players) {
-		if (player.plractive && player.isOnActiveLevel())
+		if (player.plractive && player.isOnActiveLevel() && IsValidLightId(player.lightId))
 			Lights[player.lightId].hasChanged = true;
 	}
 	return {};
@@ -2575,16 +2579,29 @@ std::expected<void, std::string> LoadGame(bool firstflag)
 		for (int i = 0; i < ActiveObjectCount; i++)
 			SyncObjectAnim(Objects[ActiveObjects[i]]);
 
-		ActiveLightCount = file.NextBE<int32_t>();
+		const int savedLightCount = file.NextBE<int32_t>();
+		if (savedLightCount < 0 || savedLightCount > MAXLIGHTS)
+			return std::unexpected(std::string(_("Invalid save file")));
+		ActiveLightCount = savedLightCount;
 
 		for (uint8_t &lightId : ActiveLights)
 			lightId = file.NextLE<uint8_t>();
+		std::array<bool, MAXLIGHTS> activeLightIds = { };
+		for (int i = 0; i < ActiveLightCount; i++) {
+			const uint8_t lightId = ActiveLights[i];
+			if (!IsValidLightId(lightId) || activeLightIds[lightId])
+				return std::unexpected(std::string(_("Invalid save file")));
+			activeLightIds[lightId] = true;
+		}
 		for (int i = 0; i < ActiveLightCount; i++)
 			LoadLighting(&file, &Lights[ActiveLights[i]]);
 
 		file.Skip<int32_t>(); // VisionId
 		const int visionCount = file.NextBE<int32_t>();
+		if (visionCount < 0 || visionCount > MAXVISION || static_cast<size_t>(visionCount) > Players.size())
+			return std::unexpected(std::string(_("Invalid save file")));
 
+		VisionActive.fill(false);
 		for (int i = 0; i < visionCount; i++) {
 			LoadLighting(&file, &VisionList[i]);
 			VisionActive[i] = true;

@@ -35,11 +35,11 @@ struct Light {
 	bool hasChanged;
 };
 
-extern Light VisionList[MAXVISION];
-extern std::array<bool, MAXVISION> VisionActive;
+extern DVL_API_FOR_TEST Light VisionList[MAXVISION];
+extern DVL_API_FOR_TEST std::array<bool, MAXVISION> VisionActive;
 extern Light Lights[MAXLIGHTS];
 extern std::array<uint8_t, MAXLIGHTS> ActiveLights;
-extern int ActiveLightCount;
+extern DVL_API_FOR_TEST int ActiveLightCount;
 extern std::array<uint8_t, 256> InfravisionTable;
 extern std::array<uint8_t, 256> StoneTable;
 extern std::array<uint8_t, 256> PauseTable;
@@ -66,6 +66,7 @@ void ChangeLight(int i, Point position, uint8_t radius);
 void ProcessLightList();
 void SavePreLighting();
 void ActivateVision(Point position, int r, size_t id);
+void DeactivateVision(size_t id);
 void ChangeVisionRadius(size_t id, int r);
 void ChangeVisionXY(size_t id, Point position);
 void ProcessVisionList();

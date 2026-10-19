@@ -29,6 +29,7 @@
 #include "engine/random.hpp"
 #include "engine/world_tile.hpp"
 #include "game_mode.hpp"
+#include "lighting.h"
 #include "menu.h"
 #include "monster.h"
 #include "msg.h"
@@ -269,6 +270,7 @@ void PlayerLeftMsg(Player &player, bool left)
 
 	if (&player == MyPlayer)
 		return;
+	DeactivateVision(player.getId());
 	if (!player.plractive) {
 		player = { };
 		return;

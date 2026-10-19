@@ -21,6 +21,9 @@
 #include "engine/assets.hpp"
 #include "game_mode.hpp"
 #include "inv.h"
+#include "levels/dun_tile_data.hpp"
+#include "lighting.h"
+#include "missiles.h"
 #include "multi.h"
 #include "nthread.h"
 #include "pack.h"
@@ -250,6 +253,106 @@ TEST_F(MultiplayerSyncTest, ReceivesTurnsWithoutTruncatingTheNegotiatedCapacity)
 		EXPECT_EQ(glpMsgTbl[i], 0U);
 	}
 	nthread_cleanup();
+}
+
+TEST_F(MultiplayerSyncTest, VisionTracksEightPlayersAcrossLevelsDeathAndDeparture)
+{
+	InitLighting();
+	std::array<DungeonFlag, MAXDUNX * MAXDUNY> savedFlags;
+	std::array<int8_t, MAXDUNX * MAXDUNY> savedTransparency;
+	std::copy(&dFlags[0][0], &dFlags[0][0] + savedFlags.size(), savedFlags.begin());
+	std::copy(&dTransVal[0][0], &dTransVal[0][0] + savedTransparency.size(), savedTransparency.begin());
+	std::fill(&dFlags[0][0], &dFlags[0][0] + MAXDUNX * MAXDUNY, DungeonFlag::None);
+	std::fill(&dTransVal[0][0], &dTransVal[0][0] + MAXDUNX * MAXDUNY, 0);
+	std::array<Point, PlayerStorageCapacity> positions;
+	for (uint8_t playerId = 0; playerId < PlayerStorageCapacity; playerId++) {
+		Player &player = Players[playerId];
+		player.plractive = true;
+		player.setLevel(currlevel);
+		player.position.tile = { static_cast<WorldTileCoord>(10 + 12 * playerId), 50 };
+		player._pLightRad = 1;
+		player.friendlyMode = true;
+		positions[playerId] = player.position.tile;
+		ActivateVision(player.position.tile, player._pLightRad, playerId);
+	}
+	ActivateVision({ 50, 50 }, 1, PlayerStorageCapacity);
+	ChangeVisionXY(PlayerStorageCapacity, { 51, 50 });
+	DeactivateVision(PlayerStorageCapacity);
+	Missile infravision { };
+	infravision._misource = 7;
+	infravision.duration = 2;
+	ProcessInfravision(infravision);
+	EXPECT_TRUE(Players[7]._pInfraFlag);
+	EXPECT_FALSE(Players[MyPlayerId]._pInfraFlag);
+	ProcessVisionList();
+
+	for (uint8_t playerId = 0; playerId < PlayerStorageCapacity; playerId++) {
+		SCOPED_TRACE(playerId);
+		EXPECT_TRUE(VisionActive[playerId]);
+		EXPECT_TRUE(HasAnyOf(dFlags[positions[playerId].x][positions[playerId].y], DungeonFlag::Visible));
+		EXPECT_TRUE(HasAnyOf(dFlags[positions[playerId].x][positions[playerId].y], DungeonFlag::Explored));
+		EXPECT_EQ(HasAnyOf(dFlags[positions[playerId].x][positions[playerId].y], DungeonFlag::Lit), playerId == MyPlayerId);
+	}
+
+	Players[6].setLevel(2);
+	ChangeVisionXY(6, { 81, 50 });
+	ProcessVisionList();
+	EXPECT_FALSE(VisionActive[6]);
+	EXPECT_FALSE(HasAnyOf(dFlags[positions[6].x][positions[6].y], DungeonFlag::Visible));
+	EXPECT_FALSE(HasAnyOf(dFlags[81][50], DungeonFlag::Visible));
+	EXPECT_TRUE(HasAnyOf(dFlags[positions[5].x][positions[5].y], DungeonFlag::Visible));
+
+	Players[6].setLevel(currlevel);
+	ActivateVision(positions[6], Players[6]._pLightRad, 6);
+	Players[5]._pHitPoints = Fixed26_6::fromInt(0);
+	ProcessVisionList();
+	EXPECT_TRUE(Players[5].hasNoLife());
+	EXPECT_TRUE(VisionActive[5]);
+	EXPECT_TRUE(VisionActive[6]);
+
+	multi_player_left(7, leaveinfo_t::LEAVE_DROP);
+	EXPECT_FALSE(VisionActive[7]);
+	ProcessVisionList();
+	EXPECT_FALSE(HasAnyOf(dFlags[positions[7].x][positions[7].y], DungeonFlag::Visible));
+	EXPECT_TRUE(HasAnyOf(dFlags[positions[4].x][positions[4].y], DungeonFlag::Visible));
+	std::copy(savedFlags.begin(), savedFlags.end(), &dFlags[0][0]);
+	std::copy(savedTransparency.begin(), savedTransparency.end(), &dTransVal[0][0]);
+	InitLighting();
+}
+
+TEST_F(MultiplayerSyncTest, LightingPoolRejectsExhaustionAndReclaimsReleasedEntries)
+{
+	InitLighting();
+	std::array<uint8_t, MAXDUNX * MAXDUNY> savedLight;
+	std::copy(&dLight[0][0], &dLight[0][0] + savedLight.size(), savedLight.begin());
+	std::array<int, MAXLIGHTS> lightIds;
+	// Model eight portal lights and 24 concurrent effects sharing the legacy pool.
+	for (int i = 0; i < MAXLIGHTS; i++) {
+		lightIds[i] = AddLight({ static_cast<WorldTileCoord>(20 + i), 40 }, 1);
+		EXPECT_EQ(lightIds[i], i);
+	}
+	EXPECT_EQ(ActiveLightCount, MAXLIGHTS);
+	EXPECT_EQ(AddLight({ 50, 50 }, 1), NO_LIGHT);
+
+	ChangeLightXY(NO_LIGHT, { 50, 50 });
+	ChangeLightRadius(NO_LIGHT, 2);
+	ChangeLightOffset(NO_LIGHT, { 1, 1 });
+	ChangeLight(NO_LIGHT, { 50, 50 }, 2);
+	AddUnLight(NO_LIGHT);
+	ChangeLightXY(MAXLIGHTS, { 50, 50 });
+	ChangeLightRadius(MAXLIGHTS, 2);
+	ChangeLightOffset(MAXLIGHTS, { 1, 1 });
+	ChangeLight(MAXLIGHTS, { 50, 50 }, 2);
+	AddUnLight(MAXLIGHTS);
+	EXPECT_EQ(ActiveLightCount, MAXLIGHTS);
+
+	AddUnLight(lightIds[0]);
+	ProcessLightList();
+	EXPECT_EQ(ActiveLightCount, MAXLIGHTS - 1);
+	EXPECT_EQ(AddLight({ 51, 50 }, 1), lightIds[0]);
+	EXPECT_EQ(ActiveLightCount, MAXLIGHTS);
+	std::copy(savedLight.begin(), savedLight.end(), &dLight[0][0]);
+	InitLighting();
 }
 
 TEST_F(MultiplayerSyncTest, DeltaSenderCanBeEverySlotAndTheSentinelCannotCollide)

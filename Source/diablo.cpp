@@ -1506,7 +1506,7 @@ void UpdateMonsterLights()
 			monster.lightId = AddLight(monster.position.tile, lightRadius);
 		}
 
-		if (monster.lightId != NO_LIGHT) {
+		if (IsValidLightId(monster.lightId)) {
 			if (monster.lightId == MyPlayer->lightId) { // Fix old saves where some monsters had 0 instead of NO_LIGHT
 				monster.lightId = NO_LIGHT;
 				continue;

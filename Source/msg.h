@@ -426,6 +426,8 @@ enum _cmd_id : uint8_t {
 	//
 	// body (TFakeDropPlr)
 	FAKE_CMD_DROPID,
+	// Coordinated level admission, extended sessions only. Appended to preserve classic IDs.
+	CMD_LEVELENTRY,
 	NUM_CMDS,
 	CMD_INVALID = 0xFF,
 };

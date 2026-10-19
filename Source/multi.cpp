@@ -37,6 +37,7 @@
 #include "options.h"
 #include "pfile.h"
 #include "player.h"
+#include "players/level_entry.hpp"
 #include "players/validation.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
@@ -381,7 +382,7 @@ void SyncPacketHeaderData(Player &player, const TPktHdr &pkt)
 		player._pBaseMag = pkt.bmag;
 		player._pBaseDex = pkt.bdex;
 
-		if (!cond && player.plractive && !player.hasNoLife()) {
+		if (!cond && player.plractive && !player.hasNoLife() && !IsLevelEntryResolving() && !IsLevelEntryPending(static_cast<uint8_t>(player.getId()))) {
 			if (player.isOnActiveLevel() && !player._pLvlChanging) {
 				const uint8_t rawDir = pkt.pdir;
 				if (rawDir <= static_cast<uint8_t>(Direction::SouthEast)) {
@@ -622,6 +623,7 @@ std::string FormatGameSeed(const uint32_t gameSeed[4])
 
 void InitGameInfo()
 {
+	ResetLevelEntries();
 	const xoshiro128plusplus gameGenerator = ReserveSeedSequence();
 	gameGenerator.save(sgGameInitInfo.gameSeed);
 
@@ -707,6 +709,7 @@ void multi_player_left(uint8_t pnum, leaveinfo_t reason)
 {
 	if (pnum >= Players.size() || pnum == MyPlayerId)
 		return;
+	CancelLevelEntry(pnum, true);
 	sgbPlayerLeftGameTbl[pnum] = true;
 	sgbPlayerTurnBitTbl[pnum] = false;
 	sgbSendDeltaTbl[pnum] = false;
@@ -993,6 +996,7 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	}
 	sgwPackPlrOffsetTbl[pnum] = 0;
 
+	const bool wasKnown = IsNetPlayerValid(player);
 	PlayerLeftMsg(player, false);
 	if (!UnPackNetPlayer(packedPlayer, player)) {
 		player = {};
@@ -1000,13 +1004,17 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 		return;
 	}
 
+	// Player info can finish after an admission packet from another sender.
+	const bool restoredAdmission = (!wasKnown || IsLevelEntryPending(pnum)) && RestoreLevelEntryPlayerInfo(player);
 	if (!recv) {
 		return;
 	}
 
 	ResetPlayerGFX(player);
-	player.plractive = true;
-	gbActivePlayers++;
+	if (!player.plractive) {
+		player.plractive = true;
+		gbActivePlayers++;
+	}
 
 	std::string_view szEvent;
 	if (sgbPlayerTurnBitTbl[pnum]) {
@@ -1018,11 +1026,19 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	}
 	EventPlrMsg(FormatRuntime(szEvent, player._pName, player.getCharacterLevel()));
 
+	if (sgGameInitInfo.rules == ExtendedSessionRules && !restoredAdmission && (sgbPlayerTurnBitTbl[pnum] || IsLevelEntryPending(pnum)))
+		player._pLvlChanging = true;
 	SyncInitPlr(player);
 
 	if (!player.isOnActiveLevel()) {
 		return;
 	}
+	if (sgGameInitInfo.rules == ExtendedSessionRules && player._pLvlChanging) {
+		player._pmode = PM_NEWLVL;
+		return;
+	}
+	if (restoredAdmission)
+		ActivateVision(player.position.tile, player._pLightRad, player.getId());
 
 	if (!player.hasNoLife()) {
 		StartStand(player, player._pdir);

@@ -31,6 +31,7 @@ set(tests
   effects_test
   inv_test
   items_test
+  level_entry_test
   math_test
   missiles_test
   multi_logging_test

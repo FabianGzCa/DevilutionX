@@ -12,6 +12,7 @@
 #include "monster.h"
 #include "monsters/validation.hpp"
 #include "player.h"
+#include "players/level_entry.hpp"
 #include "storm/storm_net.hpp"
 #include "utils/endian_swap.hpp"
 #include "utils/is_of.hpp"
@@ -298,7 +299,7 @@ size_t OnSyncData(const TSyncHeader &header, size_t maxCmdSize, const Player &pl
 	const int monsterCount = static_cast<int>(wLen / sizeof(TSyncMonster));
 
 	const uint8_t level = header.bLevel;
-	const bool syncLocalLevel = !MyPlayer->_pLvlChanging && GetLevelForMultiplayer(*MyPlayer) == level;
+	const bool syncLocalLevel = !MyPlayer->_pLvlChanging && !IsLevelEntryResolving() && GetLevelForMultiplayer(*MyPlayer) == level;
 
 	if (IsValidLevelForMultiplayer(level)) {
 		const auto *monsterSyncs = reinterpret_cast<const TSyncMonster *>(&header + 1);

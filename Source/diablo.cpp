@@ -88,6 +88,7 @@
 #include "panels/spell_book.hpp"
 #include "panels/spell_list.hpp"
 #include "pfile.h"
+#include "players/level_entry.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
 #include "qol/floatingnumbers.h"
@@ -221,7 +222,7 @@ void FreeGame()
 
 bool ProcessInput()
 {
-	if (PauseMode == 2) {
+	if (PauseMode == 2 || ShouldWaitForLevelEntry()) {
 		return false;
 	}
 
@@ -1522,6 +1523,11 @@ void UpdateMonsterLights()
 
 void GameLogic()
 {
+	ProcessLevelEntries();
+	if (ShouldWaitForLevelEntry()) {
+		RedrawViewport();
+		return;
+	}
 	if (!ProcessInput()) {
 		return;
 	}

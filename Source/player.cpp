@@ -48,6 +48,7 @@
 #include "objects.h"
 #include "options.h"
 #include "player.h"
+#include "players/level_entry.hpp"
 #include "qol/autopickup.h"
 #include "qol/stash.h"
 #include "spells.h"
@@ -371,6 +372,8 @@ void DropHalfPlayersGold(Player &player)
 
 void InitLevelChange(Player &player)
 {
+	if (sgGameInitInfo.rules == ExtendedSessionRules)
+		CancelLevelEntry(static_cast<uint8_t>(player.getId()));
 	const Player &myPlayer = *MyPlayer;
 
 	RemoveEnemyReferences(player);
@@ -3253,6 +3256,18 @@ void SyncInitPlrPos(Player &player)
 {
 	if (!player.isOnActiveLevel())
 		return;
+	if (sgGameInitInfo.rules == ExtendedSessionRules) {
+		if (&player == MyPlayer) {
+			player._pLvlChanging = true;
+			player._pInvincible = true;
+			player._pmode = PM_NEWLVL;
+		} else if (!player._pLvlChanging && PosOkPlayer(player, player.position.tile)) {
+			// Existing residents keep their transmitted position; entrants await a commit.
+			player.occupyTile(player.position.tile, false);
+		}
+		player.position.future = player.position.tile;
+		return;
+	}
 
 	const WorldTileDisplacement offset[9] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 }, { 2, 0 }, { 0, 2 }, { 1, 2 }, { 2, 1 }, { 2, 2 } };
 

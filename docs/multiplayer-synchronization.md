@@ -80,6 +80,46 @@ before reading the four classic records. Extended portals belong to the live
 session snapshot; multiplayer games persist heroes rather than world sessions,
 so no disk extension or new save version is introduced.
 
+## Coordinated level entry
+
+Classic sessions keep their original placement and join command. Extended
+sessions append `CMD_LEVELENTRY` without changing existing command IDs. Its
+packed 60-byte body carries a phase, a transaction serial, authority/participant/
+voter masks, an outcome, a level and set-level flag, eight request tickets and
+eight coordinate pairs. Serial and ticket fields are little endian.
+
+An entrant requests admission after loading its map. The lowest connected player
+coordinates requests for the same destination, ordered by player ID. A resident
+of that destination searches when available; otherwise the lowest entrant does.
+Only this authority searches. A bounded breadth-first search visits `PathDirs`
+in their existing order, up to 50 tiles from each entrance, without consuming
+random numbers. It excludes blocked or disconnected floor, occupied tiles,
+entrance triggers and portals, reserving a neighboring escape tile per entrant
+and protecting resident exits.
+
+The authority proposes all positions together. Destination residents and entrants
+validate and reserve those exact coordinates, then vote. The coordinator commits
+only after all votes arrive. A disagreement aborts the batch and excludes its
+rejected coordinates from the next search. A full destination produces an
+explicit `NoSpace` result: entrants stay pending and invincible, the local player
+sees a waiting message, and the coordinator retries after 20 logic ticks. A
+transaction missing an authority or vote aborts after 200 logic ticks. Simulation
+on the destination pauses during voting; other levels continue. Pending entrants
+do not simulate until committed. Peers never substitute their own landing tile.
+
+Per-sender FIFO channels may deliver a proposal or vote before the assignment
+from another sender. Bounded early-message storage handles that ordering.
+Coordinator IDs occupy the low three serial bits, preventing an election from
+reusing another coordinator's transaction. Leaving or changing levels releases
+reservations; request tickets reject obsolete admissions. Late player-info
+assembly restores pending or committed admission state rather than the stale
+position sent before loading. This transaction state is transient, with no new
+save layout or changes to classic snapshots.
+
+Extended teleport and phasing effects resolve in player-ID order, independently
+of missile insertion order, and require a walkable adjacent exit. Ordinary
+missile processing and classic placement keep their original ordering.
+
 ## Regression coverage and remaining work
 
 `multiplayer_sync_test` exercises real TCP delivery to the engine with eight
@@ -89,6 +129,11 @@ fragments, and compressed/uncompressed maximum-section deltas. Packet sizes and
 transfer measurements are included as GoogleTest XML properties.
 
 These are synchronization tests, not complete eight-player gameplay sessions.
-Safe simultaneous spawning, UI and balancing must be completed before enabling
-the extended session selector. Full gameplay and visual integration checks also
-remain part of that work.
+`level_entry_test` covers eight independent admission state machines with
+reordered cross-sender delivery, consecutive entrants, blocked maps, coordinator
+replacement, actual dungeon stairs, quest map geometry, and town portals. It
+also sends the new command through the real local engine network path.
+
+UI and balancing must be completed before enabling the extended session selector.
+Full gameplay and visual integration checks with eight complete engines remain
+part of that work.

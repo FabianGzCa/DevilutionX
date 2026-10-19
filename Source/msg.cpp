@@ -52,6 +52,7 @@
 #include "pack.h"
 #include "pfile.h"
 #include "player.h"
+#include "players/level_entry.hpp"
 #include "players/validation.hpp"
 #include "plrmsg.h"
 #include "portals/validation.hpp"
@@ -172,6 +173,7 @@ std::string_view CmdIdString(_cmd_id cmd)
 	case CMD_PLRLEVEL: return "CMD_PLRLEVEL";
 	case CMD_DROPITEM: return "CMD_DROPITEM";
 	case CMD_PLAYER_JOINLEVEL: return "CMD_PLAYER_JOINLEVEL";
+	case CMD_LEVELENTRY: return "CMD_LEVELENTRY";
 	case CMD_SEND_PLRINFO: return "CMD_SEND_PLRINFO";
 	case CMD_SATTACKXY: return "CMD_SATTACKXY";
 	case CMD_ACTIVATEPORTAL: return "CMD_ACTIVATEPORTAL";
@@ -2392,8 +2394,22 @@ size_t OnSendPlayerInfo(const TCmdPlrInfoHdr &header, size_t maxCmdSize, Player 
 	return wBytes + sizeof(header);
 }
 
+size_t OnLevelEntry(const LevelEntryMessage &message, Player &player)
+{
+	if (sgGameInitInfo.rules != ExtendedSessionRules)
+		return sizeof(message);
+	if (gbBufferMsgs == 1)
+		BufferMessage(player, &message, sizeof(message));
+	else
+		ReceiveLevelEntry(static_cast<uint8_t>(player.getId()), message);
+	return sizeof(message);
+}
+
 size_t OnPlayerJoinLevel(const TCmdLocParam2 &message, Player &player)
 {
+	// Extended peers must complete the admission transaction instead.
+	if (sgGameInitInfo.rules == ExtendedSessionRules)
+		return sizeof(message);
 	const Point position { message.x, message.y };
 
 	if (gbBufferMsgs == 1) {
@@ -3584,6 +3600,8 @@ size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize)
 	case CMD_ACK_PLRINFO:
 	case CMD_SEND_PLRINFO:
 		return HandleCmd(OnSendPlayerInfo, player, pCmd, maxCmdSize);
+	case CMD_LEVELENTRY:
+		return HandleCmd(OnLevelEntry, player, pCmd, maxCmdSize);
 	case CMD_PLAYER_JOINLEVEL:
 		return HandleCmd(OnPlayerJoinLevel, player, pCmd, maxCmdSize);
 	case CMD_ACTIVATEPORTAL:

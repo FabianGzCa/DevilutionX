@@ -15,6 +15,7 @@
 #include "engine/render/primitive_render.hpp"
 #include "game_mode.hpp"
 #include "options.h"
+#include "player_visual_identity.hpp"
 #include "utils/language.h"
 #include "utils/str_cat.hpp"
 
@@ -175,8 +176,7 @@ void DrawMonsterHealthBar(const Surface &out)
 	if (Players.size() > 1) {
 		int tagOffset = 5;
 		for (size_t i = 0; i < Players.size(); i++) {
-			const size_t playerTag = i + 1;
-			// The original art only contains distinct tags for the four classic players.
+			const uint8_t playerTag = GetPlayerVisualIdentity(static_cast<int>(i)).tagSprite;
 			if (playerTag < (*playerExpTags).numSprites()) {
 				if (IsPlayerInExperienceMask(monster.whoHit, i)) {
 					RenderClxSprite(out, (*playerExpTags)[playerTag], position + Displacement { tagOffset, height - 31 });

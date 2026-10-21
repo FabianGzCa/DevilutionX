@@ -17,6 +17,7 @@
 #include "levels/setmaps.h"
 #include "options.h"
 #include "player.h"
+#include "player_visual_identity.hpp"
 #include "utils/attributes.h"
 #include "utils/enum_traits.h"
 #include "utils/format.hpp"
@@ -36,11 +37,6 @@ namespace {
 Point Automap;
 
 enum MapColors : uint8_t {
-	/** color used to draw the player's arrow */
-	MapColorsPlayer1 = (PAL8_ORANGE + 1),
-	MapColorsPlayer2 = (PAL8_YELLOW + 1),
-	MapColorsPlayer3 = (PAL8_RED + 1),
-	MapColorsPlayer4 = (PAL8_BLUE + 1),
 	/** color for bright map lines (doors, stairs etc.) */
 	MapColorsBright = PAL8_YELLOW,
 	/** color for dim map lines/dots */
@@ -1320,19 +1316,19 @@ void SearchAutomapItem(const Surface &out, const Displacement &myPlayerOffset, i
 	}
 }
 
-uint8_t GetPlayerMapColor(int id)
+void DrawPlayerMapNumber(const Surface &out, Point center, const PlayerVisualIdentity &identity)
 {
-	static constexpr uint8_t PlayerMapColors[] = {
-		MapColorsPlayer1,
-		MapColorsPlayer2,
-		MapColorsPlayer3,
-		MapColorsPlayer4,
-	};
-
-	if (id < 0 || id >= static_cast<int>(SDL_arraysize(PlayerMapColors)))
-		return MapColorsPlayer1;
-
-	return PlayerMapColors[id];
+	constexpr int GlyphWidth = 3;
+	constexpr int GlyphHeight = 5;
+	constexpr uint8_t BackgroundColor = 239;
+	constexpr uint8_t NumberColor = 255;
+	FillRect(out, center.x - 2, center.y - 3, GlyphWidth + 2, GlyphHeight + 2, BackgroundColor);
+	for (int y = 0; y < GlyphHeight; ++y) {
+		for (int x = 0; x < GlyphWidth; ++x) {
+			if ((identity.automapNumber[y] & (1 << (GlyphWidth - x - 1))) != 0)
+				DrawHorizontalLine(out, { center.x - 1 + x, center.y - 2 + y }, 1, NumberColor);
+		}
+	}
 }
 
 /**
@@ -1340,7 +1336,8 @@ uint8_t GetPlayerMapColor(int id)
  */
 void DrawAutomapPlr(const Surface &out, const Displacement &myPlayerOffset, const Player &player)
 {
-	const uint8_t playerColor = GetPlayerMapColor(player.getId());
+	const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(player.getId());
+	const uint8_t playerColor = identity.automapColor;
 
 	const Point tile = player.position.tile;
 
@@ -1419,6 +1416,7 @@ void DrawAutomapPlr(const Surface &out, const Displacement &myPlayerOffset, cons
 	case Direction::NoDirection:
 		break;
 	}
+	DrawAutomapPlayerIdentifier(out, base, player.getId());
 }
 
 /**
@@ -1544,6 +1542,11 @@ std::unique_ptr<AutomapTile[]> LoadAutomapData(size_t &tileCount)
 }
 
 } // namespace
+
+void DrawAutomapPlayerIdentifier(const Surface &out, Point center, int playerId)
+{
+	DrawPlayerMapNumber(out, center, GetPlayerVisualIdentity(playerId));
+}
 
 bool AutomapActive;
 AutomapType CurrentAutomapType = AutomapType::Opaque;

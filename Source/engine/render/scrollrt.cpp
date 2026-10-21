@@ -58,6 +58,7 @@
 #include "panels/partypanel.hpp"
 #include "panels/quest_log.hpp"
 #include "panels/spell_list.hpp"
+#include "player_visual_identity.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
 #include "qol/floatingnumbers.h"
@@ -91,10 +92,6 @@
 namespace devilution {
 
 enum OutlineColors : uint8_t {
-	OutlineColorsPlayer1 = (PAL16_ORANGE + 7),
-	OutlineColorsPlayer2 = (PAL16_YELLOW + 7),
-	OutlineColorsPlayer3 = (PAL16_RED + 7),
-	OutlineColorsPlayer4 = (PAL16_BLUE + 7),
 	OutlineColorsObject = (PAL16_YELLOW + 2),
 	OutlineColorsTowner = (PAL16_BEIGE + 6),
 	OutlineColorsMonster = (PAL16_RED + 9),
@@ -443,21 +440,6 @@ void DrawPlayerIcons(const Surface &out, const Player &player, Point position, b
 		DrawPlayerIconHelper(out, MissileGraphicID::Reflect, position + Displacement { 0, 16 }, player, infraVision, lightTableIndex);
 }
 
-uint8_t GetPlayerOutlineColor(int id)
-{
-	static constexpr uint8_t PlayerOutlineColors[] = {
-		OutlineColorsPlayer1,
-		OutlineColorsPlayer2,
-		OutlineColorsPlayer3,
-		OutlineColorsPlayer4,
-	};
-
-	if (id < 0 || id >= static_cast<int>(SDL_arraysize(PlayerOutlineColors)))
-		return OutlineColorsPlayer1;
-
-	return PlayerOutlineColors[id];
-}
-
 /**
  * @brief Render a player sprite
  * @param out Output buffer
@@ -475,7 +457,7 @@ void DrawPlayer(const Surface &out, const Player &player, Point tilePosition, Po
 	const Point spriteBufferPosition = targetBufferPosition + player.getRenderingOffset(sprite);
 
 	if (&player == PlayerUnderCursor)
-		ClxDrawOutlineSkipColorZero(out, GetPlayerOutlineColor(player.getId()), spriteBufferPosition, sprite);
+		ClxDrawOutlineSkipColorZero(out, GetPlayerVisualIdentity(player.getId()).outlineColor, spriteBufferPosition, sprite);
 
 	if (&player == MyPlayer && IsNoneOf(leveltype, DTYPE_NEST, DTYPE_CRYPT)) {
 		ClxDraw(out, spriteBufferPosition, sprite);

@@ -182,6 +182,9 @@ void AutomapZoomOut();
  */
 void DrawAutomap(const Surface &out);
 
+/** @brief Draws the numbered marker used to identify a player on the automap. */
+DVL_API_FOR_TEST void DrawAutomapPlayerIdentifier(const Surface &out, Point center, int playerId);
+
 /**
  * @brief Updates automap explorer at point if value is higher than existing.
  */

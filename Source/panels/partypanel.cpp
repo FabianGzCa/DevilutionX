@@ -17,6 +17,7 @@
 #include "inv.h"
 #include "options.h"
 #include "pfile.h"
+#include "player_visual_identity.hpp"
 #include "qol/monhealthbar.h"
 #include "qol/stash.h"
 #include "stores.h"
@@ -208,12 +209,14 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 			    playerPortraitSprite,
 			    portraitPos);
 
-			if ((player.getId() + 1U) < (*PlayerTags).numSprites()) {
+			const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(player.getId());
+			const uint8_t playerTag = identity.tagSprite;
+			if (playerTag < (*PlayerTags).numSprites()) {
 				// Draw the player tag
-				const int tagWidth = (*PlayerTags)[player.getId() + 1].width();
+				const int tagWidth = (*PlayerTags)[playerTag].width();
 				RenderClxSprite(
 				    frameSubregion,
-				    (*PlayerTags)[player.getId() + 1],
+				    (*PlayerTags)[playerTag],
 				    { PortraitFrameSize.width - (tagWidth + (tagWidth / 2)), 0 });
 			}
 
@@ -241,11 +244,17 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 			// Add to the position before continuing to the next item
 			pos.y += ManaBarHeight;
 
-			// Draw the players name under the frame
+			// Draw the player number and name under the frame
+			const int playerNameOffset = GetLineWidth(identity.nameLabel) + 2;
+			DrawString(
+			    gameScreen,
+			    identity.nameLabel,
+			    pos,
+			    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
 			DrawString(
 			    gameScreen,
 			    player._pName,
-			    pos,
+			    pos + Displacement { playerNameOffset, 0 },
 			    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
 
 			// Add to the position before continuing onto the next player
@@ -258,7 +267,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 			}
 
 			// Get the current players name width
-			const int width = GetLineWidth(player._pName);
+			const int width = playerNameOffset + GetLineWidth(player._pName);
 			// Now check to see if it's the current longest name
 			if (width >= currentLongestNameWidth)
 				currentLongestNameWidth = width;

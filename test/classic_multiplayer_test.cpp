@@ -2,24 +2,86 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <expected>
+#include <set>
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "automap.h"
 #include "engine/assets.hpp"
+#include "engine/load_clx.hpp"
+#include "engine/load_file.hpp"
+#include "engine/render/clx_render.hpp"
+#include "engine/render/primitive_render.hpp"
+#include "engine/render/text_render.hpp"
+#include "engine/surface.hpp"
 #include "game_mode.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "monster.h"
 #include "multi.h"
 #include "player.h"
 #include "player_mask.hpp"
+#include "player_visual_identity.hpp"
 #include "portal.h"
 #include "storm/storm_net.hpp"
 #include "tables/playerdat.hpp"
 #include "utils/fixed_point.hpp"
+#include "utils/sdl_ptrs.h"
+#include "utils/sdl_wrap.h"
+#include "utils/surface_to_png.hpp"
 
 namespace devilution {
 namespace {
+
+std::expected<void, std::string> WritePlayerVisualGallery(const ClxSpriteList &playerTags, std::string_view outputDirectory, int width, int height)
+{
+	struct PaletteColor {
+		uint8_t r;
+		uint8_t g;
+		uint8_t b;
+	};
+	static_assert(sizeof(PaletteColor) == 3);
+	std::array<PaletteColor, 256> paletteData;
+	LoadFileInMem("ui_art\\diablo.pal", paletteData);
+	SDLPaletteUniquePtr palette = SDLWrap::AllocPalette(static_cast<int>(paletteData.size()));
+	for (size_t i = 0; i < paletteData.size(); ++i) {
+		palette->colors[i] = { paletteData[i].r, paletteData[i].g, paletteData[i].b, SDL_ALPHA_OPAQUE };
+	}
+
+	OwnedSurface out(width, height);
+	SDL_SetSurfacePalette(out.surface, palette.get());
+	FillRect(out, 0, 0, width, height, 239);
+	const int left = (width - 640) / 2;
+	DrawString(out, "PLAYER IDENTITIES", { left + 32, 24 }, { .flags = UiFlags::ColorWhite | UiFlags::Outlined | UiFlags::FontSize12 });
+	DrawString(out, "MAP NUMBER / OUTLINE", { left + 250, 44 }, { .flags = UiFlags::ColorWhite | UiFlags::Outlined | UiFlags::FontSize12 });
+
+	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
+		const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
+		const int row = 64 + playerId * 42;
+		RenderClxSprite(out, playerTags[identity.tagSprite], { left + 32, row });
+		std::string label(identity.nameLabel);
+		label += " Player ";
+		label += identity.number;
+		DrawString(out, label, { left + 56, row + 4 }, { .flags = UiFlags::ColorWhitegold | UiFlags::Outlined | UiFlags::FontSize12 });
+		DrawAutomapPlayerIdentifier(out, { left + 300, row + 12 }, playerId);
+		FillRect(out, left + 250, row + 3, 18, 18, identity.outlineColor);
+		FillRect(out, left + 254, row + 7, 10, 10, identity.automapColor);
+	}
+
+	const std::string filename = StrCat(outputDirectory, "/player-identities-", width, "x", height, ".png");
+#ifdef USE_SDL3
+	SDL_IOStream *file = SDL_IOFromFile(filename.c_str(), "wb");
+#else
+	SDL_RWops *file = SDL_RWFromFile(filename.c_str(), "wb");
+#endif
+	if (file == nullptr)
+		return std::unexpected(SDL_GetError());
+	return WriteSurfaceToFilePng(out, file);
+}
 
 class ClassicMultiplayerTest : public ::testing::Test {
 protected:
@@ -92,6 +154,106 @@ TEST_F(ClassicMultiplayerTest, GrowingPlayerStorageDoesNotMoveSessionPointers)
 	EXPECT_EQ(Players.size(), static_cast<size_t>(PlayerStorageCapacity));
 	EXPECT_EQ(MyPlayer, localPlayer);
 	EXPECT_EQ(InspectPlayer, localPlayer);
+}
+
+TEST_F(ClassicMultiplayerTest, PlayerVisualIdentitiesCoverAllEightPlayers)
+{
+	std::set<uint8_t> automapColors;
+	std::set<uint8_t> outlineColors;
+	std::set<uint8_t> tagSprites;
+	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
+		const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
+		EXPECT_EQ(identity.number, '1' + playerId);
+		EXPECT_TRUE(automapColors.insert(identity.automapColor).second);
+		EXPECT_TRUE(outlineColors.insert(identity.outlineColor).second);
+		EXPECT_EQ(identity.tagSprite, playerId + 1);
+		EXPECT_TRUE(tagSprites.insert(identity.tagSprite).second);
+		uint8_t glyphPixels = 0;
+		for (uint8_t row : identity.automapNumber)
+			glyphPixels |= row;
+		EXPECT_NE(glyphPixels, 0);
+		for (uint8_t row : identity.automapNumber)
+			EXPECT_LE(row, 0b111);
+	}
+	EXPECT_EQ(automapColors.size(), static_cast<size_t>(PlayerStorageCapacity));
+	EXPECT_EQ(outlineColors.size(), static_cast<size_t>(PlayerStorageCapacity));
+	EXPECT_EQ(tagSprites.size(), static_cast<size_t>(PlayerStorageCapacity));
+}
+
+TEST_F(ClassicMultiplayerTest, PlayerVisualIdentityPreservesClassicColorsAndBoundsInvalidIds)
+{
+	EXPECT_EQ(GetPlayerVisualIdentity(0).automapColor, PAL8_ORANGE + 1);
+	EXPECT_EQ(GetPlayerVisualIdentity(1).automapColor, PAL8_YELLOW + 1);
+	EXPECT_EQ(GetPlayerVisualIdentity(2).automapColor, PAL8_RED + 1);
+	EXPECT_EQ(GetPlayerVisualIdentity(3).automapColor, PAL8_BLUE + 1);
+	EXPECT_EQ(GetPlayerVisualIdentity(0).outlineColor, PAL16_ORANGE + 7);
+	EXPECT_EQ(GetPlayerVisualIdentity(1).outlineColor, PAL16_YELLOW + 7);
+	EXPECT_EQ(GetPlayerVisualIdentity(2).outlineColor, PAL16_RED + 7);
+	EXPECT_EQ(GetPlayerVisualIdentity(3).outlineColor, PAL16_BLUE + 7);
+	EXPECT_EQ(&GetPlayerVisualIdentity(-1), &PlayerVisualIdentities[0]);
+	EXPECT_EQ(&GetPlayerVisualIdentity(PlayerStorageCapacity), &PlayerVisualIdentities[0]);
+}
+
+TEST_F(ClassicMultiplayerTest, AutomapPlayerIdentifiersRenderAllEightNumbers)
+{
+	OwnedSurface marker(5, 7);
+	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
+		FillRect(marker, 0, 0, marker.w(), marker.h(), 0);
+		DrawAutomapPlayerIdentifier(marker, { 2, 3 }, playerId);
+		const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
+		for (int y = 0; y < 7; ++y) {
+			for (int x = 0; x < 5; ++x) {
+				uint8_t expectedColor = 239;
+				if (x > 0 && x < 4 && y > 0 && y < 6) {
+					const bool isNumberPixel = (identity.automapNumber[y - 1] & (1 << (3 - x))) != 0;
+					if (isNumberPixel)
+						expectedColor = 255;
+				}
+				const Point pixelPosition { x, y };
+				EXPECT_EQ(marker[pixelPosition], expectedColor) << "player " << playerId + 1 << ", pixel " << x << ',' << y;
+			}
+		}
+	}
+	DrawAutomapPlayerIdentifier(marker, { 2, 3 }, -1);
+	const Point centerPixel { 2, 3 };
+	EXPECT_EQ(marker[centerPixel], 255);
+}
+
+TEST_F(ClassicMultiplayerTest, AllEightPlayerTagSpritesAreAvailable)
+{
+	const OwnedClxSpriteList playerTags = LoadClx("data\\monstertags.clx");
+	ASSERT_EQ(playerTags.numSprites(), static_cast<uint32_t>(PlayerStorageCapacity + 1));
+	EXPECT_EQ(playerTags[0].width(), 13);
+	EXPECT_EQ(playerTags[0].height(), 22);
+	std::set<std::vector<uint8_t>> tagPixels;
+	constexpr std::array<uint8_t, PlayerStorageCapacity> NumberColors = { 255, 239, 239, 239, 255, 239, 255, 239 };
+	OwnedSurface renderedTag(13, 22);
+	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
+		const ClxSprite tag = playerTags[GetPlayerVisualIdentity(playerId).tagSprite];
+		ASSERT_EQ(tag.width(), 13);
+		ASSERT_EQ(tag.height(), 22);
+		ASSERT_GT(tag.pixelDataSize(), 0U);
+		EXPECT_TRUE(tagPixels.emplace(tag.pixelData(), tag.pixelData() + tag.pixelDataSize()).second);
+
+		FillRect(renderedTag, 0, 0, renderedTag.w(), renderedTag.h(), 1);
+		RenderClxSprite(renderedTag, tag, { 0, 0 });
+		const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
+		for (int y = 0; y < static_cast<int>(identity.automapNumber.size()); ++y) {
+			for (int x = 0; x < 3; ++x) {
+				const bool isNumberPixel = (identity.automapNumber[y] & (1 << (2 - x))) != 0;
+				const Point pixelPosition { x + 5, y + 4 };
+				if (isNumberPixel) {
+					EXPECT_EQ(renderedTag[pixelPosition], NumberColors[playerId]) << "player " << playerId + 1 << ", glyph row " << y << ", column " << x;
+				} else {
+					EXPECT_NE(renderedTag[pixelPosition], 1) << "player " << playerId + 1 << ", glyph row " << y << ", column " << x;
+				}
+			}
+		}
+	}
+	if (const char *captureDirectory = std::getenv("DEVILUTIONX_PLAYER_VISUAL_CAPTURE_DIR")) {
+		ASSERT_TRUE(WritePlayerVisualGallery(playerTags, captureDirectory, 640, 480).has_value());
+		ASSERT_TRUE(WritePlayerVisualGallery(playerTags, captureDirectory, 1280, 720).has_value());
+	}
 }
 
 TEST_F(ClassicMultiplayerTest, TurnBuffersRespectTheSessionPlayerCount)

@@ -37,7 +37,14 @@ namespace devilution {
 struct Missile;
 struct Player;
 
+// The classic monster table and disk format retain 200 entries.
 constexpr size_t MaxMonsters = 200;
+constexpr size_t MonsterStorageCapacity = MaxMonsters + ExtendedSessionRules.maxPlayers - 4;
+static_assert(MonsterStorageCapacity + ExtendedSessionRules.maxPlayers <= 256);
+/** Negotiated live monster IDs; classic player-enemy codes still start at 200. */
+size_t MonsterLimit();
+/** Free entries in the original enemy pool, excluding the additional summon pool. */
+size_t AvailableMonsterSlots();
 // Zhar uses a fixed classic monster slot independent of player capacity.
 constexpr size_t ZharMonsterIndex = 4;
 constexpr size_t MaxLvlMTypes = 24;
@@ -495,8 +502,8 @@ struct Monster { // note: missing field _mAFNum
 };
 
 extern size_t LevelMonsterTypeCount;
-extern Monster Monsters[MaxMonsters];
-extern unsigned ActiveMonsters[MaxMonsters];
+extern Monster Monsters[MonsterStorageCapacity];
+extern unsigned ActiveMonsters[MonsterStorageCapacity];
 extern size_t ActiveMonsterCount;
 extern int MonsterKillCounts[NUM_MAX_MTYPES];
 extern bool sgbSaveSoundOn;

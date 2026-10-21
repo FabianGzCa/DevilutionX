@@ -34,6 +34,7 @@ set(tests
   level_entry_test
   math_test
   missiles_test
+  monster_summons_test
   multi_logging_test
   multiplayer_sync_test
   pack_test

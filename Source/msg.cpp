@@ -174,6 +174,7 @@ std::string_view CmdIdString(_cmd_id cmd)
 	case CMD_DROPITEM: return "CMD_DROPITEM";
 	case CMD_PLAYER_JOINLEVEL: return "CMD_PLAYER_JOINLEVEL";
 	case CMD_LEVELENTRY: return "CMD_LEVELENTRY";
+	case CMD_GOLEMFAILED: return "CMD_GOLEMFAILED";
 	case CMD_SEND_PLRINFO: return "CMD_SEND_PLRINFO";
 	case CMD_SATTACKXY: return "CMD_SATTACKXY";
 	case CMD_ACTIVATEPORTAL: return "CMD_ACTIVATEPORTAL";
@@ -264,7 +265,7 @@ struct DLevel {
 	TCmdPItem item[MAXITEMS];
 	ankerl::unordered_dense::map<WorldTilePosition, DObjectStr> object;
 	ankerl::unordered_dense::map<size_t, DSpawnedMonster> spawnedMonsters;
-	DMonsterStr monster[MaxMonsters];
+	DMonsterStr monster[MonsterStorageCapacity];
 };
 
 #pragma pack(push, 1)
@@ -310,14 +311,14 @@ uint8_t sbLastCmd;
 /**
  * @brief buffer used to receive level deltas, size is the worst expected case assuming every object on a level was touched
  */
-constexpr size_t MaxLevelDeltaSize = 1U                                                                    /* marker byte, always 0 */
-    + sizeof(uint8_t)                                                                                      /* level id */
-    + sizeof(DLevel::item)                                                                                 /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
-    + sizeof(uint8_t)                                                                                      /* count of object interactions which caused a state change since dungeon generation */
-    + ((sizeof(WorldTilePosition) + sizeof(_cmd_id)) * MAXOBJECTS)                                         /* location/action pairs for the object interactions */
-    + sizeof(DLevel::monster)                                                                              /* latest monster state */
-    + sizeof(uint16_t)                                                                                     /* spawned monster count */
-    + ((sizeof(uint16_t) + std::max(sizeof(DSpawnedMonster), sizeof(DSpawnedMonsterPack))) * MaxMonsters); /* spawned monsters */
+constexpr size_t MaxLevelDeltaSize = 1U                                                                               /* marker byte, always 0 */
+    + sizeof(uint8_t)                                                                                                 /* level id */
+    + sizeof(DLevel::item)                                                                                            /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
+    + sizeof(uint8_t)                                                                                                 /* count of object interactions which caused a state change since dungeon generation */
+    + ((sizeof(WorldTilePosition) + sizeof(_cmd_id)) * MAXOBJECTS)                                                    /* location/action pairs for the object interactions */
+    + sizeof(DLevel::monster)                                                                                         /* latest monster state */
+    + sizeof(uint16_t)                                                                                                /* spawned monster count */
+    + ((sizeof(uint16_t) + std::max(sizeof(DSpawnedMonster), sizeof(DSpawnedMonsterPack))) * MonsterStorageCapacity); /* spawned monsters */
 constexpr size_t MaxJunkDeltaSize = 1 + sizeof(DJunk);
 std::byte sgRecvBuf[std::max(MaxLevelDeltaSize, MaxJunkDeltaSize)];
 static_assert(sizeof(sgRecvBuf) <= std::numeric_limits<uint16_t>::max());
@@ -666,7 +667,7 @@ const std::byte *DeltaImportObjects(const std::byte *src, const std::byte *end, 
 
 std::byte *DeltaExportMonster(std::byte *dst, const DMonsterStr *src)
 {
-	for (size_t i = 0; i < MaxMonsters; i++, src++) {
+	for (size_t i = 0; i < MonsterLimit(); i++, src++) {
 		if (src->position.x == 0xFF) {
 			*dst++ = std::byte { 0xFF };
 		} else {
@@ -684,7 +685,7 @@ const std::byte *DeltaImportMonster(const std::byte *src, const std::byte *end, 
 		return nullptr;
 
 	size_t size = 0;
-	for (size_t i = 0; i < MaxMonsters; i++, dst++) {
+	for (size_t i = 0; i < MonsterLimit(); i++, dst++) {
 		if (size >= static_cast<size_t>(end - src))
 			return nullptr;
 		if (src[size] == std::byte { 0xFF }) {
@@ -737,7 +738,7 @@ const std::byte *DeltaImportSpawnedMonsters(const std::byte *src, const std::byt
 	memcpy(&size, src, sizeof(uint16_t));
 	size = Swap16LE(size);
 	src += sizeof(uint16_t);
-	if (size > MaxMonsters)
+	if (size > MonsterLimit())
 		return nullptr;
 
 	const size_t requiredBytes = (sizeof(uint16_t) + SpawnedMonsterDeltaSize()) * size;
@@ -748,7 +749,7 @@ const std::byte *DeltaImportSpawnedMonsters(const std::byte *src, const std::byt
 		uint16_t monsterId;
 		memcpy(&monsterId, src, sizeof(uint16_t));
 		monsterId = Swap16LE(monsterId);
-		if (monsterId >= MaxMonsters || spawnedMonsters.contains(monsterId))
+		if (monsterId >= MonsterLimit() || spawnedMonsters.contains(monsterId))
 			return nullptr;
 		src += sizeof(uint16_t);
 
@@ -760,7 +761,8 @@ const std::byte *DeltaImportSpawnedMonsters(const std::byte *src, const std::byt
 		} else {
 			memcpy(&spawnedMonster, src, sizeof(spawnedMonster));
 		}
-		if (spawnedMonster.typeIndex >= MaxLvlMTypes || spawnedMonster.golemOwnerPlayerId >= Players.size() || spawnedMonster.golemSpellLevel < 0)
+		if (spawnedMonster.typeIndex >= MaxLvlMTypes || spawnedMonster.golemOwnerPlayerId >= Players.size() || spawnedMonster.golemSpellLevel < 0
+		    || (monsterId >= MaxMonsters && spawnedMonster.typeIndex != 0))
 			return nullptr;
 		src += SpawnedMonsterDeltaSize();
 		spawnedMonsters.emplace(monsterId, spawnedMonster);
@@ -918,7 +920,7 @@ void DeltaLoadSpawnedMonsters(const DLevel &deltaLevel)
 
 void DeltaLoadEnemies(const DLevel &deltaLevel)
 {
-	for (size_t i = 0; i < MaxMonsters; i++) {
+	for (size_t i = 0; i < MonsterLimit(); i++) {
 		const DMonsterStr &deltaMonster = deltaLevel.monster[i];
 		if (!IsMonsterDeltaValid(deltaMonster))
 			continue;
@@ -941,7 +943,7 @@ void DeltaLoadEnemies(const DLevel &deltaLevel)
 
 void DeltaLoadMonsters(const DLevel &deltaLevel)
 {
-	for (size_t i = 0; i < MaxMonsters; i++) {
+	for (size_t i = 0; i < MonsterLimit(); i++) {
 		const DMonsterStr &deltaMonster = deltaLevel.monster[i];
 		if (!IsMonsterDeltaValid(deltaMonster))
 			continue;
@@ -1902,7 +1904,7 @@ size_t OnAttackMonster(const TCmdParam1 &message, Player &player)
 {
 	const uint16_t monsterIdx = Swap16LE(message.wParam1);
 
-	if (gbBufferMsgs != 1 && player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MaxMonsters) {
+	if (gbBufferMsgs != 1 && player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MonsterLimit()) {
 		const Point position = Monsters[monsterIdx].position.future;
 		if (player.position.tile.WalkingDistance(position) > 1)
 			MakePlrPath(player, position, false);
@@ -1930,7 +1932,7 @@ size_t OnRangedAttackMonster(const TCmdParam1 &message, Player &player)
 {
 	const uint16_t monsterIdx = Swap16LE(message.wParam1);
 
-	if (gbBufferMsgs != 1 && player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MaxMonsters) {
+	if (gbBufferMsgs != 1 && player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MonsterLimit()) {
 		ClrPlrPath(player);
 		player.destAction = ACTION_RATTACKMON;
 		player.destParam1 = monsterIdx;
@@ -1961,7 +1963,7 @@ size_t OnSpellMonster(const TCmdParam4 &message, Player &player)
 	if (leveltype == DTYPE_TOWN)
 		return sizeof(message);
 	const uint16_t monsterIdx = Swap16LE(message.wParam1);
-	if (monsterIdx >= MaxMonsters)
+	if (monsterIdx >= MonsterLimit())
 		return sizeof(message);
 
 	if (!InitNewSpell(player, message.wParam2, message.wParam3, message.wParam4))
@@ -2000,7 +2002,7 @@ size_t OnKnockback(const TCmdParam1 &message, Player &player)
 {
 	const uint16_t monsterIdx = Swap16LE(message.wParam1);
 
-	if (gbBufferMsgs != 1 && player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MaxMonsters) {
+	if (gbBufferMsgs != 1 && player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MonsterLimit()) {
 		Monster &monster = Monsters[monsterIdx];
 		M_GetKnockback(monster, player.position.tile);
 		M_StartHit(monster, player, 0);
@@ -2116,7 +2118,7 @@ size_t OnMonstDeath(const TCmdLocParam1 &message, Player &player)
 	const uint16_t monsterIdx = Swap16LE(message.wParam1);
 
 	if (gbBufferMsgs != 1) {
-		if (&player != MyPlayer && player.plrlevel > 0 && InDungeonBounds(position) && monsterIdx < MaxMonsters) {
+		if (&player != MyPlayer && player.plrlevel > 0 && InDungeonBounds(position) && monsterIdx < MonsterLimit()) {
 			Monster &monster = Monsters[monsterIdx];
 			if (player.isOnActiveLevel())
 				M_SyncStartKill(monster, position, player);
@@ -2129,6 +2131,20 @@ size_t OnMonstDeath(const TCmdLocParam1 &message, Player &player)
 	return sizeof(message);
 }
 
+size_t OnGolemFailed(const TCmdParam1 &message, const Player &player)
+{
+	if (sgGameInitInfo.rules != ExtendedSessionRules || gbBufferMsgs != 0 || Swap16LE(message.wParam1) != MyPlayerId)
+		return sizeof(message);
+	for (const Player &candidate : Players) {
+		if (!candidate.plractive || candidate._pLvlChanging || candidate._pmode == PM_NEWLVL || !candidate.isOnActiveLevel())
+			continue;
+		if (&candidate == &player)
+			EventPlrMsg(_("There is no room to summon a golem."));
+		break;
+	}
+	return sizeof(message);
+}
+
 size_t OnRequestSpawnGolem(const TCmdLocParam1 &message, const Player &player)
 {
 	if (gbBufferMsgs == 1)
@@ -2136,8 +2152,13 @@ size_t OnRequestSpawnGolem(const TCmdLocParam1 &message, const Player &player)
 
 	const WorldTilePosition position { message.x, message.y };
 
-	if (player.plrlevel > 0 && player.isLevelOwnedByLocalClient() && InDungeonBounds(position))
-		SpawnGolem(player, position, static_cast<uint8_t>(message.wParam1));
+	if (player.plrlevel > 0 && player.isLevelOwnedByLocalClient() && InDungeonBounds(position)) {
+		const int maximum = std::clamp<int>(MaxSpellLevel + player._pISplLvlAdd, 0, 255);
+		const uint8_t spellLevel = sgGameInitInfo.rules == ExtendedSessionRules
+		    ? static_cast<uint8_t>(std::min<uint16_t>(Swap16LE(message.wParam1), maximum))
+		    : static_cast<uint8_t>(message.wParam1);
+		SpawnGolem(player, position, spellLevel);
+	}
 
 	return sizeof(message);
 }
@@ -2148,7 +2169,7 @@ size_t OnMonstDamage(const TCmdMonDamage &message, Player &player)
 
 	if (gbBufferMsgs != 1) {
 		if (&player != MyPlayer) {
-			if (player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MaxMonsters) {
+			if (player.isOnActiveLevel() && leveltype != DTYPE_TOWN && monsterIdx < MonsterLimit()) {
 				Monster &monster = Monsters[monsterIdx];
 				monster.tag(player);
 				if (monster.hitPoints > 0) {
@@ -2721,7 +2742,8 @@ size_t OnSpawnMonster(const TCmdSpawnMonster &message, const Player &player)
 	auto typeIndex = static_cast<size_t>(Swap16LE(message.typeIndex));
 	auto monsterId = static_cast<size_t>(Swap16LE(message.monsterId));
 	const uint8_t golemOwnerPlayerId = message.golemOwnerPlayerId;
-	if (monsterId >= MaxMonsters || typeIndex >= MaxLvlMTypes || !InDungeonBounds(position) || golemOwnerPlayerId >= Players.size()) {
+	if (monsterId >= MonsterLimit() || typeIndex >= MaxLvlMTypes || !InDungeonBounds(position) || golemOwnerPlayerId >= Players.size() || message.dir > Direction::SouthEast
+	    || (monsterId >= MaxMonsters && typeIndex != 0)) {
 		return sizeof(message);
 	}
 	const uint8_t golemSpellLevel = std::min(message.golemSpellLevel, static_cast<uint8_t>(MaxSpellLevel + Players[golemOwnerPlayerId]._pISplLvlAdd));
@@ -2894,7 +2916,7 @@ void DeltaExportData(uint8_t pnum)
 		    + sizeof(deltaLevel.monster)                                                            /* latest monster state */
 		    + sizeof(uint16_t)                                                                      /* spawned monster count */
 		    + ((sizeof(uint16_t) + SpawnedMonsterDeltaSize()) * deltaLevel.spawnedMonsters.size()); /* spawned monsters */
-		if (bufferSize > sizeof(sgRecvBuf) || deltaLevel.object.size() > MAXOBJECTS || deltaLevel.spawnedMonsters.size() > MaxMonsters) {
+		if (bufferSize > sizeof(sgRecvBuf) || deltaLevel.object.size() > MAXOBJECTS || deltaLevel.spawnedMonsters.size() > MonsterLimit()) {
 			nthread_terminate_game("Delta exceeds transfer capacity");
 			return;
 		}
@@ -3600,6 +3622,8 @@ size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize)
 	case CMD_ACK_PLRINFO:
 	case CMD_SEND_PLRINFO:
 		return HandleCmd(OnSendPlayerInfo, player, pCmd, maxCmdSize);
+	case CMD_GOLEMFAILED:
+		return HandleCmd(OnGolemFailed, player, pCmd, maxCmdSize);
 	case CMD_LEVELENTRY:
 		return HandleCmd(OnLevelEntry, player, pCmd, maxCmdSize);
 	case CMD_PLAYER_JOINLEVEL:

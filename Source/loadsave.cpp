@@ -788,8 +788,12 @@ bool gbSkipSync = false;
 
 void LoadMonsters(LoadHelper &file, ankerl::unordered_dense::set<unsigned> &removedMonsterIds, const bool applyLight, LevelConversionData *levelConversionData)
 {
-	for (unsigned &monsterId : ActiveMonsters)
-		monsterId = file.NextBE<uint32_t>();
+	for (size_t i = 0; i < MaxMonsters; ++i)
+		ActiveMonsters[i] = file.NextBE<uint32_t>();
+	for (size_t i = MaxMonsters; i < MonsterStorageCapacity; ++i) {
+		ActiveMonsters[i] = static_cast<unsigned>(i);
+		Monsters[i] = { };
+	}
 
 	for (size_t i = 0; i < ActiveMonsterCount;) {
 		Monster &monster = Monsters[ActiveMonsters[i]];
@@ -1968,8 +1972,8 @@ void SaveLevel(SaveWriter &saveWriter, LevelConversionData *levelConversionData)
 	file.WriteBE<int32_t>(ActiveObjectCount);
 
 	if (leveltype != DTYPE_TOWN) {
-		for (const unsigned monsterId : ActiveMonsters)
-			file.WriteBE<uint32_t>(monsterId);
+		for (size_t i = 0; i < MaxMonsters; ++i)
+			file.WriteBE<uint32_t>(ActiveMonsters[i]);
 		for (size_t i = 0; i < ActiveMonsterCount; i++) {
 			MonsterConversionData *monsterConversionData = nullptr;
 			if (levelConversionData != nullptr)
@@ -2851,8 +2855,8 @@ void SaveGameData(SaveWriter &saveWriter)
 	file.Skip(4 * (MaxMonsters - MonstersData.size()));
 
 	if (leveltype != DTYPE_TOWN) {
-		for (const unsigned monsterId : ActiveMonsters)
-			file.WriteBE<uint32_t>(monsterId);
+		for (size_t i = 0; i < MaxMonsters; ++i)
+			file.WriteBE<uint32_t>(ActiveMonsters[i]);
 		for (size_t i = 0; i < ActiveMonsterCount; i++)
 			SaveMonster(&file, Monsters[ActiveMonsters[i]]);
 		// Write ActiveMissiles

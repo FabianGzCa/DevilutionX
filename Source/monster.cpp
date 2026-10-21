@@ -110,8 +110,8 @@ namespace devilution {
 
 CMonster LevelMonsterTypes[MaxLvlMTypes];
 size_t LevelMonsterTypeCount;
-Monster Monsters[MaxMonsters];
-unsigned ActiveMonsters[MaxMonsters];
+Monster Monsters[MonsterStorageCapacity];
+unsigned ActiveMonsters[MonsterStorageCapacity];
 size_t ActiveMonsterCount;
 /** Tracks the total number of monsters killed per monster_id. */
 int MonsterKillCounts[NUM_MAX_MTYPES];
@@ -482,7 +482,8 @@ void ClearMVars(Monster &monster)
 
 void ClrAllMonsters()
 {
-	for (auto &monster : Monsters) {
+	for (size_t i = 0; i < MaxMonsters; ++i) {
+		Monster &monster = Monsters[i];
 		ClearMVars(monster);
 		monster.goal = MonsterGoal::None;
 		monster.mode = MonsterMode::Stand;
@@ -641,6 +642,8 @@ void DeleteMonster(size_t activeIndex)
 
 	ActiveMonsterCount--;
 	std::swap(ActiveMonsters[activeIndex], ActiveMonsters[ActiveMonsterCount]); // This ensures alive monsters are before ActiveMonsterCount in the array and any deleted monster after
+	if (sgGameInitInfo.rules == ExtendedSessionRules)
+		std::sort(ActiveMonsters, ActiveMonsters + ActiveMonsterCount);
 
 	for (size_t i = 0; i < ActiveMonsterCount; i++) {
 		Monster &activeMonster = Monsters[ActiveMonsters[i]];
@@ -2407,7 +2410,7 @@ void LeoricAi(Monster &monster)
 		    && ((distanceToEnemy >= 3 && v < 4 * monster.intelligence + 35) || v < 6)
 		    && LineClearMissile(monster.position.tile, monster.enemyPosition)) {
 			const Point newPosition = monster.position.tile + md;
-			if (IsTileAvailable(monster, newPosition) && ActiveMonsterCount < MaxMonsters) {
+			if (IsTileAvailable(monster, newPosition) && AvailableMonsterSlots() != 0) {
 				auto typeIndex = GetRandomSkeletonTypeIndex();
 				if (typeIndex) {
 					SpawnMonster(newPosition, md, *typeIndex);
@@ -3043,7 +3046,7 @@ void HorkDemonAi(Monster &monster)
 	if (monster.goal == MonsterGoal::Normal) {
 		if ((distanceToEnemy >= 3) && v < 2 * monster.intelligence + 43) {
 			const Point position = monster.position.tile + monster.direction;
-			if (IsTileAvailable(monster, position) && ActiveMonsterCount < MaxMonsters) {
+			if (IsTileAvailable(monster, position) && AvailableMonsterSlots() != 0) {
 				StartRangedSpecialAttack(monster, MissileID::HorkSpawn, 0);
 			}
 		} else if (distanceToEnemy < 2) {
@@ -3251,8 +3254,8 @@ MonsterSpritesData LoadMonsterSpritesData(const MonsterData &monsterData)
 
 void EnsureMonsterIndexIsActive(size_t monsterId)
 {
-	assert(monsterId < MaxMonsters);
-	for (size_t index = 0; index < MaxMonsters; index++) {
+	assert(monsterId < MonsterLimit());
+	for (size_t index = 0; index < MonsterLimit(); index++) {
 		if (ActiveMonsters[index] != monsterId)
 			continue;
 		if (index < ActiveMonsterCount)
@@ -3261,6 +3264,9 @@ void EnsureMonsterIndexIsActive(size_t monsterId)
 		ActiveMonsters[ActiveMonsterCount] = static_cast<unsigned>(monsterId);
 		ActiveMonsters[index] = oldId;
 		ActiveMonsterCount += 1;
+		if (sgGameInitInfo.rules == ExtendedSessionRules)
+			std::sort(ActiveMonsters, ActiveMonsters + ActiveMonsterCount);
+		return;
 	}
 }
 
@@ -3289,6 +3295,18 @@ bool PosOkMovingMissile(Point position)
 }
 
 } // namespace
+
+size_t MonsterLimit()
+{
+	return sgGameInitInfo.rules == ExtendedSessionRules ? MonsterStorageCapacity : MaxMonsters;
+}
+
+size_t AvailableMonsterSlots()
+{
+	if (sgGameInitInfo.rules != ExtendedSessionRules)
+		return MaxMonsters - ActiveMonsterCount;
+	return std::count_if(ActiveMonsters + ActiveMonsterCount, ActiveMonsters + MonsterLimit(), [](unsigned id) { return id < MaxMonsters; });
+}
 
 std::expected<size_t, std::string> AddMonsterType(_monster_id type, placeflag placeflag)
 {
@@ -3426,6 +3444,8 @@ void InitLevelMonsters()
 	}
 
 	ClrAllMonsters();
+	for (size_t i = MaxMonsters; i < MonsterStorageCapacity; ++i)
+		Monsters[i] = { };
 	ActiveMonsterCount = 0;
 	totalmonsters = MaxMonsters;
 
@@ -3781,30 +3801,32 @@ std::expected<void, std::string> SetMapMonsters(const uint16_t *dunData, Point s
 
 Monster *AddMonster(Point position, Direction dir, size_t typeIndex, bool inMap)
 {
-	if (ActiveMonsterCount < MaxMonsters) {
-		Monster &monster = Monsters[ActiveMonsters[ActiveMonsterCount++]];
-		if (inMap)
-			monster.occupyTile(position, false);
-		InitMonster(monster, dir, typeIndex, position);
-		return &monster;
-	}
-
-	return nullptr;
+	const auto end = ActiveMonsters + MonsterLimit();
+	const auto slot = std::find_if(ActiveMonsters + ActiveMonsterCount, end, [](unsigned id) { return id < MaxMonsters; });
+	if (slot == end)
+		return nullptr;
+	const unsigned id = *slot;
+	EnsureMonsterIndexIsActive(id);
+	Monster &monster = Monsters[id];
+	if (inMap)
+		monster.occupyTile(position, false);
+	InitMonster(monster, dir, typeIndex, position);
+	return &monster;
 }
 
 void SpawnMonster(Point position, Direction dir, size_t typeIndex)
 {
-	if (ActiveMonsterCount >= MaxMonsters)
+	if (AvailableMonsterSlots() == 0)
 		return;
 
-	// The command is only executed for the level owner, to prevent desyncs in multiplayer.
+	// Only the level owner allocates IDs and broadcasts the resulting spawn.
 	if (!MyPlayer->isLevelOwnedByLocalClient())
 		return;
 
-	const size_t monsterIndex = ActiveMonsters[ActiveMonsterCount];
-	ActiveMonsterCount += 1;
+	const auto slot = std::find_if(ActiveMonsters + ActiveMonsterCount, ActiveMonsters + MonsterLimit(), [](unsigned id) { return id < MaxMonsters; });
+	const unsigned monsterIndex = *slot;
+	EnsureMonsterIndexIsActive(monsterIndex);
 	const uint32_t seed = GetLCGEngineState();
-	// Update local state immediately to increase ActiveMonsterCount instantly (this allows multiple monsters to be spawned in one game tick)
 	InitializeSpawnedMonster(position, dir, typeIndex, monsterIndex, seed, 0, 0);
 	NetSendCmdSpawnMonster(position, dir, static_cast<uint16_t>(typeIndex), static_cast<uint16_t>(monsterIndex), seed, 0, 0);
 }
@@ -4267,7 +4289,7 @@ void ProcessMonsters()
 {
 	DeleteMonsterList();
 
-	assert(ActiveMonsterCount <= MaxMonsters);
+	assert(ActiveMonsterCount <= MonsterLimit());
 	for (size_t i = 0; i < ActiveMonsterCount; i++) {
 		Monster &monster = Monsters[ActiveMonsters[i]];
 		FollowTheLeader(monster);
@@ -4306,7 +4328,7 @@ void ProcessMonsters()
 
 		if ((monster.flags & MFLAG_NO_ENEMY) == 0) {
 			if ((monster.flags & MFLAG_TARGETS_MONSTER) != 0) {
-				assert(monster.enemy >= 0 && monster.enemy < MaxMonsters);
+				assert(monster.enemy >= 0 && monster.enemy < MonsterLimit());
 				monster.position.last = Monsters[monster.enemy].position.future;
 				monster.enemyPosition = monster.position.last;
 			} else {
@@ -4588,7 +4610,7 @@ void PlayEffect(Monster &monster, MonsterSound mode)
 
 void MissToMonst(Missile &missile, Point position)
 {
-	assert(static_cast<size_t>(missile._misource) < MaxMonsters);
+	assert(static_cast<size_t>(missile._misource) < MonsterLimit());
 	Monster &monster = Monsters[missile._misource];
 
 	const Point oldPosition = missile.position.tile;
@@ -4815,40 +4837,67 @@ void TalktoMonster(Player &player, Monster &monster)
 
 void SpawnGolem(const Player &player, Point position, uint8_t spellLevel)
 {
-	// Search monster index to use for the new golem
-	Monster *golem = nullptr;
-	// 1. Prefer MonsterIndex = PlayerIndex for vanilla compatibility
-	if (player.getId() < ReservedMonsterSlotsForGolems) {
-		Monster &reservedGolem = Monsters[player.getId()];
-		if (reservedGolem.position.tile == GolemHoldingCell || reservedGolem.hitPoints == 0)
-			golem = &reservedGolem;
+	const bool extended = sgGameInitInfo.rules == ExtendedSessionRules;
+	const auto failed = [&] {
+		if (extended)
+			NetSendCmdParam1(true, CMD_GOLEMFAILED, static_cast<uint16_t>(player.getId()));
+	};
+	if (extended) {
+		if (FindGolemForPlayer(player) != nullptr)
+			return; // Repeated requests must not create multiple living summons.
+		const auto available = Crawl(0, MaxCrawlRadius, [&](Displacement offset) -> std::optional<Point> {
+			const Point candidate = position + offset;
+			return IsTileAvailable(candidate) ? std::optional<Point>(candidate) : std::nullopt;
+		});
+		if (!available) {
+			failed();
+			return;
+		}
+		position = *available;
 	}
-	// 2. Use reserved slots, so additional Monsters can spawn
-	if (golem == nullptr) {
-		for (int i = 0; i < ReservedMonsterSlotsForGolems; i++) {
-			Monster &reservedGolem = Monsters[i];
-			if (reservedGolem.position.tile == GolemHoldingCell || reservedGolem.hitPoints == 0) {
-				golem = &reservedGolem;
+	Monster *golem = nullptr;
+	// Reuse a dead dynamic summon before allocating another entry.
+	if (extended) {
+		for (size_t i = 0; i < ActiveMonsterCount; ++i) {
+			Monster &candidate = Monsters[ActiveMonsters[i]];
+			if (candidate.type().type == MT_GOLEM && candidate.goalVar3 == player.getId() && candidate.hitPoints == 0) {
+				golem = &candidate;
 				break;
 			}
 		}
 	}
-	// 3. Use normal monster slot
-	if (golem == nullptr) {
-		if (ActiveMonsterCount >= MaxMonsters)
-			return;
-		const size_t monsterIndex = ActiveMonsters[ActiveMonsterCount];
-		ActiveMonsterCount += 1;
-		golem = &Monsters[monsterIndex];
+	// Retain the four classic placeholders and their original preference.
+	if (golem == nullptr && player.getId() < ReservedMonsterSlotsForGolems) {
+		Monster &reserved = Monsters[player.getId()];
+		if (reserved.position.tile == GolemHoldingCell || reserved.hitPoints == 0)
+			golem = &reserved;
 	}
-
-	if (golem == nullptr)
-		return;
-
+	if (golem == nullptr) {
+		for (int i = 0; i < ReservedMonsterSlotsForGolems; ++i) {
+			Monster &reserved = Monsters[i];
+			if (reserved.position.tile == GolemHoldingCell || reserved.hitPoints == 0) {
+				golem = &reserved;
+				break;
+			}
+		}
+	}
+	if (golem == nullptr) {
+		if (extended) {
+			const auto end = ActiveMonsters + MonsterLimit();
+			const auto slot = std::find_if(ActiveMonsters + ActiveMonsterCount, end, [](unsigned id) { return id >= MaxMonsters; });
+			if (slot == end) {
+				failed();
+				return;
+			}
+			golem = &Monsters[*slot];
+		} else {
+			if (ActiveMonsterCount >= MaxMonsters)
+				return;
+			golem = &Monsters[ActiveMonsters[ActiveMonsterCount++]];
+		}
+	}
 	const size_t monsterIndex = golem->getId();
 	const uint32_t seed = GetLCGEngineState();
-
-	// Update local state immediately to increase ActiveMonsterCount instantly (this allows multiple monsters to be spawned in one game tick)
 	InitializeSpawnedMonster(position, Direction::South, 0, monsterIndex, seed, player.getId(), spellLevel);
 	NetSendCmdSpawnMonster(position, Direction::South, 0, static_cast<uint16_t>(monsterIndex), seed, player.getId(), spellLevel);
 }
@@ -4863,13 +4912,13 @@ uint8_t encode_enemy(Monster &monster)
 	if ((monster.flags & MFLAG_TARGETS_MONSTER) != 0)
 		return monster.enemy;
 
-	return monster.enemy + MaxMonsters;
+	return monster.enemy + MonsterLimit();
 }
 
 void decode_enemy(Monster &monster, uint8_t enemyId)
 {
-	if (enemyId >= MaxMonsters) {
-		enemyId -= MaxMonsters;
+	if (enemyId >= MonsterLimit()) {
+		enemyId -= MonsterLimit();
 		monster.flags &= ~MFLAG_TARGETS_MONSTER;
 		monster.enemy = enemyId;
 		monster.enemyPosition = Players[enemyId].position.future;

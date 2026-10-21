@@ -55,6 +55,43 @@ Multibyte fields are little endian, without native padding or `size_t` fields.
 Classic sessions retain their existing native spawned-monster representation;
 this compatibility path does not acquire cross-architecture guarantees.
 
+## Monster and summon capacity
+
+The classic table remains 200 entries, including four original golem placeholders
+at IDs 0–3. Level generation and ordinary spawning retain that budget. Zhar's
+fixed slot remains 4. Runtime storage has 204 entries; negotiated extended
+sessions may allocate IDs 200–203 exclusively to additional golems. Consequently,
+eight summons fit alongside the original maximum of 196 ordinary monsters.
+Additional golems never borrow an ordinary enemy slot. Ownership remains in the
+summon record, independent of its monster index.
+
+The level owner assigns each spawn's ID and broadcasts it; receivers use that
+ID. Extended sessions keep active IDs sorted after allocation/deletion so a
+snapshot restored from an unordered spawn map has the same processing order.
+Duplicate requests cannot create a second living golem for an owner. Dead
+summons can reuse their entries immediately, and deleted additional entries
+return to the summon pool. The original spell's dismiss/recast behavior and
+summons surviving their owner's death until level departure are preserved.
+A failed extended summon reports a translated message to its owner through
+`CMD_GOLEMFAILED`; no enemy is removed to make room.
+
+Classic encoded monster targets are 0–199 and player targets start at 200.
+Extended monster targets are 0–203 and player targets are 204–211. Both fit the
+existing byte fields, leaving the 255 leader sentinel intact. Validation,
+rendering, synchronization priorities and AI seed updates use the negotiated
+limit. Monster-type and kill-count tables retain their original sizes.
+
+Classic deltas still write 200 monster states; extended deltas write 204.
+Spawn sections are bounded by the same negotiated count, and additional IDs
+only accept the golem type (level type index 0). Receive-buffer bounds include
+all 204 entries. Spawn and state record layouts are unchanged.
+
+Disk game and level entries still read/write exactly **200 active monster
+indices (800 bytes)**. Loading clears the four additional runtime entries.
+Multiplayer world state uses deltas; this change introduces no extended disk
+world format. The four extra entries initialize without additional RNG calls,
+keeping classic level generation and replay references unchanged.
+
 ## Town portals
 
 Portal storage has eight entries, one per player ID. Classic snapshots write
@@ -133,6 +170,11 @@ These are synchronization tests, not complete eight-player gameplay sessions.
 reordered cross-sender delivery, consecutive entrants, blocked maps, coordinator
 replacement, actual dungeon stairs, quest map geometry, and town portals. It
 also sends the new command through the real local engine network path.
+
+`monster_summons_test` covers a full enemy pool with eight summons, replacement,
+slot reuse, owner death/departure, authoritative spawn replay, extra-index sync
+and delta restoration. It compares actual monster generation in all four
+dungeon types and checks the classic RNG initialization sequence.
 
 UI and balancing must be completed before enabling the extended session selector.
 Full gameplay and visual integration checks with eight complete engines remain

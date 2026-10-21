@@ -144,7 +144,7 @@ std::string DebugCmdSpawnMonster(std::string name, std::optional<unsigned> count
 
 	Player &myPlayer = *MyPlayer;
 
-	size_t monstersToSpawn = std::min<size_t>(MaxMonsters - ActiveMonsterCount, count);
+	size_t monstersToSpawn = std::min<size_t>(AvailableMonsterSlots(), count);
 	if (monstersToSpawn == 0)
 		return "Can't spawn any monsters";
 

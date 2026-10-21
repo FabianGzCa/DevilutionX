@@ -639,7 +639,7 @@ TEST_F(MultiplayerSyncTest, BoundsIncompleteDeltaAndBufferedCommandMemory)
 TEST_F(MultiplayerSyncTest, RejectsInvalidSpawnIndicesBeforeWritingDeltas)
 {
 	Players[7].plrlevel = 2;
-	for (const auto &[type, monster, owner] : std::array<std::array<uint16_t, 3>, 3> { { { 0, 65535, 7 }, { 65535, 0, 7 }, { 0, 0, 255 } } }) {
+	for (const auto &[type, monster, owner] : std::array<std::array<uint16_t, 3>, 5> { { { 0, 65535, 7 }, { 65535, 0, 7 }, { 0, 0, 255 }, { 1, MaxMonsters, 7 }, { 0, MonsterStorageCapacity, 7 } } }) {
 		const TCmdSpawnMonster command { CMD_SPAWNMONSTER, 40, 40, Direction::South, Swap16LE(type), Swap16LE(monster), 0, static_cast<uint8_t>(owner), 1 };
 		EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&command), sizeof(command)), sizeof(command));
 		EXPECT_FALSE(Canonical(Export()).contains(2));
@@ -671,17 +671,17 @@ TEST_F(MultiplayerSyncTest, MaximumLevelDeltaRoundTripsWithFixedSpawnRecords)
 		const TCmdLoc command { CMD_OPENDOOR, static_cast<uint8_t>(20 + i % 70), static_cast<uint8_t>(20 + i / 70) };
 		EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&command), sizeof(command)), sizeof(command));
 	}
-	for (unsigned i = 0; i < MaxMonsters; ++i) {
+	for (unsigned i = 0; i < MonsterLimit(); ++i) {
 		const TCmdSpawnMonster command { CMD_SPAWNMONSTER, 40, 40, Direction::South,
 			Swap16LE(0), Swap16LE(static_cast<uint16_t>(i)), Swap32LE(0x78563412 + i), 7, 1 };
 		EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&command), sizeof(command)), sizeof(command));
 	}
-	SeedLevel(2, MaxMonsters);
+	SeedLevel(2, MonsterLimit());
 	const auto snapshot = Export();
 	const auto expected = Canonical(snapshot);
 	ASSERT_TRUE(expected.contains(2));
 	const auto &level = expected.at(2);
-	const size_t expectedSize = 1 + MAXITEMS * sizeof(TCmdPItem) + 1 + MAXOBJECTS * 3 + MaxMonsters * 9 + 2 + MaxMonsters * 11;
+	const size_t expectedSize = 1 + MAXITEMS * sizeof(TCmdPItem) + 1 + MAXOBJECTS * 3 + MonsterLimit() * 9 + 2 + MonsterLimit() * 11;
 	ASSERT_EQ(level.size(), expectedSize);
 	RecordProperty("raw_level_bytes_with_marker", level.size() + 1);
 	RecordProperty("player_info_bytes", sizeof(PlayerNetPack));
@@ -694,9 +694,9 @@ TEST_F(MultiplayerSyncTest, MaximumLevelDeltaRoundTripsWithFixedSpawnRecords)
 	RecordProperty("snapshot_wire_bytes", transmittedBytes);
 	// Nine-byte packed spawn body after the two-byte monster index. This golden
 	// record is independent of native size_t width, alignment and endianness.
-	const size_t spawnOffset = 1 + MAXITEMS * sizeof(TCmdPItem) + 1 + MAXOBJECTS * 3 + MaxMonsters * 9 + 2;
+	const size_t spawnOffset = 1 + MAXITEMS * sizeof(TCmdPItem) + 1 + MAXOBJECTS * 3 + MonsterLimit() * 9 + 2;
 	const uint16_t monsterId = static_cast<uint16_t>(static_cast<unsigned>(level[spawnOffset]) | (static_cast<unsigned>(level[spawnOffset + 1]) << 8));
-	ASSERT_LT(monsterId, MaxMonsters);
+	ASSERT_LT(monsterId, MonsterLimit());
 	EXPECT_EQ(level[spawnOffset + 2], std::byte { 0 });
 	EXPECT_EQ(level[spawnOffset + 3], std::byte { 0 });
 	const uint32_t seed = 0x78563412 + monsterId;

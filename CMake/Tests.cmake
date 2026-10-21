@@ -15,6 +15,7 @@ set(tests
   appfat_test
   assets_test
   automap_test
+  chat_recipient_list_test
   classic_multiplayer_test
   cursor_test
   dead_test

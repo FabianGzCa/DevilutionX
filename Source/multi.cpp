@@ -22,6 +22,7 @@
 #include <config.h>
 
 #include "DiabloUI/diabloui.h"
+#include "control/control_chat.hpp"
 #include "cursor.h"
 #include "diablo.h"
 #include "engine/demomode.h"
@@ -271,6 +272,8 @@ void PlayerLeftMsg(Player &player, bool left)
 
 	if (&player == MyPlayer)
 		return;
+	if (left)
+		ForgetChatRecipientSelection(player.getId());
 	DeactivateVision(player.getId());
 	RemovePortalMissile(player);
 	DeactivatePortal(player);

@@ -339,7 +339,7 @@ void LeftMouseDown(uint16_t modState)
 	if (gmenu_left_mouse(true))
 		return;
 
-	if (CheckMuteButton())
+	if (CheckChatRecipientButton())
 		return;
 
 	if (sgnTimeoutCurs != CURSOR_NONE)
@@ -424,7 +424,7 @@ void LeftMouseDown(uint16_t modState)
 void LeftMouseUp(uint16_t modState)
 {
 	gmenu_left_mouse(false);
-	CheckMuteButtonUp();
+	CheckChatRecipientButtonUp();
 	if (MainPanelButtonDown)
 		CheckMainPanelButtonUp();
 	CheckStashButtonRelease(MousePosition);

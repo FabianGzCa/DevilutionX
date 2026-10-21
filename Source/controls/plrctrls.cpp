@@ -19,6 +19,7 @@
 
 #include "automap.h"
 #include "control/control.hpp"
+#include "control/control_chat.hpp"
 #include "controls/controller_motion.h"
 #ifndef USE_SDL1
 #include "controls/devices/game_controller.h"
@@ -2103,6 +2104,21 @@ void ProcessGameAction(const GameAction &action)
 	switch (action.type) {
 	case GameActionType_NONE:
 	case GameActionType_SEND_KEY:
+		break;
+	case GameActionType_CHAT_RECIPIENT_UP:
+		MoveChatRecipientFocus(-1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_DOWN:
+		MoveChatRecipientFocus(1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_PREVIOUS_PAGE:
+		ChangeChatRecipientPage(-1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_NEXT_PAGE:
+		ChangeChatRecipientPage(1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_TOGGLE:
+		ToggleFocusedChatRecipient();
 		break;
 	case GameActionType_USE_HEALTH_POTION:
 		UseBeltItem(BeltItemType::Healing);

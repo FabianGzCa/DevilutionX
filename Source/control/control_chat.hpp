@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string_view>
 
@@ -26,9 +27,13 @@ namespace devilution {
 extern OptionalOwnedClxSpriteList talkButtons;
 extern std::optional<TextInputState> ChatInputState;
 extern char TalkMessage[MAX_SEND_STR_LEN];
-extern bool TalkButtonsDown[3];
 extern int sgbPlrTalkTbl;
-extern bool WhisperList[SessionPlayerLimit];
+
+void ResetChatRecipientSelection();
+void ForgetChatRecipientSelection(size_t playerId);
+void ChangeChatRecipientPage(int direction);
+void MoveChatRecipientFocus(int direction);
+void ToggleFocusedChatRecipient();
 
 bool CheckChatCommand(std::string_view text);
 

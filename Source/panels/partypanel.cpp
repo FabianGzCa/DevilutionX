@@ -1,7 +1,10 @@
 #include "panels/partypanel.hpp"
 
+#include <algorithm>
+#include <array>
 #include <expected>
 #include <optional>
+#include <string>
 
 #include "automap.h"
 #include "control/control.hpp"
@@ -16,6 +19,7 @@
 #include "engine/size.hpp"
 #include "inv.h"
 #include "options.h"
+#include "panels/partypanel_layout.hpp"
 #include "pfile.h"
 #include "player_visual_identity.hpp"
 #include "qol/monhealthbar.h"
@@ -33,15 +37,9 @@ OptionalOwnedClxSpriteList PartyMemberFrame;
 OptionalOwnedClxSpriteList PlayerTags;
 
 Point PartyPanelPos = { 8, 8 };
-Rectangle PortraitFrameRects[SessionPlayerLimit];
+std::array<Rectangle, PlayerStorageCapacity> PortraitFrameRects { };
 int RightClickedPortraitIndex = -1;
-constexpr int HealthBarHeight = 7;
-constexpr int ManaBarHeight = 7;
-constexpr int FrameGap = 15;
-constexpr int FrameBorderSize = 3;
-constexpr int FrameSpriteSize = 12;
-constexpr Size FrameSections = { 4, 4 }; // x/y can't be less than 2
-constexpr Size PortraitFrameSize = { FrameSections.width * FrameSpriteSize, FrameSections.height *FrameSpriteSize };
+constexpr Size PortraitFrameSize = PartyPanelPortraitSize;
 
 constexpr uint8_t FrameBackgroundColor = PAL16_BLUE + 14;
 
@@ -58,7 +56,7 @@ void DrawMemberFrame(const Surface &out, OwnedClxSpriteList &frame, Point pos)
 	FillRect(out, pos.x, pos.y, PortraitFrameSize.width, PortraitFrameSize.height, FrameBackgroundColor);
 
 	// Now draw the frame border
-	const Size adjustedFrame = { FrameSections.width - 1, FrameSections.height - 1 };
+	const Size adjustedFrame = { PartyPanelFrameSections.width - 1, PartyPanelFrameSections.height - 1 };
 	for (int x = 0; x <= adjustedFrame.width; x++) {
 		for (int y = 0; y <= adjustedFrame.height; y++) {
 			// Get what section of the frame we're drawing
@@ -82,23 +80,36 @@ void DrawMemberFrame(const Surface &out, OwnedClxSpriteList &frame, Point pos)
 
 			if (spriteIndex != -1) {
 				// Draw the frame section
-				RenderClxSprite(out, frame[spriteIndex], { pos.x + (x * FrameSpriteSize), pos.y + (y * FrameSpriteSize) });
+				RenderClxSprite(out, frame[spriteIndex], { pos.x + (x * PartyPanelFrameSpriteSize), pos.y + (y * PartyPanelFrameSpriteSize) });
 			}
 		}
 	}
 }
 
-void HandleRightClickPortait()
+void HandleRightClickPortrait()
 {
-	Player &player = Players[RightClickedPortraitIndex];
-	if (player.plractive && &player != MyPlayer) {
+	const int playerId = RightClickedPortraitIndex;
+	RightClickedPortraitIndex = -1;
+	if (playerId < 0 || playerId >= static_cast<int>(Players.size()) || playerId >= PlayerStorageCapacity)
+		return;
+	Player &player = Players[playerId];
+	if (player.plractive && player.friendlyMode && &player != MyPlayer) {
 		InspectPlayer = &player;
 		OpenCharPanel();
 		if (!SpellbookFlag)
 			invflag = true;
 		RedrawEverything();
-		RightClickedPortraitIndex = -1;
 	}
+}
+
+struct PartyPanelEntry {
+	Player *player = nullptr;
+	Monster *summon = nullptr;
+};
+
+void ClearPortraitHitboxes()
+{
+	PortraitFrameRects.fill({ { 0, 0 }, { 0, 0 } });
 }
 
 } // namespace
@@ -109,271 +120,184 @@ int PortraitIdUnderCursor = -1;
 
 std::expected<void, std::string> LoadPartyPanel()
 {
-	ASSIGN_OR_RETURN(OwnedClxSpriteList frame, LoadCelWithStatus("data\\textslid", FrameSpriteSize));
+	ASSIGN_OR_RETURN(OwnedClxSpriteList frame, LoadCelWithStatus("data\\textslid", PartyPanelFrameSpriteSize));
 	ASSIGN_OR_RETURN(PlayerTags, LoadClxWithStatus("data\\monstertags.clx"));
-	const OwnedSurface out(PortraitFrameSize.width, PortraitFrameSize.height + HealthBarHeight + ManaBarHeight);
+	const OwnedSurface out(PortraitFrameSize.width, PortraitFrameSize.height + PartyPanelHealthBarHeight + PartyPanelManaBarHeight);
 
 	// Draw the health bar background
-	DrawBar(out, { { 0, 0 }, { PortraitFrameSize.width, HealthBarHeight } }, PAL16_GRAY + 10);
+	DrawBar(out, { { 0, 0 }, { PortraitFrameSize.width, PartyPanelHealthBarHeight } }, PAL16_GRAY + 10);
 	// Draw the frame the character portrait sprite will go
-	DrawMemberFrame(out, frame, { 0, HealthBarHeight });
+	DrawMemberFrame(out, frame, { 0, PartyPanelHealthBarHeight });
 	// Draw the mana bar background
-	DrawBar(out, { { 0, HealthBarHeight + PortraitFrameSize.height }, { PortraitFrameSize.width, ManaBarHeight } }, PAL16_GRAY + 10);
+	DrawBar(out, { { 0, PartyPanelHealthBarHeight + PortraitFrameSize.height }, { PortraitFrameSize.width, PartyPanelManaBarHeight } }, PAL16_GRAY + 10);
 
 	PartyMemberFrame = SurfaceToClx(out);
 
-	return {};
+	return { };
 }
 
 void FreePartyPanel()
 {
 	PartyMemberFrame = std::nullopt;
 	PlayerTags = std::nullopt;
+	ClearPortraitHitboxes();
+	RightClickedPortraitIndex = -1;
 }
 
 void DrawPartyMemberInfoPanel(const Surface &out)
 {
-	// Don't draw based on these criteria
-	if (CharFlag || !gbIsMultiplayer || !MyPlayer->friendlyMode || IsPlayerInStore() || IsStashOpen) {
-		if (PortraitIdUnderCursor != -1)
-			PortraitIdUnderCursor = -1;
-
+	ClearPortraitHitboxes();
+	PortraitIdUnderCursor = -1;
+	if (!PartyMemberFrame.has_value()) {
+		RightClickedPortraitIndex = -1;
 		return;
 	}
 
-	Point pos = PartyPanelPos;
-	if (AutomapActive)
-		pos.y += (FrameGap * 4);
-	if (*GetOptions().Graphics.showFPS)
-		pos.y += FrameGap;
+	if (MyPlayer == nullptr || CharFlag || !gbIsMultiplayer || !MyPlayer->friendlyMode || IsPlayerInStore() || IsStashOpen) {
+		RightClickedPortraitIndex = -1;
+		return;
+	}
 
-	int currentLongestNameWidth = PortraitFrameSize.width;
-	bool portraitUnderCursor = false;
-
-	auto partyOption = *GetOptions().Gameplay.showMultiplayerPartyInfo;
+	const PartyPortraits partyOption = *GetOptions().Gameplay.showMultiplayerPartyInfo;
+	if (!PartySidePanelOpen || partyOption == PartyPortraits::Disabled) {
+		RightClickedPortraitIndex = -1;
+		return;
+	}
+	std::array<PartyPanelEntry, PartyPanelMemberCapacity> entries { };
+	size_t entryCount = 0;
 	if (partyOption == PartyPortraits::Players || partyOption == PartyPortraits::PlayersAndSummons) {
-
 		for (Player &player : Players) {
-
-			if (!player.plractive || !player.friendlyMode)
+			if (entryCount == entries.size() || player.getId() >= PlayerStorageCapacity || !player.plractive || !player.friendlyMode)
 				continue;
-
 #ifndef _DEBUG
 			if (&player == MyPlayer)
 				continue;
 #endif
-			// Get the rect of the portrait to use later
-			const Rectangle currentPortraitRect = { pos, PortraitFrameSize };
-
-			const Surface gameScreen = out.subregionY(0, gnViewportHeight);
-
-			// Draw the characters frame
-			RenderClxSprite(gameScreen, (*PartyMemberFrame)[0], pos);
-
-			// Get the players remaining life
-			// If the player is using mana shield change the color
-			const int lifeTicks = ((player._pHitPoints.raw() * PortraitFrameSize.width) + (player._pMaxHP.raw() / 2)) / player._pMaxHP.raw();
-			const uint8_t hpBarColor = (player.pManaShield) ? PAL8_YELLOW + 5 : PAL8_RED + 4;
-			// Now draw the characters remaining life
-			DrawBar(gameScreen, { pos, { lifeTicks, HealthBarHeight } }, hpBarColor);
-
-			// Add to the position before continuing to the next item
-			pos.y += HealthBarHeight;
-
-			// Get the players current portrait sprite
-			const ClxSprite playerPortraitSprite = GetPlayerPortraitSprite(player);
-			// Get the offset of the sprite based on the players class so it get's rendered in the correct position
-			const PlayerSpriteData &spriteData = GetPlayerSpriteDataForClass(player._pClass);
-			Point offset = (player.isOnLevel(0)) ? spriteData.partyOffsetTown : spriteData.partyOffsetDungeon;
-
-			if (player._pHitPoints <= 0 && IsPlayerUnarmed(player))
-				offset = spriteData.partyOffsetDead;
-
-			// Calculate the players portait position
-			const Point portraitPos = { ((-(playerPortraitSprite.width() / 2)) + (PortraitFrameSize.width / 2)) + offset.x, offset.y };
-			// Get a subregion of the surface so the portrait doesn't get drawn over the frame
-			const Surface frameSubregion = gameScreen.subregion(
-			    pos.x + FrameBorderSize,
-			    pos.y + FrameBorderSize,
-			    PortraitFrameSize.width - (FrameBorderSize * 2),
-			    PortraitFrameSize.height - (FrameBorderSize * 2));
-
-			PortraitFrameRects[player.getId()] = {
-				{ frameSubregion.region.x, frameSubregion.region.y },
-				{ frameSubregion.region.w, frameSubregion.region.h }
-			};
-
-			// Draw the portrait sprite
-			RenderClxSprite(
-			    frameSubregion,
-			    playerPortraitSprite,
-			    portraitPos);
-
-			const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(player.getId());
-			const uint8_t playerTag = identity.tagSprite;
-			if (playerTag < (*PlayerTags).numSprites()) {
-				// Draw the player tag
-				const int tagWidth = (*PlayerTags)[playerTag].width();
-				RenderClxSprite(
-				    frameSubregion,
-				    (*PlayerTags)[playerTag],
-				    { PortraitFrameSize.width - (tagWidth + (tagWidth / 2)), 0 });
-			}
-
-			// Check to see if the player is dead and if so we draw a half transparent red rect over the portrait
-			if (player._pHitPoints <= 0) {
-				DrawHalfTransparentRectTo(
-				    frameSubregion,
-				    0, 0,
-				    PortraitFrameSize.width,
-				    PortraitFrameSize.height,
-				    PAL8_RED + 4);
-			}
-
-			// Add to the position before continuing to the next item
-			pos.y += PortraitFrameSize.height;
-
-			if (player._pMaxMana > 0) {
-				// Get the players remaining mana
-				const int manaTicks = ((player._pMana.raw() * PortraitFrameSize.width) + (player._pMaxMana.raw() / 2)) / player._pMaxMana.raw();
-				const uint8_t manaBarColor = PAL8_BLUE + 3;
-				// Now draw the characters remaining mana
-				DrawBar(gameScreen, { pos, { manaTicks, ManaBarHeight } }, manaBarColor);
-			}
-
-			// Add to the position before continuing to the next item
-			pos.y += ManaBarHeight;
-
-			// Draw the player number and name under the frame
-			const int playerNameOffset = GetLineWidth(identity.nameLabel) + 2;
-			DrawString(
-			    gameScreen,
-			    identity.nameLabel,
-			    pos,
-			    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
-			DrawString(
-			    gameScreen,
-			    player._pName,
-			    pos + Displacement { playerNameOffset, 0 },
-			    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
-
-			// Add to the position before continuing onto the next player
-			pos.y += FrameGap + 5;
-
-			// Check to see if the player is hovering over this portrait and if so draw a string under the cursor saying they can right click to inspect
-			if (currentPortraitRect.contains(MousePosition)) {
-				PortraitIdUnderCursor = player.getId();
-				portraitUnderCursor = true;
-			}
-
-			// Get the current players name width
-			const int width = playerNameOffset + GetLineWidth(player._pName);
-			// Now check to see if it's the current longest name
-			if (width >= currentLongestNameWidth)
-				currentLongestNameWidth = width;
-
-			// Check to see if the Y position is more then the main panel position
-			if (pos.y >= GetMainPanel().position.y - PortraitFrameSize.height - 10) {
-				// If so we need to draw the next set of portraits back at the top and to the right of the original position
-				pos.y = PartyPanelPos.y;
-				if (AutomapActive)
-					pos.y += (FrameGap * 4);
-				if (*GetOptions().Graphics.showFPS)
-					pos.y += FrameGap;
-				// Add the current longest name width to the X position
-				pos.x += currentLongestNameWidth + (FrameGap / 2);
-			}
+			entries[entryCount++] = { &player, nullptr };
 		}
 	}
 
 	if (partyOption == PartyPortraits::Summons || partyOption == PartyPortraits::PlayersAndSummons) {
+		if (entryCount < entries.size()) {
+			if (Monster *summoned = FindGolemForPlayer(*MyPlayer); summoned != nullptr)
+				entries[entryCount++] = { nullptr, summoned };
+		}
+	}
 
-		Monster *summoned = FindGolemForPlayer(*MyPlayer);
-		if (summoned != nullptr) {
-			const Surface gameScreen = out.subregionY(0, gnViewportHeight);
+	const int viewportHeight = std::min<int>(gnViewportHeight, out.h());
+	const Surface gameScreen = out.subregionY(0, viewportHeight);
+	const Rectangle viewportBounds { { 0, 0 }, { out.w(), viewportHeight } };
+	int preferredTop = PartyPanelPos.y;
+	if (AutomapActive)
+		preferredTop += PartyPanelFrameGap * 4;
+	if (*GetOptions().Graphics.showFPS)
+		preferredTop += PartyPanelFrameGap;
+	int layoutWidth = out.w();
+	if (IsRightPanelOpen() && GetRightPanel().position.x > 0)
+		layoutWidth = std::min(layoutWidth, GetRightPanel().position.x);
+	const PartyPanelLayout layout = ComputePartyPanelLayout(entryCount, layoutWidth, viewportHeight, preferredTop);
 
-			// Draw the monster frame
-			RenderClxSprite(gameScreen, (*PartyMemberFrame)[0], pos);
+	for (size_t i = 0; i < layout.count; i++) {
+		const PartyPanelEntry &entry = entries[i];
+		const PartyPanelCardLayout &card = layout.cards[i];
+		const Rectangle portraitHitbox = ClipPartyPanelRectangle(card.portrait, viewportBounds);
+		if (portraitHitbox.size.width == 0 || portraitHitbox.size.height == 0)
+			continue;
 
-			// Get the monsters remaining life
-			const int lifeTicks = ((summoned->hitPoints.raw() * PortraitFrameSize.width) + (summoned->maxHitPoints.raw() / 2)) / summoned->maxHitPoints.raw();
-			// Now draw the characters remaining life
-			DrawBar(gameScreen, { pos, { lifeTicks, HealthBarHeight } }, PAL8_RED + 4);
+		RenderClxSprite(gameScreen, (*PartyMemberFrame)[0], card.healthBarPosition);
+		if (entry.player != nullptr) {
+			Player &player = *entry.player;
+			const int lifeTicks = GetPartyPanelBarWidth(player._pHitPoints.raw(), player._pMaxHP.raw());
+			const uint8_t hpBarColor = player.pManaShield ? PAL8_YELLOW + 5 : PAL8_RED + 4;
+			DrawBar(gameScreen, { card.healthBarPosition, { lifeTicks, PartyPanelHealthBarHeight } }, hpBarColor);
 
-			// Add to the position before continuing to the next item
-			pos.y += HealthBarHeight;
+			const ClxSprite playerPortraitSprite = GetPlayerPortraitSprite(player);
+			const PlayerSpriteData &spriteData = GetPlayerSpriteDataForClass(player._pClass);
+			Point offset = player.isOnLevel(0) ? spriteData.partyOffsetTown : spriteData.partyOffsetDungeon;
+			if (player._pHitPoints <= 0 && IsPlayerUnarmed(player))
+				offset = spriteData.partyOffsetDead;
+			const Point portraitPos = { (-(playerPortraitSprite.width() / 2) + (PortraitFrameSize.width / 2)) + offset.x, offset.y };
+			const Surface frameSubregion = gameScreen.subregion(
+			    card.portrait.position.x + PartyPanelFrameBorderSize,
+			    card.portrait.position.y + PartyPanelFrameBorderSize,
+			    PortraitFrameSize.width - (PartyPanelFrameBorderSize * 2),
+			    PortraitFrameSize.height - (PartyPanelFrameBorderSize * 2));
+			RenderClxSprite(frameSubregion, playerPortraitSprite, portraitPos);
 
-			// Get the monster current portrait sprite
-			OptionalClxSpriteList monsterOptionalPortraitSpriteList = summoned->type().getAnimData(MonsterGraphic::Stand).spritesForDirection(Direction::South);
-			if (!monsterOptionalPortraitSpriteList.has_value()) {
-				monsterOptionalPortraitSpriteList = summoned->type().getAnimData(MonsterGraphic::Walk).spritesForDirection(Direction::South);
+			const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(player.getId());
+			if (PlayerTags.has_value() && identity.tagSprite < (*PlayerTags).numSprites()) {
+				const int tagWidth = (*PlayerTags)[identity.tagSprite].width();
+				RenderClxSprite(frameSubregion, (*PlayerTags)[identity.tagSprite],
+				    { PortraitFrameSize.width - (tagWidth + (tagWidth / 2)), 0 });
 			}
-			if (monsterOptionalPortraitSpriteList.has_value()) {
 
-				// Get the monsters current portrait sprite
-				const ClxSprite monsterPortraitSprite = (*monsterOptionalPortraitSpriteList)[0];
-				// Calculate the monsters portait position
-				const Point portraitPos = { ((-(monsterPortraitSprite.width() * 17 / 32)) + (PortraitFrameSize.width / 2)), -(monsterPortraitSprite.height() / 4) };
-				// Get a subregion of the surface so the portrait doesn't get drawn over the frame
-				const Surface frameSubregion = gameScreen.subregion(
-				    pos.x + FrameBorderSize,
-				    pos.y + FrameBorderSize,
-				    PortraitFrameSize.width - (FrameBorderSize * 2),
-				    PortraitFrameSize.height - (FrameBorderSize * 2));
+			if (player._pHitPoints <= 0)
+				DrawHalfTransparentRectTo(frameSubregion, 0, 0, PortraitFrameSize.width, PortraitFrameSize.height, PAL8_RED + 4);
 
-				// Draw the portrait sprite
-				RenderClxSprite(
-				    frameSubregion,
-				    monsterPortraitSprite,
-				    portraitPos);
+			const int manaTicks = GetPartyPanelBarWidth(player._pMana.raw(), player._pMaxMana.raw());
+			DrawBar(gameScreen, { card.manaBarPosition, { manaTicks, PartyPanelManaBarHeight } }, PAL8_BLUE + 3);
 
-				// Add to the position before continuing to the next item
-				pos.y += PortraitFrameSize.height;
-
-				// Add to the position before continuing to the next item
-				pos.y += ManaBarHeight;
-
-				// Draw the monsters name under the frame
-				DrawString(
-				    gameScreen,
-				    summoned->name(),
-				    pos,
+			const int labelWidth = GetLineWidth(identity.nameLabel) + 2;
+			const int visibleNameWidth = std::max(0, card.nameArea.size.width - labelWidth);
+			DrawString(gameScreen, identity.nameLabel, card.nameArea,
+			    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
+			if (visibleNameWidth > 0) {
+				const std::string name = TruncatePartyPanelName(player._pName, visibleNameWidth);
+				const Rectangle nameArea {
+					card.nameArea.position + Displacement { labelWidth, 0 },
+					{ visibleNameWidth, PartyPanelNameHeight }
+				};
+				DrawString(gameScreen, name, nameArea,
 				    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
-
-				// Add to the position before continuing onto the next monster
-				pos.y += FrameGap + 5;
-
-				// Get the current monsters name width
-				const int width = GetLineWidth(summoned->name());
-				// Now check to see if it's the current longest name
-				if (width >= currentLongestNameWidth)
-					currentLongestNameWidth = width;
-
-				// Check to see if the Y position is more then the main panel position
-				if (pos.y >= GetMainPanel().position.y - PortraitFrameSize.height - 10) {
-					// If so we need to draw the next set of portraits back at the top and to the right of the original position
-					pos.y = PartyPanelPos.y;
-					if (AutomapActive)
-						pos.y += (FrameGap * 4);
-					if (*GetOptions().Graphics.showFPS)
-						pos.y += FrameGap;
-					// Add the current longest name width to the X position
-					pos.x += currentLongestNameWidth + (FrameGap / 2);
-				}
 			}
+
+			PortraitFrameRects[player.getId()] = portraitHitbox;
+			if (portraitHitbox.contains(MousePosition)) {
+				PortraitIdUnderCursor = player.getId();
+			}
+		} else if (entry.summon != nullptr) {
+			Monster &summoned = *entry.summon;
+			const int lifeTicks = GetPartyPanelBarWidth(summoned.hitPoints.raw(), summoned.maxHitPoints.raw());
+			DrawBar(gameScreen, { card.healthBarPosition, { lifeTicks, PartyPanelHealthBarHeight } }, PAL8_RED + 4);
+
+			OptionalClxSpriteList monsterPortraitSpriteList = summoned.type().getAnimData(MonsterGraphic::Stand).spritesForDirection(Direction::South);
+			if (!monsterPortraitSpriteList.has_value())
+				monsterPortraitSpriteList = summoned.type().getAnimData(MonsterGraphic::Walk).spritesForDirection(Direction::South);
+			if (monsterPortraitSpriteList.has_value()) {
+				const ClxSprite monsterPortraitSprite = (*monsterPortraitSpriteList)[0];
+				const Point portraitPos = { (-(monsterPortraitSprite.width() * 17 / 32) + (PortraitFrameSize.width / 2)), -(monsterPortraitSprite.height() / 4) };
+				const Surface frameSubregion = gameScreen.subregion(
+				    card.portrait.position.x + PartyPanelFrameBorderSize,
+				    card.portrait.position.y + PartyPanelFrameBorderSize,
+				    PortraitFrameSize.width - (PartyPanelFrameBorderSize * 2),
+				    PortraitFrameSize.height - (PartyPanelFrameBorderSize * 2));
+				RenderClxSprite(frameSubregion, monsterPortraitSprite, portraitPos);
+				if (summoned.hitPoints <= 0)
+					DrawHalfTransparentRectTo(frameSubregion, 0, 0, PortraitFrameSize.width, PortraitFrameSize.height, PAL8_RED + 4);
+			}
+
+			DrawString(gameScreen, summoned.name(), card.nameArea,
+			    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
 		}
 	}
 
 	if (RightClickedPortraitIndex != -1)
-		HandleRightClickPortait();
-
-	if (!portraitUnderCursor)
-		PortraitIdUnderCursor = -1;
+		HandleRightClickPortrait();
 }
 
 bool DidRightClickPartyPortrait()
 {
-	for (size_t i = 0; i < sizeof(PortraitFrameRects) / sizeof(PortraitFrameRects[0]); i++) {
+	const PartyPortraits partyOption = *GetOptions().Gameplay.showMultiplayerPartyInfo;
+	if (!PartySidePanelOpen || MyPlayer == nullptr || !gbIsMultiplayer || !MyPlayer->friendlyMode || CharFlag || IsPlayerInStore() || IsStashOpen
+	    || (partyOption != PartyPortraits::Players && partyOption != PartyPortraits::PlayersAndSummons)) {
+		ClearPortraitHitboxes();
+		RightClickedPortraitIndex = -1;
+		return false;
+	}
+
+	for (size_t i = 0; i < PortraitFrameRects.size(); i++) {
+		if (i >= Players.size() || !Players[i].plractive || !Players[i].friendlyMode || &Players[i] == MyPlayer)
+			continue;
 		if (PortraitFrameRects[i].contains(MousePosition)) {
 			RightClickedPortraitIndex = static_cast<int>(i);
 			InspectingFromPartyPanel = true;

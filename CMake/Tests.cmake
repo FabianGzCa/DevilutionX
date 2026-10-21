@@ -37,6 +37,7 @@ set(tests
   monster_summons_test
   multi_logging_test
   multiplayer_sync_test
+  party_panel_layout_test
   pack_test
   player_test
   portal_test

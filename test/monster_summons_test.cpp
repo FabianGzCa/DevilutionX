@@ -9,9 +9,11 @@
 
 #include <gtest/gtest.h>
 
+#include "automap.h"
 #include "engine/assets.hpp"
 #include "engine/load_file.hpp"
 #include "engine/random.hpp"
+#include "engine/surface.hpp"
 #include "game_mode.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/tile_properties.hpp"
@@ -22,12 +24,16 @@
 #include "monsters/validation.hpp"
 #include "multi.h"
 #include "nthread.h"
+#include "options.h"
+#include "panels/partypanel.hpp"
+#include "panels/partypanel_layout.hpp"
 #include "player.h"
 #include "storm/storm_net.hpp"
 #include "sync.h"
 #include "tables/misdat.h"
 #include "tables/playerdat.hpp"
 #include "utils/endian_swap.hpp"
+#include "utils/ui_fwd.h"
 
 namespace devilution {
 namespace {
@@ -178,6 +184,61 @@ TEST_F(MonsterSummonsTest, DuplicateRequestsDoNotCreateAnotherLivingGolem)
 	EXPECT_EQ(ActiveMonsterCount, count);
 	for (uint8_t owner = 0; owner < 8; ++owner)
 		EXPECT_EQ(FindGolemForPlayer(Players[owner])->getId(), ids[owner]);
+}
+
+TEST_F(MonsterSummonsTest, LocalGolemRendersInPartyPanel)
+{
+	struct RestorePanelState {
+		PartyPortraits partyOption;
+		bool showFps;
+		bool automapActive;
+		bool partyPanelOpen;
+		uint16_t viewportHeight;
+		bool friendlyMode;
+		int portraitIdUnderCursor;
+
+		~RestorePanelState()
+		{
+			FreePartyPanel();
+			GetOptions().Gameplay.showMultiplayerPartyInfo.SetValue(partyOption);
+			GetOptions().Graphics.showFPS.SetValue(showFps);
+			AutomapActive = automapActive;
+			PartySidePanelOpen = partyPanelOpen;
+			gnViewportHeight = viewportHeight;
+			Players[0].friendlyMode = friendlyMode;
+			PortraitIdUnderCursor = portraitIdUnderCursor;
+		}
+	} restore {
+		*GetOptions().Gameplay.showMultiplayerPartyInfo,
+		*GetOptions().Graphics.showFPS,
+		AutomapActive,
+		PartySidePanelOpen,
+		gnViewportHeight,
+		Players[0].friendlyMode,
+		PortraitIdUnderCursor,
+	};
+
+	if (!HaveMainData())
+		LoadGameArchives();
+	if (!HaveMainData())
+		GTEST_SKIP() << "DIABDAT.MPQ or spawn.mpq not found - skipping party panel summon rendering";
+	ASSERT_TRUE(LoadPartyPanel());
+	Players[0].friendlyMode = true;
+	GetOptions().Gameplay.showMultiplayerPartyInfo.SetValue(PartyPortraits::Summons);
+	GetOptions().Graphics.showFPS.SetValue(false);
+	AutomapActive = false;
+	PartySidePanelOpen = true;
+	gnViewportHeight = 352;
+
+	SpawnGolem(Players[0], { 60, 70 }, 3);
+	Monster *golem = FindGolemForPlayer(Players[0]);
+	ASSERT_NE(golem, nullptr);
+
+	OwnedSurface out(640, 480);
+	DrawPartyMemberInfoPanel(out);
+	const Point healthBarPosition { PartyPanelColumnMargin, PartyPanelColumnMargin };
+	EXPECT_NE(out[healthBarPosition], 0);
+	EXPECT_FALSE(DidRightClickPartyPortrait());
 }
 
 TEST_F(MonsterSummonsTest, EveryOwnerCanReplaceItsGolemWhileThePoolIsFull)

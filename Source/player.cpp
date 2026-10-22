@@ -297,10 +297,13 @@ void StartSpell(Player &player, Direction d, WorldTileCoord cx, WorldTileCoord c
 	player.executedSpell = player.queuedSpell;
 }
 
-void RespawnDeadItem(Item &&itm, Point target)
+bool RespawnDeadItem(Item &itm, Point target, const Player &player)
 {
 	if (ActiveItemCount >= MAXITEMS)
-		return;
+		return false;
+
+	if (!DeltaStoreDroppedItem(itm, target, player))
+		return false;
 
 	const int ii = AllocateItem();
 	Item &item = Items[ii];
@@ -311,26 +314,28 @@ void RespawnDeadItem(Item &&itm, Point target)
 	item.position = target;
 	RespawnItem(item, true);
 	NetSendCmdPItem(false, CMD_SPAWNITEM, target, item);
+	return true;
 }
 
-void DeadItem(Player &player, Item &&item, Displacement direction)
+bool DeadItem(Player &player, Item &item, Displacement direction)
 {
 	if (item.isEmpty())
-		return;
+		return true;
 
 	const Point playerTile = player.position.tile;
 	if (direction != Displacement { 0, 0 }) {
 		const Point target = playerTile + direction;
-		if (ItemSpaceOk(target)) {
-			RespawnDeadItem(std::move(item), target);
-			return;
+		if (ItemSpaceOk(target) && RespawnDeadItem(item, target, player)) {
+			item.clear();
+			return true;
 		}
 	}
 
 	std::optional<Point> dropPoint = FindClosestValidPosition(ItemSpaceOk, playerTile, 1, 50);
-	if (dropPoint) {
-		RespawnDeadItem(std::move(item), *dropPoint);
-	}
+	if (!dropPoint || !RespawnDeadItem(item, *dropPoint, player))
+		return false;
+	item.clear();
+	return true;
 }
 
 int DropGold(Player &player, int amount, bool skipFullStacks)
@@ -344,15 +349,18 @@ int DropGold(Player &player, int amount, bool skipFullStacks)
 		if (amount < item._ivalue) {
 			Item goldItem;
 			MakeGoldStack(goldItem, amount);
-			DeadItem(player, std::move(goldItem), { 0, 0 });
+			if (!DeadItem(player, goldItem, { 0, 0 }))
+				return amount;
 
 			item._ivalue -= amount;
 
 			return 0;
 		}
 
-		amount -= item._ivalue;
-		DeadItem(player, std::move(item), { 0, 0 });
+		const int goldValue = item._ivalue;
+		if (!DeadItem(player, item, { 0, 0 }))
+			return amount;
+		amount -= goldValue;
 		player.RemoveInvItem(i);
 		i = -1;
 	}
@@ -367,7 +375,7 @@ void DropHalfPlayersGold(Player &player)
 		DropGold(player, remainingGold, false);
 	}
 
-	player._pGold /= 2;
+	player._pGold = CalculateGold(player);
 }
 
 void InitLevelChange(Player &player)
@@ -2722,15 +2730,6 @@ StartPlayerKill(Player &player, DeathReason deathReason)
 	player._pInvincible = true;
 	SetPlayerHitPoints(player, Fixed26_6::fromInt(0));
 
-	if (&player != MyPlayer && dropItems) {
-		// Ensure that items are removed for remote players
-		// The dropped items will be synced separately (by the remote client)
-		for (Item &item : player.InvBody) {
-			item.clear();
-		}
-		CalcPlrInv(player, false);
-	}
-
 	if (player.isOnActiveLevel()) {
 		FixPlayerLocation(player, player._pdir);
 		FixPlrWalkTags(player);
@@ -2743,8 +2742,8 @@ StartPlayerKill(Player &player, DeathReason deathReason)
 			RedrawComponent(PanelDrawComponent::Health);
 
 			if (!player.HoldItem.isEmpty()) {
-				DeadItem(player, std::move(player.HoldItem), { 0, 0 });
-				NewCursor(CURSOR_HAND);
+				if (DeadItem(player, player.HoldItem, { 0, 0 }))
+					NewCursor(CURSOR_HAND);
 			}
 			if (dropGold) {
 				DropHalfPlayersGold(player);
@@ -2776,14 +2775,14 @@ StartPlayerKill(Player &player, DeathReason deathReason)
 				ear._ivalue = player.getCharacterLevel();
 
 				if (FindGetItem(ear._iSeed, IDI_EAR, ear._iCreateInfo) == -1) {
-					DeadItem(player, std::move(ear), { 0, 0 });
+					DeadItem(player, ear, { 0, 0 });
 				}
 			}
 			if (dropItems) {
 				Direction pdd = player._pdir;
 				for (Item &item : player.InvBody) {
 					pdd = Left(pdd);
-					DeadItem(player, item.pop(), Displacement(pdd));
+					DeadItem(player, item, Displacement(pdd));
 				}
 
 				CalcPlrInv(player, false);
@@ -2801,14 +2800,18 @@ void StripTopGold(Player &player)
 		if (item._ivalue <= MaxGold)
 			continue;
 		Item excessGold;
-		MakeGoldStack(excessGold, item._ivalue - MaxGold);
+		const int originalValue = item._ivalue;
+		MakeGoldStack(excessGold, originalValue - MaxGold);
 		item._ivalue = MaxGold;
 
 		if (GoldAutoPlace(player, excessGold))
 			continue;
-		if (!player.HoldItem.isEmpty() && ActiveItemCount + 1 >= MAXITEMS)
+		if (!player.HoldItem.isEmpty() && ActiveItemCount + 1 >= MAXITEMS) {
+			item._ivalue = originalValue;
 			continue;
-		DeadItem(player, std::move(excessGold), { 0, 0 });
+		}
+		if (!DeadItem(player, excessGold, { 0, 0 }))
+			item._ivalue = originalValue;
 	}
 	player._pGold = CalculateGold(player);
 
@@ -2823,8 +2826,8 @@ void StripTopGold(Player &player)
 	const std::optional<Point> itemTile = FindAdjacentPositionForItem(player.position.tile, player._pdir);
 	if (itemTile)
 		return;
-	DeadItem(player, std::move(player.HoldItem), { 0, 0 });
-	NewCursor(CURSOR_HAND);
+	if (DeadItem(player, player.HoldItem, { 0, 0 }))
+		NewCursor(CURSOR_HAND);
 }
 
 void ApplyPlrDamage(DamageType damageType, Player &player, Fixed26_6 dam, int minHP /*= 0*/, DeathReason deathReason /*= DeathReason::MonsterOrTrap*/)
@@ -3513,6 +3516,16 @@ void PlayDungMsgs()
 }
 
 #ifdef BUILD_TESTING
+bool TestDeadItem(Player &player, Item &item, Displacement direction)
+{
+	return DeadItem(player, item, direction);
+}
+
+void TestDropHalfPlayersGold(Player &player)
+{
+	DropHalfPlayersGold(player);
+}
+
 bool TestPlayerDoGotHit(Player &player)
 {
 	return DoGotHit(player);

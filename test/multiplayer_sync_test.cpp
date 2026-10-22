@@ -25,6 +25,7 @@
 #include "levels/dun_tile_data.hpp"
 #include "lighting.h"
 #include "missiles.h"
+#include "msg.h"
 #include "multi.h"
 #include "nthread.h"
 #include "pack.h"
@@ -36,6 +37,8 @@
 #include "utils/endian_swap.hpp"
 
 namespace devilution {
+bool TestDeadItem(Player &player, Item &item, Displacement direction);
+void TestDropHalfPlayersGold(Player &player);
 namespace {
 
 using Message = std::vector<std::byte>;
@@ -238,6 +241,266 @@ protected:
 		MultiplayerSyncTest::TearDown();
 	}
 };
+
+void PrepareOpenItemDropArea()
+{
+	for (int x = 0; x < MAXDUNX; ++x) {
+		for (int y = 0; y < MAXDUNY; ++y) {
+			dItem[x][y] = 0;
+			dPlayer[x][y] = 0;
+			dMonster[x][y] = 0;
+			dObject[x][y] = 0;
+			dFlags[x][y] = DungeonFlag::None;
+			dPiece[x][y] = 0;
+		}
+	}
+	SOLData[0] = TileProperties::Solid;
+	SOLData[1] = TileProperties::None;
+	for (int x = 30; x < 60; ++x) {
+		for (int y = 30; y < 60; ++y)
+			dPiece[x][y] = 1;
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, DeathDropPreservesItemUntilFloorAndDeltaAcceptIt)
+{
+	PrepareOpenItemDropArea();
+	FreeCursor();
+	CreatePlayer(*MyPlayer, HeroClass::Warrior);
+	InitCursor();
+	MyPlayer->setLevel(currlevel);
+	MyPlayer->position.tile = { 40, 50 };
+	MyPlayer->position.future = MyPlayer->position.tile;
+	const auto equippedItem = std::find_if(std::begin(MyPlayer->InvBody), std::end(MyPlayer->InvBody), [](const Item &item) {
+		return !item.isEmpty();
+	});
+	ASSERT_NE(equippedItem, std::end(MyPlayer->InvBody));
+	ActiveItemCount = MAXITEMS;
+
+	EXPECT_FALSE(TestDeadItem(*MyPlayer, *equippedItem, { 0, 0 }));
+	EXPECT_FALSE(equippedItem->isEmpty());
+
+	ActiveItemCount = 0;
+	for (uint8_t i = 0; i < MAXITEMS; ++i)
+		ActiveItems[i] = i;
+	EXPECT_TRUE(TestDeadItem(*MyPlayer, *equippedItem, { 0, 0 }));
+	EXPECT_TRUE(equippedItem->isEmpty());
+	EXPECT_EQ(ActiveItemCount, 1);
+}
+
+TEST_F(PlayerSynchronizationTest, FailedGoldDeathDropPreservesAllGold)
+{
+	PrepareOpenItemDropArea();
+	FreeCursor();
+	CreatePlayer(*MyPlayer, HeroClass::Warrior);
+	InitCursor();
+	const int goldBeforeDeath = CalculateGold(*MyPlayer);
+	ASSERT_GT(goldBeforeDeath, 0);
+	ActiveItemCount = MAXITEMS;
+
+	TestDropHalfPlayersGold(*MyPlayer);
+
+	EXPECT_EQ(CalculateGold(*MyPlayer), goldBeforeDeath);
+	EXPECT_EQ(MyPlayer->_pGold, goldBeforeDeath);
+
+	ActiveItemCount = 0;
+	for (uint8_t i = 0; i < MAXITEMS; ++i)
+		ActiveItems[i] = i;
+	TestDropHalfPlayersGold(*MyPlayer);
+	EXPECT_EQ(CalculateGold(*MyPlayer), goldBeforeDeath / 2);
+	EXPECT_EQ(MyPlayer->_pGold, goldBeforeDeath / 2);
+	EXPECT_EQ(ActiveItemCount, 1);
+}
+
+TEST_F(PlayerSynchronizationTest, RemoteDeathEquipmentClearsOnlyAfterDropIsStored)
+{
+	PrepareOpenItemDropArea();
+	Player &player = Players[7];
+	FreeCursor();
+	CreatePlayer(player, HeroClass::Warrior);
+	InitCursor();
+	player.setLevel(currlevel);
+	player.position.tile = { 47, 50 };
+	player.position.future = player.position.tile;
+	player._pdir = Direction::South;
+	const auto equippedItem = std::find_if(std::begin(player.InvBody), std::end(player.InvBody), [](const Item &item) {
+		return !item.isEmpty();
+	});
+	ASSERT_NE(equippedItem, std::end(player.InvBody));
+	const Item droppedItem = *equippedItem;
+
+	StartPlayerKill(player, DeathReason::MonsterOrTrap);
+	ASSERT_FALSE(equippedItem->isEmpty());
+
+	TCmdPItem spawn { };
+	spawn.bCmd = CMD_SPAWNITEM;
+	spawn.x = 48;
+	spawn.y = 50;
+	spawn.item.wIndx = static_cast<_item_indexes>(Swap16LE(droppedItem.IDidx));
+	spawn.item.wCI = Swap16LE(droppedItem._iCreateInfo);
+	spawn.item.dwSeed = Swap32LE(droppedItem._iSeed);
+	PrepareItemForNetwork(droppedItem, spawn.item);
+	ActiveItemCount = MAXITEMS;
+	EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&spawn), sizeof(spawn)), sizeof(spawn));
+	EXPECT_FALSE(equippedItem->isEmpty());
+
+	ActiveItemCount = 0;
+	for (uint8_t i = 0; i < MAXITEMS; ++i)
+		ActiveItems[i] = i;
+	EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&spawn), sizeof(spawn)), sizeof(spawn));
+	EXPECT_TRUE(equippedItem->isEmpty());
+	ASSERT_EQ(ActiveItemCount, 1);
+
+	EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&spawn), sizeof(spawn)), sizeof(spawn));
+	EXPECT_EQ(ActiveItemCount, 1);
+}
+
+TEST_F(PlayerSynchronizationTest, FullItemDeltaRejectsAdditionalPregenPickup)
+{
+	MyPlayer->setLevel(1);
+	for (uint32_t i = 0; i < MAXITEMS; ++i) {
+		TCmdGItem pickup { };
+		pickup.bCmd = CMD_GETITEM;
+		pickup.x = 40;
+		pickup.y = 50;
+		pickup.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_GOLD));
+		pickup.def.wCI = Swap16LE(CF_PREGEN);
+		pickup.def.dwSeed = Swap32LE(1000 + i);
+		pickup.bMaster = MyPlayerId;
+		pickup.bPnum = MyPlayerId;
+		pickup.bLevel = 2;
+		ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+	}
+
+	TCmdGItem pickup { };
+	pickup.bCmd = CMD_GETITEM;
+	pickup.x = 40;
+	pickup.y = 50;
+	pickup.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_GOLD));
+	pickup.def.wCI = Swap16LE(CF_PREGEN);
+	pickup.def.dwSeed = Swap32LE(2000);
+	pickup.item.bId = 1;
+	pickup.item.wValue = Swap16LE(100);
+	pickup.bMaster = 1;
+	pickup.bPnum = MyPlayerId;
+	pickup.bLevel = 2;
+
+	EXPECT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+	EXPECT_EQ(ActiveItemCount, 0);
+	EXPECT_EQ(MyPlayer->_pNumInv, 0);
+
+	Player &player = Players[7];
+	FreeCursor();
+	CreatePlayer(player, HeroClass::Warrior);
+	InitCursor();
+	player.setLevel(2);
+	const auto equippedItem = std::find_if(std::begin(player.InvBody), std::end(player.InvBody), [](const Item &item) {
+		return !item.isEmpty();
+	});
+	ASSERT_NE(equippedItem, std::end(player.InvBody));
+	TCmdPItem spawn { };
+	spawn.bCmd = CMD_SPAWNITEM;
+	spawn.x = 48;
+	spawn.y = 50;
+	spawn.item.wIndx = static_cast<_item_indexes>(Swap16LE(equippedItem->IDidx));
+	spawn.item.wCI = Swap16LE(equippedItem->_iCreateInfo);
+	spawn.item.dwSeed = Swap32LE(equippedItem->_iSeed);
+	PrepareItemForNetwork(*equippedItem, spawn.item);
+
+	EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&spawn), sizeof(spawn)), sizeof(spawn));
+	EXPECT_FALSE(equippedItem->isEmpty());
+	EXPECT_EQ(ActiveItemCount, 0);
+}
+
+TEST_F(PlayerSynchronizationTest, FullItemDeltaPreservesPregenItemOnExtraMessage)
+{
+	PrepareOpenItemDropArea();
+	MyPlayer->setLevel(currlevel);
+	Player &sender = Players[1];
+	sender.setLevel(currlevel);
+	for (uint32_t i = 0; i < MAXITEMS; ++i) {
+		TCmdGItem pickup { };
+		pickup.bCmd = CMD_GETITEM;
+		pickup.x = 40;
+		pickup.y = 50;
+		pickup.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_GOLD));
+		pickup.def.wCI = Swap16LE(CF_PREGEN);
+		pickup.def.dwSeed = Swap32LE(3000 + i);
+		pickup.bMaster = MyPlayerId;
+		pickup.bPnum = MyPlayerId;
+		pickup.bLevel = currlevel;
+		ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+	}
+
+	const Point position { 40, 50 };
+	InitializeItem(Items[0], IDI_GOLD);
+	Items[0]._iSeed = 5000;
+	Items[0]._iCreateInfo = CF_PREGEN;
+	Items[0].position = position;
+	ActiveItems[0] = 0;
+	ActiveItemCount = 1;
+	dItem[position.x][position.y] = 1;
+
+	TCmdGItem extra { };
+	extra.bCmd = CMD_ITEMEXTRA;
+	extra.x = position.x;
+	extra.y = position.y;
+	extra.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_GOLD));
+	extra.def.wCI = Swap16LE(CF_PREGEN);
+	extra.def.dwSeed = Swap32LE(5000);
+	extra.bMaster = 1;
+	extra.bPnum = MyPlayerId;
+	extra.bLevel = currlevel;
+
+	EXPECT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&extra), sizeof(extra)), sizeof(extra));
+	EXPECT_EQ(ActiveItemCount, 1);
+	EXPECT_FALSE(Items[0].isEmpty());
+	EXPECT_EQ(dItem[position.x][position.y], 1);
+}
+
+TEST_F(PlayerSynchronizationTest, FullItemDeltaReusesPickedUpItemRecordWhenDropped)
+{
+	MyPlayer->setLevel(currlevel);
+	for (uint32_t i = 0; i < MAXITEMS; ++i) {
+		TCmdGItem pickup { };
+		pickup.bCmd = CMD_GETITEM;
+		pickup.x = 40;
+		pickup.y = 50;
+		pickup.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_GOLD));
+		pickup.def.wCI = Swap16LE(CF_PREGEN);
+		pickup.def.dwSeed = Swap32LE(6000 + i);
+		pickup.bMaster = MyPlayerId;
+		pickup.bPnum = MyPlayerId;
+		pickup.bLevel = currlevel;
+		ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+	}
+
+	TCmdPItem drop { };
+	drop.bCmd = CMD_PUTITEM;
+	drop.x = 42;
+	drop.y = 50;
+	drop.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_GOLD));
+	drop.def.wCI = Swap16LE(CF_PREGEN);
+	drop.def.dwSeed = Swap32LE(6000);
+
+	EXPECT_TRUE(CanDeltaPutItem(drop, *MyPlayer));
+	EXPECT_TRUE(DeltaPutItem(drop, { drop.x, drop.y }, *MyPlayer));
+
+	TCmdGItem repick { };
+	repick.bCmd = CMD_GETITEM;
+	repick.x = drop.x;
+	repick.y = drop.y;
+	repick.def = drop.def;
+	repick.bMaster = MyPlayerId;
+	repick.bPnum = MyPlayerId;
+	repick.bLevel = currlevel;
+	EXPECT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&repick), sizeof(repick)), sizeof(repick));
+
+	TCmdPItem newDrop = drop;
+	newDrop.def.dwSeed = Swap32LE(7000);
+	EXPECT_TRUE(CanDeltaPutItem(newDrop, *MyPlayer));
+	EXPECT_TRUE(DeltaPutItem(newDrop, { newDrop.x, newDrop.y }, *MyPlayer));
+}
 
 TEST_F(MultiplayerSyncTest, ReceivesTurnsWithoutTruncatingTheNegotiatedCapacity)
 {

@@ -1175,7 +1175,7 @@ bool DeltaGetItem(const TCmdGItem &message, uint8_t bLevel)
 #endif
 	}
 
-	if ((message.def.wCI & CF_PREGEN) == 0)
+	if ((Swap16LE(message.def.wCI) & CF_PREGEN) == 0)
 		return false;
 
 	for (TCmdPItem &delta : deltaLevel.item) {
@@ -1202,28 +1202,59 @@ bool DeltaGetItem(const TCmdGItem &message, uint8_t bLevel)
 			break;
 		}
 	}
-	return true;
+	return false;
 }
 
-void DeltaPutItem(const TCmdPItem &message, Point position, const Player &player)
+bool CanDeltaPutItemImpl(const TCmdPItem &message, const Player &player)
 {
 	if (!gbIsMultiplayer)
-		return;
+		return true;
+
+	DLevel &deltaLevel = GetDeltaLevel(player);
+	bool hasFreeSlot = false;
+
+	for (const TCmdPItem &item : deltaLevel.item) {
+		if (item.bCmd == CMD_INVALID) {
+			hasFreeSlot = true;
+			continue;
+		}
+		if (item.def.wIndx == message.def.wIndx
+		    && item.def.wCI == message.def.wCI
+		    && item.def.dwSeed == message.def.dwSeed) {
+			return item.bCmd == TCmdPItem::PickedUpItem;
+		}
+	}
+	return hasFreeSlot;
+}
+
+bool DeltaPutItemImpl(const TCmdPItem &message, Point position, const Player &player)
+{
+	if (!gbIsMultiplayer)
+		return true;
 
 	DLevel &deltaLevel = GetDeltaLevel(player);
 
-	for (const TCmdPItem &item : deltaLevel.item) {
-		if (item.bCmd != TCmdPItem::PickedUpItem
-		    && item.bCmd != CMD_INVALID
-		    && item.def.wIndx == message.def.wIndx
-		    && item.def.wCI == message.def.wCI
-		    && item.def.dwSeed == message.def.dwSeed) {
-			if (item.bCmd != TCmdPItem::DroppedItem) {
-				Log("Suspicious floor item duplication, dropping player {}", player.getId());
-				SNetDropPlayer(player.getId(), leaveinfo_t::LEAVE_DROP);
-			}
-			return;
+	for (TCmdPItem &item : deltaLevel.item) {
+		if (item.bCmd == CMD_INVALID
+		    || item.def.wIndx != message.def.wIndx
+		    || item.def.wCI != message.def.wCI
+		    || item.def.dwSeed != message.def.dwSeed) {
+			continue;
 		}
+
+		if (item.bCmd == TCmdPItem::PickedUpItem) {
+			memcpy(&item, &message, sizeof(TCmdPItem));
+			item.bCmd = TCmdPItem::DroppedItem;
+			item.x = position.x;
+			item.y = position.y;
+			return true;
+		}
+		if (item.bCmd == TCmdPItem::DroppedItem)
+			return true;
+
+		Log("Suspicious floor item duplication, dropping player {}", player.getId());
+		SNetDropPlayer(player.getId(), leaveinfo_t::LEAVE_DROP);
+		return false;
 	}
 
 	for (TCmdPItem &item : deltaLevel.item) {
@@ -1232,9 +1263,10 @@ void DeltaPutItem(const TCmdPItem &message, Point position, const Player &player
 			item.bCmd = TCmdPItem::DroppedItem;
 			item.x = position.x;
 			item.y = position.y;
-			return;
+			return true;
 		}
 	}
+	return false;
 }
 
 void DeltaOpenPortal(size_t pnum, Point position, uint8_t bLevel, dungeon_type bLType, bool bSetLvl)
@@ -1684,7 +1716,8 @@ size_t OnItemExtra(const TCmdGItem &message, Player &player)
 	if (gbBufferMsgs == 1) {
 		BufferMessage(player, &message, sizeof(message));
 	} else if (IsGItemValid(message)) {
-		DeltaGetItem(message, message.bLevel);
+		if (!DeltaGetItem(message, message.bLevel) && (Swap16LE(message.def.wCI) & CF_PREGEN) != 0)
+			return sizeof(message);
 		if (player.isOnActiveLevel()) {
 			const Point position { message.x, message.y };
 			SyncGetItem(position, Swap32LE(message.def.dwSeed), static_cast<_item_indexes>(Swap16LE(message.def.wIndx)), Swap16LE(message.def.wCI));
@@ -2385,16 +2418,42 @@ size_t OnDropItem(const TCmdPItem &message, Player &player)
 	return sizeof(message);
 }
 
+void RemoveSpawnedBodyItem(Player &player, const TCmdPItem &message)
+{
+	const uint32_t seed = Swap32LE(message.def.dwSeed);
+	const uint16_t creationInfo = Swap16LE(message.def.wCI);
+	const auto itemIndex = static_cast<_item_indexes>(Swap16LE(message.def.wIndx));
+	const auto item = std::find_if(std::begin(player.InvBody), std::end(player.InvBody), [&](const Item &equippedItem) {
+		return !equippedItem.isEmpty() && equippedItem.keyAttributesMatch(seed, itemIndex, creationInfo);
+	});
+	if (item == std::end(player.InvBody))
+		return;
+
+	item->clear();
+	CalcPlrInv(player, false);
+}
+
 size_t OnSpawnItem(const TCmdPItem &message, Player &player)
 {
 	if (gbBufferMsgs == 1) {
 		BufferMessage(player, &message, sizeof(message));
 	} else if (IsPItemValid(message, player)) {
-		if (player.isOnActiveLevel() && &player != MyPlayer) {
-			SyncDropItem(message);
+		const Point position { message.x, message.y };
+		if (!CanDeltaPutItem(message, player)) {
+			if (DeltaPutItem(message, position, player)) {
+				PutItemRecord(Swap32LE(message.def.dwSeed), Swap16LE(message.def.wCI), static_cast<_item_indexes>(Swap16LE(message.def.wIndx)));
+			}
+			return sizeof(message);
 		}
+		if (player.isOnActiveLevel() && &player != MyPlayer) {
+			if (SyncDropItem(message) == -1)
+				return sizeof(message);
+		}
+		if (!DeltaPutItem(message, position, player))
+			return sizeof(message);
 		PutItemRecord(Swap32LE(message.def.dwSeed), Swap16LE(message.def.wCI), static_cast<_item_indexes>(Swap16LE(message.def.wIndx)));
-		DeltaPutItem(message, { message.x, message.y }, player);
+		if (&player != MyPlayer)
+			RemoveSpawnedBodyItem(player, message);
 	}
 
 	return sizeof(message);
@@ -2805,6 +2864,28 @@ size_t HandleCmd(size_t (*handler)(const TCmdImpl &, const Player &), const Play
 }
 
 } // namespace
+
+bool CanDeltaPutItem(const TCmdPItem &message, const Player &player)
+{
+	return CanDeltaPutItemImpl(message, player);
+}
+
+bool DeltaPutItem(const TCmdPItem &message, Point position, const Player &player)
+{
+	return DeltaPutItemImpl(message, position, player);
+}
+
+bool DeltaStoreDroppedItem(const Item &item, Point position, const Player &player)
+{
+	TCmdPItem message { };
+	message.bCmd = CMD_SPAWNITEM;
+	message.x = position.x;
+	message.y = position.y;
+	PrepareItemForNetwork(item, message);
+	if (!CanDeltaPutItem(message, player))
+		return false;
+	return DeltaPutItem(message, position, player);
+}
 
 void PrepareItemForNetwork(const Item &item, TItem &messageItem)
 {

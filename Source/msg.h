@@ -741,6 +741,12 @@ void delta_reset_transfer();
 /** Clear damage contributions before a player slot can be reused. */
 void delta_remove_player(uint8_t playerId);
 void DeltaClearLevel(uint8_t level);
+/** Check whether a dropped item can be recorded without exhausting the level delta. */
+bool CanDeltaPutItem(const TCmdPItem &message, const Player &player);
+/** Record a dropped item in the level delta; returns false if no safe slot is available. */
+bool DeltaPutItem(const TCmdPItem &message, Point position, const Player &player);
+/** Serialize and record an item before placing a death drop on the level. */
+bool DeltaStoreDroppedItem(const Item &item, Point position, const Player &player);
 void delta_kill_monster(const Monster &monster, Point position, const Player &player);
 void delta_monster_hp(const Monster &monster, const Player &player);
 void delta_sync_monster(const TSyncMonster &monsterSync, uint8_t level);

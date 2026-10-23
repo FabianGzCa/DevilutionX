@@ -1135,6 +1135,82 @@ TEST_F(PlayerSynchronizationTest, DeathAndResurrectionSynchronizePlayersOnOtherL
 	}
 }
 
+TEST_F(PlayerSynchronizationTest, PlayerDamageFromEveryRemoteSlotTargetsTheLocalPlayer)
+{
+	FreeCursor();
+	CreatePlayer(*MyPlayer, HeroClass::Warrior);
+	InitCursor();
+	MyPlayer->setLevel(currlevel);
+
+	for (uint8_t slot = 1; slot < PlayerStorageCapacity; ++slot) {
+		Join(slot, MakePlayer(slot));
+		Players[slot].setLevel(currlevel);
+	}
+
+	const int32_t damage = Fixed26_6::fromInt(1).raw();
+	TCmdDamage message { };
+	message.bCmd = CMD_PLRDAMAGE;
+	message.bPlr = MyPlayerId;
+	message.dwDam = Swap32LE(static_cast<uint32_t>(damage));
+	message.damageType = DamageType::Physical;
+
+	for (uint8_t slot = 1; slot < PlayerStorageCapacity; ++slot) {
+		SCOPED_TRACE(slot);
+		const int32_t previousHitPoints = MyPlayer->_pHitPoints.raw();
+		ASSERT_EQ(ParseCmd(slot, reinterpret_cast<const TCmd *>(&message), sizeof(message)), sizeof(message));
+		EXPECT_EQ(MyPlayer->_pHitPoints.raw(), previousHitPoints - damage);
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, PlayerDamageForRemoteRecipientDoesNotDamageLocalPlayer)
+{
+	FreeCursor();
+	CreatePlayer(*MyPlayer, HeroClass::Warrior);
+	InitCursor();
+	MyPlayer->setLevel(currlevel);
+	Join(4, MakePlayer(4));
+	Join(7, MakePlayer(7));
+	Players[4].setLevel(currlevel);
+	Players[7].setLevel(currlevel);
+
+	const int32_t localHitPoints = MyPlayer->_pHitPoints.raw();
+	const int32_t remoteHitPoints = Players[7]._pHitPoints.raw();
+	TCmdDamage message { };
+	message.bCmd = CMD_PLRDAMAGE;
+	message.bPlr = 7;
+	message.dwDam = Swap32LE(static_cast<uint32_t>(Fixed26_6::fromInt(1).raw()));
+	message.damageType = DamageType::Physical;
+
+	EXPECT_EQ(ParseCmd(4, reinterpret_cast<const TCmd *>(&message), sizeof(message)), sizeof(message));
+	EXPECT_EQ(MyPlayer->_pHitPoints.raw(), localHitPoints);
+	EXPECT_EQ(Players[7]._pHitPoints.raw(), remoteHitPoints);
+}
+
+TEST_F(PlayerSynchronizationTest, PlayerDamageRejectsInvalidRecipientAndExcessiveAmount)
+{
+	FreeCursor();
+	CreatePlayer(*MyPlayer, HeroClass::Warrior);
+	InitCursor();
+	MyPlayer->setLevel(currlevel);
+	Join(7, MakePlayer(7));
+	Players[7].setLevel(currlevel);
+
+	const int32_t localHitPoints = MyPlayer->_pHitPoints.raw();
+	TCmdDamage message { };
+	message.bCmd = CMD_PLRDAMAGE;
+	message.dwDam = Swap32LE(static_cast<uint32_t>(Fixed26_6::fromInt(1).raw()));
+	message.damageType = DamageType::Physical;
+
+	message.bPlr = PlayerStorageCapacity;
+	EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&message), sizeof(message)), sizeof(message));
+	EXPECT_EQ(MyPlayer->_pHitPoints.raw(), localHitPoints);
+
+	message.bPlr = MyPlayerId;
+	message.dwDam = Swap32LE(192001);
+	EXPECT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&message), sizeof(message)), sizeof(message));
+	EXPECT_EQ(MyPlayer->_pHitPoints.raw(), localHitPoints);
+}
+
 TEST_F(MultiplayerSyncTest, RejectsPartialMonsterSyncRecords)
 {
 	Message message(sizeof(TSyncHeader) + 1);

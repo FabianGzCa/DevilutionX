@@ -2807,11 +2807,11 @@ void StripTopGold(Player &player)
 		if (GoldAutoPlace(player, excessGold))
 			continue;
 		if (!player.HoldItem.isEmpty() && ActiveItemCount + 1 >= MAXITEMS) {
-			item._ivalue = originalValue;
+			item._ivalue += excessGold._ivalue;
 			continue;
 		}
 		if (!DeadItem(player, excessGold, { 0, 0 }))
-			item._ivalue = originalValue;
+			item._ivalue += excessGold._ivalue;
 	}
 	player._pGold = CalculateGold(player);
 

@@ -1199,7 +1199,7 @@ bool DeltaGetItem(const TCmdGItem &message, uint8_t bLevel)
 				delta.item.dwBuff = message.item.dwBuff;
 				delta.item.wToHit = message.item.wToHit;
 			}
-			break;
+			return true;
 		}
 	}
 	return false;
@@ -1221,7 +1221,7 @@ bool CanDeltaPutItemImpl(const TCmdPItem &message, const Player &player)
 		if (item.def.wIndx == message.def.wIndx
 		    && item.def.wCI == message.def.wCI
 		    && item.def.dwSeed == message.def.dwSeed) {
-			return item.bCmd == TCmdPItem::PickedUpItem;
+			return false;
 		}
 	}
 	return hasFreeSlot;
@@ -1243,11 +1243,8 @@ bool DeltaPutItemImpl(const TCmdPItem &message, Point position, const Player &pl
 		}
 
 		if (item.bCmd == TCmdPItem::PickedUpItem) {
-			memcpy(&item, &message, sizeof(TCmdPItem));
-			item.bCmd = TCmdPItem::DroppedItem;
-			item.x = position.x;
-			item.y = position.y;
-			return true;
+			// A real pickup clears CF_PREGEN; preserve the original floor tombstone.
+			return false;
 		}
 		if (item.bCmd == TCmdPItem::DroppedItem)
 			return true;
@@ -1584,6 +1581,8 @@ size_t OnRequestGetItem(const TCmdGItem &message, Player &player)
 	}
 
 	if (ii != -1) {
+		if ((wCI & CF_PREGEN) != 0 && !DeltaGetItem(message, message.bLevel))
+			return sizeof(message);
 		NetSendCmdGItem2(false, CMD_GETITEM, MyPlayerId, message.bPnum, message);
 		if (message.bPnum != MyPlayerId)
 			SyncGetItem(position, dwSeed, wIndx, wCI);
@@ -1660,6 +1659,8 @@ size_t OnRequestAutoGetItem(const TCmdGItem &message, Player &player)
 		const auto wIndx = static_cast<_item_indexes>(Swap16LE(message.def.wIndx));
 		if (GetItemRecord(dwSeed, wCI, wIndx)) {
 			if (FindGetItem(dwSeed, wIndx, wCI) != -1) {
+				if ((wCI & CF_PREGEN) != 0 && !DeltaGetItem(message, message.bLevel))
+					return sizeof(message);
 				NetSendCmdGItem2(false, CMD_AGETITEM, MyPlayerId, message.bPnum, message);
 				if (message.bPnum != MyPlayerId)
 					SyncGetItem(position, dwSeed, wIndx, wCI);
@@ -2431,6 +2432,8 @@ void RemoveSpawnedBodyItem(Player &player, const TCmdPItem &message)
 
 	item->clear();
 	CalcPlrInv(player, false);
+	if (player._pmode == PM_DEATH)
+		SetPlayerHitPoints(player, Fixed26_6::fromInt(0));
 }
 
 size_t OnSpawnItem(const TCmdPItem &message, Player &player)

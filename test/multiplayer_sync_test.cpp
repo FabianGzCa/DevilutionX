@@ -264,6 +264,177 @@ void PrepareOpenItemDropArea()
 	}
 }
 
+void PrepareGoldPickupArea(uint8_t localPlayerId)
+{
+	PrepareOpenItemDropArea();
+	MyPlayerId = localPlayerId;
+	MyPlayer = &Players[localPlayerId];
+	InspectPlayer = MyPlayer;
+	FreeCursor();
+	CreatePlayer(*MyPlayer, HeroClass::Warrior);
+	InitCursor();
+	MyPlayer->setLevel(currlevel);
+	MyPlayer->plractive = true;
+	MyPlayer->position.tile = { 40, 49 };
+	MyPlayer->position.future = MyPlayer->position.tile;
+	for (uint8_t i = 0; i < MAXITEMS; ++i)
+		ActiveItems[i] = i;
+	std::swap(ActiveItems[0], ActiveItems[9]);
+	std::swap(ActiveItems[1], ActiveItems[5]);
+	ActiveItemCount = 2;
+	MakeGoldStack(Items[5], 75);
+	Items[5]._iSeed = 31001;
+	Items[5]._iCreateInfo = CF_PREGEN;
+	Items[5].position = { 40, 50 };
+	dItem[40][50] = 6;
+	MakeGoldStack(Items[9], 700);
+	Items[9]._iSeed = 31002;
+	Items[9]._iCreateInfo = CF_PREGEN;
+	Items[9].position = { 43, 50 };
+	dItem[43][50] = 10;
+}
+
+TCmdGItem MakePickupCommand(_cmd_id command, const Item &item, uint8_t master, uint8_t cursorItem)
+{
+	TCmdGItem message { };
+	message.bCmd = command;
+	message.x = item.position.x;
+	message.y = item.position.y;
+	message.def.wIndx = static_cast<_item_indexes>(Swap16LE(item.IDidx));
+	message.def.wCI = Swap16LE(item._iCreateInfo);
+	message.def.dwSeed = Swap32LE(item._iSeed);
+	PrepareItemForNetwork(item, message.item);
+	message.bMaster = master;
+	message.bPnum = MyPlayerId;
+	message.bCursitem = cursorItem;
+	message.bLevel = currlevel;
+	return message;
+}
+
+TEST_F(PlayerSynchronizationTest, AutomaticPickupGrantUsesIdentityInsteadOfRemoteCursorIndex)
+{
+	PrepareGoldPickupArea(7);
+	const int goldBefore = CalculateGold(*MyPlayer);
+	const TCmdGItem pickup = MakePickupCommand(CMD_AGETITEM, Items[5], 0, 9);
+
+	ASSERT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+	EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore + 75);
+	EXPECT_EQ(ActiveItemCount, 1);
+	EXPECT_EQ(dItem[40][50], 0);
+	EXPECT_EQ(dItem[43][50], 10);
+}
+
+TEST_F(PlayerSynchronizationTest, AutomaticPickupOwnerUsesIdentityInsteadOfStaleCursorIndex)
+{
+	PrepareGoldPickupArea(0);
+	ASSERT_TRUE(MyPlayer->isLevelOwnedByLocalClient());
+	PutItemRecord(31001, CF_PREGEN, IDI_GOLD);
+	const int goldBefore = CalculateGold(*MyPlayer);
+	const TCmdGItem pickup = MakePickupCommand(CMD_REQUESTAGITEM, Items[5], 0, 9);
+
+	ASSERT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+	EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore + 75);
+	EXPECT_EQ(ActiveItemCount, 1);
+	EXPECT_EQ(dItem[40][50], 0);
+	EXPECT_EQ(dItem[43][50], 10);
+}
+
+TEST_F(PlayerSynchronizationTest, ReplayedPickupGrantCannotCollectAReusedFloorSlot)
+{
+	for (const _cmd_id command : { CMD_GETITEM, CMD_AGETITEM }) {
+		SCOPED_TRACE(static_cast<int>(command));
+		delta_init();
+		PrepareGoldPickupArea(7);
+		const int goldBefore = CalculateGold(*MyPlayer);
+		const TCmdGItem pickup = MakePickupCommand(command, Items[5], 0, 5);
+		ASSERT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(CalculateGold(*MyPlayer), goldBefore + 75);
+		Item replacement;
+		MakeGoldStack(replacement, 30);
+		replacement._iSeed = 31003;
+		ASSERT_EQ(PlaceItemInWorld(std::move(replacement), { 40, 50 }), 5);
+
+		ASSERT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+		EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore + 75);
+		EXPECT_EQ(ActiveItemCount, 2);
+		EXPECT_EQ(dItem[40][50], 6);
+		EXPECT_TRUE(Items[5].keyAttributesMatch(31003, IDI_GOLD, 0));
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, FullDeltaStoresPreviousHeldItemBeforeAcceptingAnother)
+{
+	for (const bool fullDelta : { false, true }) {
+		for (const bool heldGold : { false, true }) {
+			SCOPED_TRACE(fullDelta);
+			SCOPED_TRACE(heldGold);
+			delta_init();
+			PrepareOpenItemDropArea();
+			FreeCursor();
+			CreatePlayer(*MyPlayer, HeroClass::Warrior);
+			InitCursor();
+			MyPlayer->setLevel(currlevel);
+			MyPlayer->position.tile = { 40, 49 };
+			MyPlayer->position.future = MyPlayer->position.tile;
+			for (uint8_t i = 0; i < MAXITEMS; ++i)
+				ActiveItems[i] = i;
+			if (heldGold)
+				MakeGoldStack(MyPlayer->HoldItem, 321);
+			else
+				InitializeItem(MyPlayer->HoldItem, IDI_HEAL);
+			MyPlayer->HoldItem._iSeed = 50000;
+			const Item previous = MyPlayer->HoldItem;
+			NewCursor(MyPlayer->HoldItem);
+			if (fullDelta) {
+				for (uint32_t i = 0; i < MAXITEMS; ++i) {
+					TCmdGItem entry { };
+					entry.bCmd = CMD_GETITEM;
+					entry.x = 40;
+					entry.y = 50;
+					entry.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_HEAL));
+					entry.def.wCI = Swap16LE(CF_PREGEN);
+					entry.def.dwSeed = Swap32LE(41000 + i);
+					entry.bMaster = MyPlayerId;
+					entry.bPnum = MyPlayerId;
+					entry.bLevel = currlevel;
+					ASSERT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&entry), sizeof(entry)), sizeof(entry));
+				}
+			}
+			InitializeItem(Items[0], IDI_HEAL);
+			Items[0]._iSeed = 41000;
+			Items[0]._iCreateInfo = CF_PREGEN;
+			Items[0].position = { 40, 50 };
+			ActiveItemCount = 1;
+			dItem[40][50] = 1;
+			const TCmdGItem pickup = MakePickupCommand(CMD_GETITEM, Items[0], 7, 0);
+			Drain();
+
+			ASSERT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+			EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(41000, IDI_HEAL, 0));
+			const auto matchesPrevious = [&](const Item &item) {
+				return !item.isEmpty() && item.keyAttributesMatch(previous._iSeed, previous.IDidx, previous._iCreateInfo);
+			};
+			const auto stored = std::count_if(std::begin(MyPlayer->InvList), std::end(MyPlayer->InvList), matchesPrevious)
+			    + std::count_if(std::begin(MyPlayer->SpdList), std::end(MyPlayer->SpdList), matchesPrevious);
+			EXPECT_EQ(stored, fullDelta ? 1 : 0);
+			EXPECT_EQ(MyPlayer->_pGold, CalculateGold(*MyPlayer));
+			unsigned dropped = 0;
+			for (const Message &message : Drain()) {
+				if (static_cast<_cmd_id>(message.front()) == CMD_SYNCPUTITEM) {
+					++dropped;
+					Receive(MyPlayerId, message);
+				}
+			}
+			EXPECT_EQ(dropped, fullDelta ? 0U : 1U);
+			EXPECT_EQ(ActiveItemCount, fullDelta ? 0 : 1);
+		}
+	}
+}
+
 TEST_F(PlayerSynchronizationTest, LocalPutUsesItsMessageInsteadOfTheLastSentItem)
 {
 	PrepareOpenItemDropArea();

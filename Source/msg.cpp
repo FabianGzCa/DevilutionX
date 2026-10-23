@@ -1630,7 +1630,8 @@ size_t OnGetItem(const TCmdGItem &message, Player &player)
 			InvGetItem(*MyPlayer, ii);
 	} else {
 		const int activeItemIndex = FindGetItem(dwSeed, wIndx, wCI);
-		InvGetItem(*MyPlayer, ActiveItems[activeItemIndex]);
+		if (activeItemIndex != -1)
+			InvGetItem(*MyPlayer, ActiveItems[activeItemIndex]);
 	}
 
 	return sizeof(message);
@@ -1658,14 +1659,17 @@ size_t OnRequestAutoGetItem(const TCmdGItem &message, Player &player)
 		const uint16_t wCI = Swap16LE(message.def.wCI);
 		const auto wIndx = static_cast<_item_indexes>(Swap16LE(message.def.wIndx));
 		if (GetItemRecord(dwSeed, wCI, wIndx)) {
-			if (FindGetItem(dwSeed, wIndx, wCI) != -1) {
+			const int activeItemIndex = FindGetItem(dwSeed, wIndx, wCI);
+			if (activeItemIndex != -1) {
 				if ((wCI & CF_PREGEN) != 0 && !DeltaGetItem(message, message.bLevel))
 					return sizeof(message);
 				NetSendCmdGItem2(false, CMD_AGETITEM, MyPlayerId, message.bPnum, message);
 				if (message.bPnum != MyPlayerId)
 					SyncGetItem(position, dwSeed, wIndx, wCI);
-				else
-					AutoGetItem(*MyPlayer, &Items[message.bCursitem], message.bCursitem);
+				else {
+					const int ii = ActiveItems[activeItemIndex];
+					AutoGetItem(*MyPlayer, &Items[ii], ii);
+				}
 				SetItemRecord(dwSeed, wCI, wIndx);
 			} else if (!NetSendCmdReq2(CMD_REQUESTAGITEM, *MyPlayer, message.bPnum, message)) {
 				NetSendCmdExtra(message);
@@ -1687,6 +1691,9 @@ size_t OnAutoGetItem(const TCmdGItem &message, Player &player)
 		return sizeof(message);
 
 	const Point position { message.x, message.y };
+	const uint32_t dwSeed = Swap32LE(message.def.dwSeed);
+	const uint16_t wCI = Swap16LE(message.def.wCI);
+	const auto wIndx = static_cast<_item_indexes>(Swap16LE(message.def.wIndx));
 	if (!DeltaGetItem(message, message.bLevel)) {
 		NetSendCmdGItem2(true, CMD_AGETITEM, message.bMaster, message.bPnum, message);
 		return sizeof(message);
@@ -1697,7 +1704,7 @@ size_t OnAutoGetItem(const TCmdGItem &message, Player &player)
 		return sizeof(message);
 
 	if (message.bPnum != MyPlayerId) {
-		SyncGetItem(position, Swap32LE(message.def.dwSeed), static_cast<_item_indexes>(Swap16LE(message.def.wIndx)), Swap16LE(message.def.wCI));
+		SyncGetItem(position, dwSeed, wIndx, wCI);
 		return sizeof(message);
 	}
 
@@ -1706,7 +1713,11 @@ size_t OnAutoGetItem(const TCmdGItem &message, Player &player)
 		if (ii != -1)
 			AutoGetItem(*MyPlayer, &Items[ii], ii);
 	} else {
-		AutoGetItem(*MyPlayer, &Items[message.bCursitem], message.bCursitem);
+		const int activeItemIndex = FindGetItem(dwSeed, wIndx, wCI);
+		if (activeItemIndex != -1) {
+			const int ii = ActiveItems[activeItemIndex];
+			AutoGetItem(*MyPlayer, &Items[ii], ii);
+		}
 	}
 
 	return sizeof(message);
@@ -2891,6 +2902,13 @@ size_t HandleCmd(size_t (*handler)(const TCmdImpl &, const Player &), const Play
 bool CanDeltaPutItem(const TCmdPItem &message, const Player &player)
 {
 	return CanDeltaPutItemImpl(message, player);
+}
+
+bool CanDeltaPutItem(const Item &item, const Player &player)
+{
+	TCmdPItem message { };
+	PrepareItemForNetwork(item, message);
+	return CanDeltaPutItem(message, player);
 }
 
 bool DeltaPutItem(const TCmdPItem &message, Point position, const Player &player)

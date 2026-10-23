@@ -743,6 +743,8 @@ void delta_remove_player(uint8_t playerId);
 void DeltaClearLevel(uint8_t level);
 /** Check whether a dropped item can be recorded without exhausting the level delta. */
 bool CanDeltaPutItem(const TCmdPItem &message, const Player &player);
+/** Check an inventory item's drop capacity without reserving a delta slot. */
+bool CanDeltaPutItem(const Item &item, const Player &player);
 /** Record a dropped item in the level delta; returns false if no safe slot is available. */
 bool DeltaPutItem(const TCmdPItem &message, Point position, const Player &player);
 /** Serialize and record an item before placing a death drop on the level. */

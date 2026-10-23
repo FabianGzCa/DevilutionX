@@ -1687,8 +1687,13 @@ void InvGetItem(Player &player, int ii)
 	} else {
 		// The item needs to go into the players hand
 		if (MyPlayer == &player && !player.HoldItem.isEmpty()) {
-			// drop whatever the player is currently holding
-			NetSendCmdPItem(true, CMD_SYNCPUTITEM, player.position.tile, player.HoldItem);
+			const bool storedHeldItem = !CanDeltaPutItem(player.HoldItem, player)
+			    && (AutoPlaceItemInBelt(player, player.HoldItem, true, true)
+			        || AutoPlaceItemInInventory(player, player.HoldItem, true));
+			if (storedHeldItem)
+				player._pGold = CalculateGold(player);
+			else
+				NetSendCmdPItem(true, CMD_SYNCPUTITEM, player.position.tile, player.HoldItem);
 		}
 
 		// need to copy here instead of move so CleanupItems still has access to the position

@@ -1297,7 +1297,7 @@ void NetSendCmdGItem2(bool usonly, _cmd_id bCmd, uint8_t mast, uint8_t pnum, con
 		return;
 	}
 
-	tmsg_add(reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
+	tmsg_add(cmd.bMaster, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 }
 
 bool NetSendCmdReq2(_cmd_id bCmd, const Player &player, uint8_t pnum, const TCmdGItem &item)
@@ -1315,7 +1315,7 @@ bool NetSendCmdReq2(_cmd_id bCmd, const Player &player, uint8_t pnum, const TCmd
 	else if (ticks - Swap32LE(cmd.dwTime) > 5000)
 		return false;
 
-	tmsg_add(reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
+	tmsg_add(cmd.bPnum, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 
 	return true;
 }
@@ -1554,7 +1554,8 @@ int SyncDropItem(const TCmdPItem &message)
 
 size_t OnRequestGetItem(const TCmdGItem &message, Player &player)
 {
-	if (gbBufferMsgs == 1 || !player.isLevelOwnedByLocalClient() || !IsGItemValid(message))
+	if (gbBufferMsgs == 1 || !player.isLevelOwnedByLocalClient() || !IsGItemValid(message)
+	    || message.bPnum != player.getId() || message.bLevel != GetLevelForMultiplayer(player))
 		return sizeof(message);
 
 	const Point position { message.x, message.y };
@@ -1613,7 +1614,7 @@ size_t OnGetItem(const TCmdGItem &message, Player &player)
 		return sizeof(message);
 	}
 
-	if (!IsGItemValid(message))
+	if (!IsGItemValid(message) || message.bMaster != player.getId())
 		return sizeof(message);
 
 	const Point position { message.x, message.y };
@@ -1663,7 +1664,8 @@ size_t OnGotoAutoGetItem(const TCmdLocParam1 &message, Player &player)
 
 size_t OnRequestAutoGetItem(const TCmdGItem &message, Player &player)
 {
-	if (gbBufferMsgs != 1 && player.isLevelOwnedByLocalClient() && IsGItemValid(message)) {
+	if (gbBufferMsgs != 1 && player.isLevelOwnedByLocalClient() && IsGItemValid(message)
+	    && message.bPnum == player.getId() && message.bLevel == GetLevelForMultiplayer(player)) {
 		const Point position { message.x, message.y };
 		const uint32_t dwSeed = Swap32LE(message.def.dwSeed);
 		const uint16_t wCI = Swap16LE(message.def.wCI);
@@ -1697,7 +1699,7 @@ size_t OnAutoGetItem(const TCmdGItem &message, Player &player)
 		return sizeof(message);
 	}
 
-	if (!IsGItemValid(message))
+	if (!IsGItemValid(message) || message.bMaster != player.getId())
 		return sizeof(message);
 
 	const Point position { message.x, message.y };
@@ -1737,7 +1739,7 @@ size_t OnItemExtra(const TCmdGItem &message, Player &player)
 {
 	if (gbBufferMsgs == 1) {
 		BufferMessage(player, &message, sizeof(message));
-	} else if (IsGItemValid(message)) {
+	} else if (IsGItemValid(message) && message.bMaster == player.getId()) {
 		if (!DeltaGetItem(message, message.bLevel) && (Swap16LE(message.def.wCI) & CF_PREGEN) != 0)
 			return sizeof(message);
 		if (player.isOnActiveLevel()) {

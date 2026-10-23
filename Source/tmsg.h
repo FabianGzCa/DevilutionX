@@ -1,7 +1,7 @@
 /**
  * @file tmsg.h
  *
- * Interface of functionality transmitting chat messages.
+ * Interface of delayed network message processing.
  */
 #pragma once
 
@@ -11,8 +11,9 @@
 
 namespace devilution {
 
-uint8_t tmsg_get(std::unique_ptr<std::byte[]> *msg);
-void tmsg_add(const std::byte *msg, uint8_t bLen);
+uint8_t tmsg_get(uint8_t *playerId, std::unique_ptr<std::byte[]> *msg);
+/** Queue a retry with the identity of the original message sender. */
+void tmsg_add(uint8_t playerId, const std::byte *msg, uint8_t bLen);
 void tmsg_start();
 void tmsg_cleanup();
 

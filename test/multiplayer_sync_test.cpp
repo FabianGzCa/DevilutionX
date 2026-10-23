@@ -15,6 +15,7 @@
 
 #include "controls/plrctrls.h"
 #include "cursor.h"
+#include "diablo.h"
 #if !defined(NONET) && !defined(DISABLE_TCP)
 #include "dvlnet/tcp_client.h"
 #include "dvlnet/tcp_server.h"
@@ -36,6 +37,7 @@
 #include "storm/storm_net.hpp"
 #include "sync.h"
 #include "tables/playerdat.hpp"
+#include "tmsg.h"
 #include "utils/endian_swap.hpp"
 
 namespace devilution {
@@ -60,6 +62,7 @@ protected:
 
 	void SetUp() override
 	{
+		tmsg_cleanup();
 		gbIsMultiplayer = true;
 		gbIsHellfire = false;
 		gbIsSpawn = false;
@@ -100,6 +103,7 @@ protected:
 	void TearDown() override
 	{
 		run_delta_info();
+		tmsg_cleanup();
 		delta_init();
 		SNetDestroy();
 		Players.clear();
@@ -471,6 +475,192 @@ TEST_F(PlayerSynchronizationTest, OwnerCanSwapHeldItemWithFullPersonalStorageWhe
 	EXPECT_NE(FindGetItem(heldItem._iSeed, heldItem.IDidx, heldItem._iCreateInfo), -1);
 }
 
+TEST_F(PlayerSynchronizationTest, PickupRequestCannotImpersonateAnotherRecipient)
+{
+	for (const SessionRules rules : { ClassicSessionRules, ExtendedSessionRules }) {
+		for (const _cmd_id command : { CMD_REQUESTGITEM, CMD_REQUESTAGITEM }) {
+			SCOPED_TRACE(rules.maxPlayers);
+			SCOPED_TRACE(static_cast<int>(command));
+			delta_init();
+			sgGameInitInfo.rules = rules;
+			ResizePlayersForSession(rules == ClassicSessionRules ? ClassicPlayerLimit : PlayerStorageCapacity);
+			PrepareGoldPickupArea(0);
+			const uint8_t sender = rules == ClassicSessionRules ? 3 : 7;
+			Players[sender].setLevel(currlevel);
+			Players[sender].plractive = true;
+			PutItemRecord(Items[5]._iSeed, Items[5]._iCreateInfo, Items[5].IDidx);
+			TCmdGItem request = MakePickupCommand(command, Items[5], sender, 5);
+			const int goldBefore = CalculateGold(*MyPlayer);
+			const auto before = Canonical(Export());
+
+			ASSERT_EQ(ParseCmd(sender, reinterpret_cast<const TCmd *>(&request), sizeof(request)), sizeof(request));
+
+			EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore);
+			EXPECT_EQ(ActiveItemCount, 2);
+			EXPECT_EQ(dItem[40][50], 6);
+			EXPECT_TRUE(Drain().empty());
+			EXPECT_EQ(Canonical(Export()), before);
+
+			request.bPnum = sender;
+			ASSERT_EQ(ParseCmd(sender, reinterpret_cast<const TCmd *>(&request), sizeof(request)), sizeof(request));
+			EXPECT_EQ(ActiveItemCount, 1);
+			EXPECT_EQ(dItem[40][50], 0);
+			EXPECT_FALSE(Drain().empty());
+		}
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, PickupRequestMustMatchRequestersLevel)
+{
+	for (const SessionRules rules : { ClassicSessionRules, ExtendedSessionRules }) {
+		for (const _cmd_id command : { CMD_REQUESTGITEM, CMD_REQUESTAGITEM }) {
+			SCOPED_TRACE(rules.maxPlayers);
+			SCOPED_TRACE(static_cast<int>(command));
+			delta_init();
+			sgGameInitInfo.rules = rules;
+			ResizePlayersForSession(rules == ClassicSessionRules ? ClassicPlayerLimit : PlayerStorageCapacity);
+			PrepareGoldPickupArea(0);
+			const uint8_t sender = rules == ClassicSessionRules ? 3 : 7;
+			Players[sender].setLevel(currlevel);
+			Players[sender].plractive = true;
+			PutItemRecord(Items[5]._iSeed, Items[5]._iCreateInfo, Items[5].IDidx);
+			TCmdGItem request = MakePickupCommand(command, Items[5], sender, 5);
+			request.bPnum = sender;
+			request.bLevel = currlevel + 1;
+			const auto before = Canonical(Export());
+
+			ASSERT_EQ(ParseCmd(sender, reinterpret_cast<const TCmd *>(&request), sizeof(request)), sizeof(request));
+
+			EXPECT_EQ(ActiveItemCount, 2);
+			EXPECT_EQ(dItem[40][50], 6);
+			EXPECT_TRUE(Drain().empty());
+			EXPECT_EQ(Canonical(Export()), before);
+
+			request.bLevel = currlevel;
+			ASSERT_EQ(ParseCmd(sender, reinterpret_cast<const TCmd *>(&request), sizeof(request)), sizeof(request));
+			EXPECT_EQ(ActiveItemCount, 1);
+			Drain();
+		}
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, PickupGrantCannotImpersonateAnotherMaster)
+{
+	for (const SessionRules rules : { ClassicSessionRules, ExtendedSessionRules }) {
+		for (const _cmd_id command : { CMD_GETITEM, CMD_AGETITEM, CMD_ITEMEXTRA }) {
+			SCOPED_TRACE(rules.maxPlayers);
+			SCOPED_TRACE(static_cast<int>(command));
+			delta_init();
+			sgGameInitInfo.rules = rules;
+			ResizePlayersForSession(rules == ClassicSessionRules ? ClassicPlayerLimit : PlayerStorageCapacity);
+			PrepareGoldPickupArea(rules == ClassicSessionRules ? 3 : 7);
+			Players[0].setLevel(currlevel);
+			Players[1].setLevel(currlevel);
+			const TCmdGItem grant = MakePickupCommand(command, Items[5], 0, 5);
+			const int goldBefore = CalculateGold(*MyPlayer);
+			const auto before = Canonical(Export());
+
+			ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&grant), sizeof(grant)), sizeof(grant));
+
+			EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore);
+			EXPECT_EQ(ActiveItemCount, 2);
+			EXPECT_EQ(dItem[40][50], 6);
+			EXPECT_EQ(Canonical(Export()), before);
+
+			ASSERT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&grant), sizeof(grant)), sizeof(grant));
+			EXPECT_EQ(ActiveItemCount, 1);
+			EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore + (command == CMD_ITEMEXTRA ? 0 : 75));
+		}
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, BufferedPickupGrantStillValidatesItsOriginalSender)
+{
+	PrepareGoldPickupArea(7);
+	const TCmdGItem grant = MakePickupCommand(CMD_GETITEM, Items[5], 0, 5);
+	const int goldBefore = CalculateGold(*MyPlayer);
+	const auto before = Canonical(Export());
+	Players[1].setLevel(currlevel);
+	Players[1].position.tile = { 41, 49 };
+	std::strcpy(Players[1]._pName, "Peer");
+	ASSERT_TRUE(IsNetPlayerValid(1));
+	msg_start_resync();
+	ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&grant), sizeof(grant)), sizeof(grant));
+	EXPECT_EQ(ActiveItemCount, 2);
+
+	run_delta_info();
+
+	EXPECT_EQ(ActiveItemCount, 2);
+	EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore);
+	EXPECT_EQ(Canonical(Export()), before);
+	ASSERT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&grant), sizeof(grant)), sizeof(grant));
+	EXPECT_EQ(ActiveItemCount, 1);
+	EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore + 75);
+}
+
+TEST_F(PlayerSynchronizationTest, DeferredPickupGrantKeepsItsOriginalMaster)
+{
+	for (const _cmd_id command : { CMD_GETITEM, CMD_AGETITEM }) {
+		SCOPED_TRACE(static_cast<int>(command));
+		delta_init();
+		tmsg_cleanup();
+		PrepareGoldPickupArea(7);
+		Items[5]._iCreateInfo = 0;
+		const TCmdGItem grant = MakePickupCommand(command, Items[5], 0, 5);
+		const int goldBefore = CalculateGold(*MyPlayer);
+		const uint16_t savedTickDelay = gnTickDelay;
+		gnTickDelay = 0;
+		const size_t parsed = ParseCmd(0, reinterpret_cast<const TCmd *>(&grant), sizeof(grant));
+		gnTickDelay = savedTickDelay;
+		ASSERT_EQ(parsed, sizeof(grant));
+		EXPECT_EQ(ActiveItemCount, 2);
+		EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore);
+		ASSERT_TRUE(DeltaStoreDroppedItem(Items[5], Items[5].position, *MyPlayer));
+		Drain();
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+		ProcessGameMessagePackets();
+
+		EXPECT_EQ(ActiveItemCount, 1);
+		EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore + 75);
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, DeferredPickupRequestUsesOriginalRequestersLevel)
+{
+	for (const bool changesLevel : { false, true }) {
+		for (const _cmd_id command : { CMD_REQUESTGITEM, CMD_REQUESTAGITEM }) {
+			SCOPED_TRACE(changesLevel);
+			SCOPED_TRACE(static_cast<int>(command));
+			delta_init();
+			tmsg_cleanup();
+			PrepareGoldPickupArea(0);
+			Players[7].setLevel(currlevel);
+			Players[7].plractive = true;
+			TCmdGItem request = MakePickupCommand(command, Items[5], 7, 5);
+			request.bPnum = 7;
+			request.def.dwSeed = Swap32LE(75000);
+			PutItemRecord(75000, CF_PREGEN, IDI_GOLD);
+			const uint16_t savedTickDelay = gnTickDelay;
+			gnTickDelay = 0;
+			const size_t parsed = ParseCmd(7, reinterpret_cast<const TCmd *>(&request), sizeof(request));
+			gnTickDelay = savedTickDelay;
+			ASSERT_EQ(parsed, sizeof(request));
+			EXPECT_EQ(ActiveItemCount, 2);
+			Items[5]._iSeed = 75000;
+			if (changesLevel)
+				Players[7].setLevel(currlevel + 1);
+			Drain();
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+			ProcessGameMessagePackets();
+
+			EXPECT_EQ(ActiveItemCount, changesLevel ? 2 : 1);
+			EXPECT_EQ(dItem[40][50], changesLevel ? 6 : 0);
+		}
+	}
+}
+
 TEST_F(PlayerSynchronizationTest, AutomaticPickupGrantUsesIdentityInsteadOfRemoteCursorIndex)
 {
 	PrepareGoldPickupArea(7);
@@ -560,7 +750,7 @@ TEST_F(PlayerSynchronizationTest, FullDeltaStoresPreviousHeldItemBeforeAccepting
 					entry.bMaster = MyPlayerId;
 					entry.bPnum = MyPlayerId;
 					entry.bLevel = currlevel;
-					ASSERT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&entry), sizeof(entry)), sizeof(entry));
+					ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&entry), sizeof(entry)), sizeof(entry));
 				}
 			}
 			InitializeItem(Items[0], IDI_HEAL);
@@ -672,7 +862,7 @@ TEST_F(PlayerSynchronizationTest, FullDeltaRejectsPutBeforeCreatingAnUntrackedFl
 		pickup.bMaster = MyPlayerId;
 		pickup.bPnum = MyPlayerId;
 		pickup.bLevel = currlevel;
-		ASSERT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 	const auto before = Canonical(Export());
 	TCmdPItem drop { };
@@ -712,7 +902,7 @@ TEST_F(PlayerSynchronizationTest, ManualDropPreservesHeldItemWhenDeltaIsFull)
 		pickup.bMaster = MyPlayerId;
 		pickup.bPnum = MyPlayerId;
 		pickup.bLevel = currlevel;
-		ASSERT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 	const int cursorBefore = pcurs;
 
@@ -794,7 +984,7 @@ TEST_F(PlayerSynchronizationTest, ClosingStashReturnsHeldItemToBeltWhenDropDelta
 		pickup.bMaster = MyPlayerId;
 		pickup.bPnum = MyPlayerId;
 		pickup.bLevel = currlevel;
-		ASSERT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 	IsStashOpen = true;
 
@@ -1006,7 +1196,7 @@ TEST_F(PlayerSynchronizationTest, ItemOwnerPreservesPregenPickupWhenDeltaIsFull)
 		pickup.bMaster = MyPlayerId;
 		pickup.bPnum = MyPlayerId;
 		pickup.bLevel = currlevel;
-		ASSERT_EQ(ParseCmd(7, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 
 	for (const _cmd_id command : { CMD_REQUESTGITEM, CMD_REQUESTAGITEM }) {
@@ -1083,7 +1273,7 @@ TEST_F(PlayerSynchronizationTest, PickedUpPregenRecordCannotBeOverwrittenBySpawn
 	pickup.bMaster = MyPlayerId;
 	pickup.bPnum = MyPlayerId;
 	pickup.bLevel = currlevel;
-	ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+	ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	const auto before = Canonical(Export());
 
 	TCmdPItem spawn { };
@@ -1110,7 +1300,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaRejectsAdditionalPregenPickup)
 		pickup.bMaster = MyPlayerId;
 		pickup.bPnum = MyPlayerId;
 		pickup.bLevel = 2;
-		ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 
 	TCmdGItem pickup { };
@@ -1170,7 +1360,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaPreservesPregenItemOnExtraMessage
 		pickup.bMaster = MyPlayerId;
 		pickup.bPnum = MyPlayerId;
 		pickup.bLevel = currlevel;
-		ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 
 	const Point position { 40, 50 };
@@ -1217,7 +1407,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaPreservesSourceAndPregenPickupRec
 		pickup.bMaster = MyPlayerId;
 		pickup.bPnum = MyPlayerId;
 		pickup.bLevel = currlevel;
-		ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 
 	const auto before = Canonical(Export());

@@ -439,11 +439,12 @@ void ProcessTmsgs()
 {
 	while (true) {
 		std::unique_ptr<std::byte[]> msg;
-		const uint8_t size = tmsg_get(&msg);
+		uint8_t playerId = std::numeric_limits<uint8_t>::max();
+		const uint8_t size = tmsg_get(&playerId, &msg);
 		if (size == 0)
 			break;
 
-		HandleAllPackets(MyPlayerId, msg.get(), size);
+		HandleAllPackets(playerId, msg.get(), size);
 	}
 }
 

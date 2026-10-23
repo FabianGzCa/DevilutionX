@@ -770,7 +770,8 @@ void NetSendCmdParam2(bool bHiPri, _cmd_id bCmd, uint16_t wParam1, uint16_t wPar
 void NetSendCmdParam4(bool bHiPri, _cmd_id bCmd, uint16_t wParam1, uint16_t wParam2, uint16_t wParam3, uint16_t wParam4);
 void NetSendCmdQuest(bool bHiPri, const Quest &quest);
 void NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii);
-void NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item);
+/** Return false when a manual drop cannot currently fit on the floor or in its delta. */
+bool NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item);
 void NetSyncInvItem(const Player &player, int invListIndex);
 void NetSendCmdChItem(bool bHiPri, uint8_t bLoc, bool forceSpellChange = false);
 void NetSendCmdDelItem(bool bHiPri, uint8_t bLoc);

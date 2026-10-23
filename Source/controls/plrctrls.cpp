@@ -2434,7 +2434,10 @@ bool TryDropItem()
 		return false;
 	}
 
-	NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem);
+	if (!NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem)) {
+		myPlayer.Say(HeroSpeech::WhereWouldIPutThis);
+		return false;
+	}
 	myPlayer.HoldItem.clear();
 	NewCursor(CURSOR_HAND);
 	return true;

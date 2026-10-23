@@ -400,8 +400,7 @@ void LeftMouseDown(uint16_t modState)
 				if (!TryOpenDungeonWithMouse()) {
 					const Point currentPosition = MyPlayer->position.tile;
 					std::optional<Point> itemTile = FindAdjacentPositionForItem(currentPosition, GetDirection(currentPosition, cursPosition));
-					if (itemTile) {
-						NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, MyPlayer->HoldItem);
+					if (itemTile && NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, MyPlayer->HoldItem)) {
 						NewCursor(CURSOR_HAND);
 					}
 				}

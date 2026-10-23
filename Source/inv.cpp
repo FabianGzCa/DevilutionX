@@ -2244,9 +2244,7 @@ void CloseStash()
 	Player &myPlayer = *MyPlayer;
 	if (!myPlayer.HoldItem.isEmpty()) {
 		std::optional<Point> itemTile = FindAdjacentPositionForItem(myPlayer.position.future, myPlayer._pdir);
-		if (itemTile) {
-			NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem);
-		} else {
+		if (!itemTile || !NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem)) {
 			if (!AutoPlaceItemInBelt(myPlayer, myPlayer.HoldItem, true, true)
 			    && !AutoPlaceItemInInventory(myPlayer, myPlayer.HoldItem, true)
 			    && !AutoPlaceItemInStash(myPlayer.HoldItem, true)) {

@@ -334,7 +334,7 @@ bool deltaTransferComplete;
 uint8_t sgbDeltaChunks;
 constexpr size_t MaxBufferedMegaPackets = 128;
 std::list<TMegaPkt> MegaPktList;
-Item ItemLimbo;
+std::list<Item> PendingItemDrops;
 
 /** @brief Last sent player command for the local player. */
 TCmdLocParam5 lastSentPlayerCmd;
@@ -1734,31 +1734,49 @@ size_t OnPutItem(const TCmdPItem &message, Player &player)
 		BufferMessage(player, &message, sizeof(message));
 	} else if (IsPItemValid(message, player)) {
 		const Point position { message.x, message.y };
+		if (!CanDeltaPutItem(message, player)) {
+			DeltaPutItem(message, position, player);
+			return sizeof(message);
+		}
 		const bool isSelf = &player == MyPlayer;
 		const int32_t dwSeed = Swap32LE(message.def.dwSeed);
 		const uint16_t wCI = Swap16LE(message.def.wCI);
 		const auto wIndx = static_cast<_item_indexes>(Swap16LE(message.def.wIndx));
+		auto pending = PendingItemDrops.end();
+		if (isSelf) {
+			pending = std::find_if(PendingItemDrops.begin(), PendingItemDrops.end(), [&](const Item &item) {
+				return item.keyAttributesMatch(dwSeed, wIndx, wCI);
+			});
+			if (pending == PendingItemDrops.end())
+				return sizeof(message);
+		}
 		if (player.isOnActiveLevel()) {
 			int ii;
 			if (isSelf) {
-				std::optional<Point> itemTile = FindAdjacentPositionForItem(player.position.tile, GetDirection(player.position.tile, position));
-				if (itemTile)
-					ii = PlaceItemInWorld(std::move(ItemLimbo), *itemTile);
-				else
+				const std::optional<Point> itemTile = FindAdjacentPositionForItem(player.position.tile, GetDirection(player.position.tile, position));
+				if (itemTile) {
+					ii = PlaceItemInWorld(std::move(*pending), *itemTile);
+				} else {
 					ii = -1;
-			} else
+				}
+			} else {
 				ii = SyncDropItem(message);
+			}
 			if (ii != -1) {
 				PutItemRecord(dwSeed, wCI, wIndx);
 				DeltaPutItem(message, Items[ii].position, player);
-				if (isSelf)
+				if (isSelf) {
+					PendingItemDrops.erase(pending);
 					pfile_update(true);
+				}
 			}
 		} else {
 			PutItemRecord(dwSeed, wCI, wIndx);
 			DeltaPutItem(message, position, player);
-			if (isSelf)
+			if (isSelf) {
+				PendingItemDrops.erase(pending);
 				pfile_update(true);
+			}
 		}
 	}
 
@@ -1774,6 +1792,8 @@ size_t OnSyncPutItem(const TCmdPItem &message, Player &player)
 		const uint16_t wCI = Swap16LE(message.def.wCI);
 		const auto wIndx = static_cast<_item_indexes>(Swap16LE(message.def.wIndx));
 		if (player.isOnActiveLevel()) {
+			if (FindGetItem(dwSeed, wIndx, wCI) != -1)
+				return sizeof(message);
 			const int ii = SyncDropItem(message);
 			if (ii != -1) {
 				PutItemRecord(dwSeed, wCI, wIndx);
@@ -3032,6 +3052,7 @@ void delta_init()
 	memset(&sgJunk, 0xFF, sizeof(sgJunk));
 	DeltaLevels.clear();
 	LocalLevels.clear();
+	PendingItemDrops.clear();
 	ResetDeltaTransfer();
 }
 
@@ -3441,7 +3462,7 @@ void NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii
 		NetSendLoPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 }
 
-void NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item)
+bool NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item)
 {
 	TCmdPItem cmd {};
 
@@ -3450,12 +3471,16 @@ void NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item
 	cmd.y = position.y;
 	PrepareItemForNetwork(item, cmd);
 
-	ItemLimbo = item;
+	if (bCmd == CMD_PUTITEM && (ActiveItemCount >= MAXITEMS || !CanDeltaPutItem(cmd, *MyPlayer)))
+		return false;
+	if (bCmd == CMD_PUTITEM)
+		PendingItemDrops.push_back(item);
 
 	if (bHiPri)
 		NetSendHiPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 	else
 		NetSendLoPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
+	return true;
 }
 
 void NetSendCmdChItem(bool bHiPri, uint8_t bLoc, bool forceSpellChange)

@@ -1581,6 +1581,16 @@ size_t OnRequestGetItem(const TCmdGItem &message, Player &player)
 	}
 
 	if (ii != -1) {
+		if (message.bPnum == MyPlayerId && !MyPlayer->HoldItem.isEmpty()) {
+			const bool needsHand = Items[ii]._itype != ItemType::Gold || Items[ii]._ivalue > RoomForGold();
+			if (needsHand && !CanDeltaPutItem(MyPlayer->HoldItem, *MyPlayer)
+			    && !AutoPlaceItemInBelt(*MyPlayer, MyPlayer->HoldItem)
+			    && !CanFitItemInInventory(*MyPlayer, MyPlayer->HoldItem)) {
+				// Refuse before granting the pickup or changing its delta, so it can be retried safely.
+				Items[ii]._iRequest = false;
+				return sizeof(message);
+			}
+		}
 		if ((wCI & CF_PREGEN) != 0 && !DeltaGetItem(message, message.bLevel))
 			return sizeof(message);
 		NetSendCmdGItem2(false, CMD_GETITEM, MyPlayerId, message.bPnum, message);

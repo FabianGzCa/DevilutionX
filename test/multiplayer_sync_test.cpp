@@ -311,6 +311,166 @@ TCmdGItem MakePickupCommand(_cmd_id command, const Item &item, uint8_t master, u
 	return message;
 }
 
+void PrepareFullPickupStorage(uint8_t localPlayerId, bool heldGold, bool fullDelta = true)
+{
+	delta_init();
+	for (Player &player : Players)
+		player.plractive = false;
+	PrepareGoldPickupArea(localPlayerId);
+	InitializeItem(Items[5], IDI_HEAL);
+	Items[5]._iSeed = 63001;
+	Items[5]._iCreateInfo = CF_PREGEN;
+	Items[5].position = { 40, 50 };
+	if (heldGold)
+		MakeGoldStack(MyPlayer->HoldItem, 321);
+	else
+		InitializeItem(MyPlayer->HoldItem, IDI_HEAL);
+	MyPlayer->HoldItem._iSeed = 63002;
+	NewCursor(MyPlayer->HoldItem);
+	for (int i = 0; i < InventoryGridCells; ++i) {
+		InitializeItem(MyPlayer->InvList[i], IDI_HEAL);
+		MyPlayer->InvGrid[i] = static_cast<int8_t>(i + 1);
+	}
+	MyPlayer->_pNumInv = InventoryGridCells;
+	for (Item &item : MyPlayer->SpdList)
+		InitializeItem(item, IDI_HEAL);
+	MyPlayer->_pGold = CalculateGold(*MyPlayer);
+	if (fullDelta) {
+		for (uint32_t i = 0; i < MAXITEMS - 1; ++i) {
+			TCmdGItem entry = MakePickupCommand(CMD_GETITEM, Items[5], MyPlayerId, 5);
+			entry.def.dwSeed = Swap32LE(65000 + i);
+			EXPECT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&entry), sizeof(entry)), sizeof(entry));
+		}
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, FullStorageOwnerRejectsPickupUntilHeldItemCanBeStored)
+{
+	for (const uint8_t owner : { 0, 7 }) {
+		for (const bool heldGold : { false, true }) {
+			SCOPED_TRACE(owner);
+			SCOPED_TRACE(heldGold);
+			PrepareFullPickupStorage(owner, heldGold);
+			DeltaAddItem(5);
+			PutItemRecord(Items[5]._iSeed, Items[5]._iCreateInfo, Items[5].IDidx);
+			const Item heldItem = MyPlayer->HoldItem;
+			ASSERT_FALSE(CanDeltaPutItem(heldItem, *MyPlayer));
+			const auto before = Canonical(Export());
+			const TCmdGItem pickup = MakePickupCommand(CMD_REQUESTGITEM, Items[5], owner, 5);
+			Items[5]._iRequest = true;
+
+			ASSERT_EQ(ParseCmd(owner, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+			EXPECT_EQ(ActiveItemCount, 2);
+			EXPECT_EQ(dItem[40][50], 6);
+			EXPECT_TRUE(Items[5].keyAttributesMatch(63001, IDI_HEAL, CF_PREGEN));
+			EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(heldItem._iSeed, heldItem.IDidx, heldItem._iCreateInfo));
+			EXPECT_FALSE(Items[5]._iRequest);
+			EXPECT_TRUE(Drain().empty());
+			EXPECT_EQ(Canonical(Export()), before);
+
+			if (heldGold) {
+				MyPlayer->InvList[InventoryGridCells - 1].clear();
+				MyPlayer->InvGrid[InventoryGridCells - 1] = 0;
+				--MyPlayer->_pNumInv;
+			} else {
+				MyPlayer->SpdList[0].clear();
+			}
+			ASSERT_EQ(ParseCmd(owner, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+			EXPECT_EQ(ActiveItemCount, 1);
+			EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(63001, IDI_HEAL, 0));
+			const Item &stored = heldGold ? MyPlayer->InvList[InventoryGridCells - 1] : MyPlayer->SpdList[0];
+			EXPECT_TRUE(stored.keyAttributesMatch(heldItem._iSeed, heldItem.IDidx, heldItem._iCreateInfo));
+			EXPECT_EQ(MyPlayer->_pGold, CalculateGold(*MyPlayer));
+			Drain();
+		}
+	}
+}
+
+TEST_F(PlayerSynchronizationTest, FullStorageOwnerRejectsPartialGoldPickupBeforeChangingGold)
+{
+	PrepareFullPickupStorage(7, false);
+	MakeGoldStack(Items[5], 75);
+	Items[5]._iSeed = 63003;
+	Items[5]._iCreateInfo = CF_PREGEN;
+	Items[5].position = { 40, 50 };
+	DeltaAddItem(5);
+	PutItemRecord(Items[5]._iSeed, Items[5]._iCreateInfo, Items[5].IDidx);
+	MakeGoldStack(MyPlayer->InvList[0], MaxGold - 25);
+	MyPlayer->_pGold = CalculateGold(*MyPlayer);
+	const int goldBefore = MyPlayer->_pGold;
+	const TCmdGItem pickup = MakePickupCommand(CMD_REQUESTGITEM, Items[5], MyPlayerId, 5);
+	const auto before = Canonical(Export());
+
+	ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+	EXPECT_EQ(MyPlayer->_pGold, goldBefore);
+	EXPECT_EQ(CalculateGold(*MyPlayer), goldBefore);
+	EXPECT_EQ(MyPlayer->InvList[0]._ivalue, MaxGold - 25);
+	EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(63002, IDI_HEAL, 0));
+	EXPECT_EQ(Items[5]._ivalue, 75);
+	EXPECT_EQ(ActiveItemCount, 2);
+	EXPECT_TRUE(Drain().empty());
+	EXPECT_EQ(Canonical(Export()), before);
+
+	MyPlayer->SpdList[0].clear();
+	ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+	EXPECT_EQ(MyPlayer->_pGold, goldBefore + 25);
+	EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(63003, IDI_GOLD, 0));
+	EXPECT_EQ(MyPlayer->HoldItem._ivalue, 50);
+	EXPECT_TRUE(MyPlayer->SpdList[0].keyAttributesMatch(63002, IDI_HEAL, 0));
+	EXPECT_EQ(ActiveItemCount, 1);
+}
+
+TEST_F(PlayerSynchronizationTest, FullStorageOwnerCanCollectGoldThatFitsExistingStack)
+{
+	PrepareFullPickupStorage(7, false);
+	MakeGoldStack(Items[5], 75);
+	Items[5]._iSeed = 63004;
+	Items[5]._iCreateInfo = CF_PREGEN;
+	Items[5].position = { 40, 50 };
+	DeltaAddItem(5);
+	PutItemRecord(Items[5]._iSeed, Items[5]._iCreateInfo, Items[5].IDidx);
+	MakeGoldStack(MyPlayer->InvList[0], MaxGold - 75);
+	MyPlayer->_pGold = CalculateGold(*MyPlayer);
+	const TCmdGItem pickup = MakePickupCommand(CMD_REQUESTGITEM, Items[5], MyPlayerId, 5);
+	Drain();
+
+	ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+	EXPECT_EQ(MyPlayer->_pGold, MaxGold);
+	EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(63002, IDI_HEAL, 0));
+	EXPECT_EQ(ActiveItemCount, 1);
+	for (const Message &message : Drain())
+		EXPECT_NE(static_cast<_cmd_id>(message.front()), CMD_SYNCPUTITEM);
+}
+
+TEST_F(PlayerSynchronizationTest, OwnerCanSwapHeldItemWithFullPersonalStorageWhenDeltaHasRoom)
+{
+	PrepareFullPickupStorage(0, true, false);
+	PutItemRecord(Items[5]._iSeed, Items[5]._iCreateInfo, Items[5].IDidx);
+	const Item heldItem = MyPlayer->HoldItem;
+	const TCmdGItem pickup = MakePickupCommand(CMD_REQUESTGITEM, Items[5], MyPlayerId, 5);
+	ASSERT_TRUE(CanDeltaPutItem(heldItem, *MyPlayer));
+	Drain();
+
+	ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+
+	EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(63001, IDI_HEAL, 0));
+	EXPECT_EQ(ActiveItemCount, 1);
+	unsigned dropped = 0;
+	for (const Message &message : Drain()) {
+		if (static_cast<_cmd_id>(message.front()) == CMD_SYNCPUTITEM) {
+			++dropped;
+			Receive(MyPlayerId, message);
+		}
+	}
+	EXPECT_EQ(dropped, 1U);
+	EXPECT_EQ(ActiveItemCount, 2);
+	EXPECT_NE(FindGetItem(heldItem._iSeed, heldItem.IDidx, heldItem._iCreateInfo), -1);
+}
+
 TEST_F(PlayerSynchronizationTest, AutomaticPickupGrantUsesIdentityInsteadOfRemoteCursorIndex)
 {
 	PrepareGoldPickupArea(7);

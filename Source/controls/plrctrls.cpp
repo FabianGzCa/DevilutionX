@@ -2438,8 +2438,10 @@ bool TryDropItem()
 		myPlayer.Say(HeroSpeech::WhereWouldIPutThis);
 		return false;
 	}
-	myPlayer.HoldItem.clear();
-	NewCursor(CURSOR_HAND);
+	if (!IsItemTransferPending()) {
+		myPlayer.HoldItem.clear();
+		NewCursor(CURSOR_HAND);
+	}
 	return true;
 }
 

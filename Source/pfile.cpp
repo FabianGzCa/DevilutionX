@@ -30,6 +30,7 @@
 #include "menu.h"
 #include "mods/mod_identity.h"
 #include "mpq/mpq_common.hpp"
+#include "msg.h"
 #include "pack.h"
 #include "qol/stash.h"
 #include "tables/playerdat.hpp"
@@ -539,6 +540,8 @@ void pfile_write_hero(SaveWriter &saveWriter, bool writeGameData)
 		SaveHotkeys(saveWriter, myPlayer);
 		SaveHeroItems(saveWriter, myPlayer);
 	}
+	if (gbIsMultiplayer && (!gbVanilla || IsExtendedItemTransferSession()))
+		SaveHeldItem(saveWriter, myPlayer);
 }
 
 void RemoveAllInvalidItems(Player &player)

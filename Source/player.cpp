@@ -299,7 +299,7 @@ void StartSpell(Player &player, Direction d, WorldTileCoord cx, WorldTileCoord c
 
 bool RespawnDeadItem(Item &itm, Point target, const Player &player)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace())
 		return false;
 
 	if (!DeltaStoreDroppedItem(itm, target, player))
@@ -323,6 +323,10 @@ bool DeadItem(Player &player, Item &item, Displacement direction)
 		return true;
 
 	const Point playerTile = player.position.tile;
+	if (IsExtendedItemTransferSession()) {
+		const auto target = FindClosestValidPosition(ItemSpaceOk, playerTile + direction, 0, 50);
+		return target && QueueDeathItemDrop(item, *target);
+	}
 	if (direction != Displacement { 0, 0 }) {
 		const Point target = playerTile + direction;
 		if (ItemSpaceOk(target) && RespawnDeadItem(item, target, player)) {
@@ -370,6 +374,10 @@ int DropGold(Player &player, int amount, bool skipFullStacks)
 
 void DropHalfPlayersGold(Player &player)
 {
+	if (IsExtendedItemTransferSession()) {
+		QueueDeathGoldDrop(CalculateGold(player) / 2, player.position.tile);
+		return;
+	}
 	const int remainingGold = DropGold(player, player._pGold / 2, true);
 	if (remainingGold > 0) {
 		DropGold(player, remainingGold, false);
@@ -1309,8 +1317,8 @@ void CheckNewPath(Player &player, bool pmWillBeCalled)
 				x = std::abs(player.position.tile.x - item->position.x);
 				y = std::abs(player.position.tile.y - item->position.y);
 				if (x <= 1 && y <= 1 && pcurs == CURSOR_HAND && !item->_iRequest) {
-					NetSendCmdGItem(true, CMD_REQUESTGITEM, player, targetId);
-					item->_iRequest = true;
+					if (NetSendCmdGItem(true, CMD_REQUESTGITEM, player, targetId))
+						item->_iRequest = true;
 				}
 			}
 			break;
@@ -2906,6 +2914,8 @@ __attribute__((no_sanitize("shift-base")))
 void
 StartNewLvl(Player &player, interface_mode fom, int lvl)
 {
+	if (&player == MyPlayer && HasUnresolvedItemTransfers())
+		return;
 	InitLevelChange(player);
 
 	switch (fom) {
@@ -3516,6 +3526,11 @@ void PlayDungMsgs()
 }
 
 #ifdef BUILD_TESTING
+bool TestPlayerMeleeHit(Player &player, Monster &monster)
+{
+	return PlrHitMonst(player, monster);
+}
+
 bool TestDeadItem(Player &player, Item &item, Displacement direction)
 {
 	return DeadItem(player, item, direction);

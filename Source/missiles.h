@@ -490,6 +490,7 @@ void SetUpMissileAnimationData();
 void RedoMissileFlags();
 
 #ifdef BUILD_TESTING
+bool TestPlayerMissileHit(const Player &player, Player &target);
 void TestRotateBlockedMissile(Missile &missile);
 #endif
 

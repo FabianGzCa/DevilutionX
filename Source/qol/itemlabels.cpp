@@ -106,6 +106,8 @@ void AddItemToLabelQueue(int id, Point position)
 	if (!IsHighlightingLabelsEnabled())
 		return;
 	Item &item = Items[id];
+	if (item.pendingCreation)
+		return;
 
 	StringOrView textOnGround;
 	if (item._itype == ItemType::Gold) {

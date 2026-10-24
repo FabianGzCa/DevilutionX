@@ -191,7 +191,7 @@ TEST_F(PeerSessionCompatibility, IncompatibleIdentityNeverAnnouncesPlayer)
 	for (unsigned scenario = 0; scenario < 6; ++scenario) {
 		GameData client = Game(true);
 		switch (scenario) {
-		case 0: client.rules.protocolRevision = 2; break;
+		case 0: client.rules.protocolRevision = ExtendedSessionRules.protocolRevision + 1; break;
 		case 1: client.rules.maxPlayers = 4; break;
 		case 2: client.rules.balanceRevision = 2; break;
 		case 3: client.versionMajor = 9; break;

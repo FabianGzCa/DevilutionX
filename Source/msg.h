@@ -429,6 +429,7 @@ enum _cmd_id : uint8_t {
 	// Coordinated level admission, extended sessions only. Appended to preserve classic IDs.
 	CMD_LEVELENTRY,
 	CMD_GOLEMFAILED,
+	CMD_ITEMTRANSFER,
 	NUM_CMDS,
 	CMD_INVALID = 0xFF,
 };
@@ -736,11 +737,27 @@ void run_delta_info();
 void DeltaExportData(uint8_t pnum);
 void DeltaSyncJunk();
 void delta_init();
+/** Initialize the negotiated extended item protocol after network admission. */
+void InitItemTransfers();
+bool IsExtendedItemTransferSession();
+bool StageGeneratedItem(Item &item);
+bool QueueDeathItemDrop(const Item &item, Point position);
+void QueueDeathGoldDrop(int amount, Point position);
+bool IsItemTransferPending();
+bool HasUnresolvedItemTransfers();
+bool HasWorldItemSpace();
+bool IsItemTileReserved(Point position);
+void ProcessItemTransfers();
+void LeaveItemTransfers(uint8_t player);
+void FinishItemTransfers();
+
 /** Discard an incomplete snapshot when its donor disconnects. */
 void delta_reset_transfer();
 /** Clear damage contributions before a player slot can be reused. */
 void delta_remove_player(uint8_t playerId);
 void DeltaClearLevel(uint8_t level);
+/** Number of item records in the negotiated level delta format. */
+size_t ItemDeltaCapacity();
 /** Check whether a dropped item can be recorded without exhausting the level delta. */
 bool CanDeltaPutItem(const TCmdPItem &message, const Player &player);
 /** Check an inventory item's drop capacity without reserving a delta slot. */
@@ -771,7 +788,7 @@ void NetSendCmdParam1(bool bHiPri, _cmd_id bCmd, uint16_t wParam1);
 void NetSendCmdParam2(bool bHiPri, _cmd_id bCmd, uint16_t wParam1, uint16_t wParam2);
 void NetSendCmdParam4(bool bHiPri, _cmd_id bCmd, uint16_t wParam1, uint16_t wParam2, uint16_t wParam3, uint16_t wParam4);
 void NetSendCmdQuest(bool bHiPri, const Quest &quest);
-void NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii);
+bool NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii);
 /** Return false when a manual drop cannot currently fit on the floor or in its delta. */
 bool NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item);
 void NetSyncInvItem(const Player &player, int invListIndex);
@@ -785,5 +802,9 @@ void NetSendCmdString(PlayerRecipientMask recipients, const char *pszStr);
 void delta_close_portal(const Player &player);
 bool ValidateCmdSize(size_t requiredCmdSize, size_t maxCmdSize, size_t playerId);
 size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize);
+
+#ifdef BUILD_TESTING
+bool TestHasCompleteDelta();
+#endif
 
 } // namespace devilution

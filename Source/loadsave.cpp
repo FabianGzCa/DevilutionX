@@ -2428,6 +2428,40 @@ void LoadHeroItems(Player &player)
 	gbIsHellfireSaveGame = gbIsHellfire;
 }
 
+bool LoadHeldItem(std::optional<SaveReader> archive, Player &player)
+{
+	if (!player.HoldItem.isEmpty())
+		return false;
+	LoadHelper file(std::move(archive), "helditem");
+	if (!file.IsValid(2))
+		return false;
+	const uint8_t version = file.NextLE<uint8_t>();
+	const uint8_t edition = file.NextLE<uint8_t>();
+	if (version != 0 || edition > 1 || file.Size() != 2U + (edition != 0 ? HellfireItemSaveSize : DiabloItemSaveSize))
+		return false;
+	const bool previousEdition = gbIsHellfireSaveGame;
+	gbIsHellfireSaveGame = edition != 0;
+	LoadAndValidateItemData(file, player.HoldItem);
+	gbIsHellfireSaveGame = previousEdition;
+	if (player.HoldItem.isEmpty())
+		return false;
+	player.HoldItem.updateRequiredStatsCacheForPlayer(player);
+	return true;
+}
+
+bool LoadHeldItem(Player &player)
+{
+	return LoadHeldItem(OpenSaveArchive(gSaveNumber), player);
+}
+
+void SaveHeldItem(SaveWriter &saveWriter, const Player &player)
+{
+	SaveHelper file(saveWriter, "helditem", 2U + (gbIsHellfire ? HellfireItemSaveSize : DiabloItemSaveSize));
+	file.WriteLE<uint8_t>(0);
+	file.WriteLE<uint8_t>(gbIsHellfire ? 1 : 0);
+	SaveItem(file, player.HoldItem);
+}
+
 constexpr uint8_t StashVersion = 0;
 
 void LoadStash()

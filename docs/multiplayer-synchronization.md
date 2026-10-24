@@ -95,7 +95,7 @@ keeping classic level generation and replay references unchanged.
 ## Town portals
 
 Portal storage has eight entries, one per player ID. Classic snapshots write
-four portal records before quest state; extended revision 1 snapshots write
+four portal records before quest state; extended revision 2 snapshots write
 eight. An open record is five bytes (x, y, level, dungeon type, set-level flag);
 a closed record is a single `0xFF` byte. Import validates each record and clears
 slots absent from classic snapshots without moving the quest-data boundary.
@@ -177,5 +177,13 @@ and delta restoration. It compares actual monster generation in all four
 dungeon types and checks the classic RNG initialization sequence.
 
 UI and balancing must be completed before enabling the extended session selector.
-Full gameplay and visual integration checks with eight complete engines remain
-part of that work.
+Full campaign and visual integration checks remain part of that work. Focused
+eight-engine TCP gameplay scenarios are covered by `multiplayer_gameplay_test`.
+
+## Extended item ownership
+
+Protocol revision 2 keeps 254 item-delta records per level: taken pregenerated
+items retain their history independently of the 127 physical floor slots.
+Classic snapshots still contain 127 records. Reloading removes taken items
+before allocating dropped items. Extended junk snapshots also carry the bounded
+item-transfer state; see [Extended item transfers](extended-item-transfers.md).

@@ -63,6 +63,8 @@ std::string FormatGameSeed(const uint32_t gameSeed[4]);
 void InitGameInfo();
 void NetSendLoPri(uint8_t playerId, const std::byte *data, size_t size);
 void NetSendHiPri(uint8_t playerId, const std::byte *data, size_t size);
+/** Send earlier buffered commands before a causally dependent item message. */
+void FlushNetMessageBuffers();
 void multi_send_msg_packet(PlayerRecipientMask recipients, const std::byte *data, size_t size);
 void multi_msg_countdown();
 void multi_player_left(uint8_t pnum, leaveinfo_t reason);

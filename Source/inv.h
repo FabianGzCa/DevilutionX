@@ -199,6 +199,8 @@ void CheckInvItem(bool isShiftHeld = false, bool isCtrlHeld = false);
  */
 void CheckInvScrn(bool isShiftHeld, bool isCtrlHeld);
 void InvGetItem(Player &player, int ii);
+/** Materialize a committed item without requiring a temporary floor slot. */
+bool ReceiveTransferredItem(Player &player, Item item, bool automatic);
 
 /**
  * @brief Returns the first free space that can take an item preferencing tiles in front of the current position

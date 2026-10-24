@@ -10,10 +10,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <format>
 #include <limits>
 #include <list>
+#include <map>
 #include <memory>
+#include <span>
 #include <utility>
 
 #ifdef USE_SDL3
@@ -38,6 +41,7 @@
 #include "engine/random.hpp"
 #include "engine/world_tile.hpp"
 #include "gamemenu.h"
+#include "items/item_transfer.hpp"
 #include "items/validation.h"
 #include "levels/crypt.h"
 #include "levels/town.h"
@@ -262,11 +266,21 @@ size_t SpawnedMonsterDeltaSize()
 }
 
 struct DLevel {
-	TCmdPItem item[MAXITEMS];
+	TCmdPItem item[2 * MAXITEMS];
 	ankerl::unordered_dense::map<WorldTilePosition, DObjectStr> object;
 	ankerl::unordered_dense::map<size_t, DSpawnedMonster> spawnedMonsters;
 	DMonsterStr monster[MonsterStorageCapacity];
 };
+
+std::span<TCmdPItem> ItemDeltas(DLevel &level)
+{
+	return { level.item, ItemDeltaCapacity() };
+}
+
+std::span<const TCmdPItem> ItemDeltas(const DLevel &level)
+{
+	return { level.item, ItemDeltaCapacity() };
+}
 
 #pragma pack(push, 1)
 struct LocalLevel {
@@ -319,7 +333,7 @@ constexpr size_t MaxLevelDeltaSize = 1U                                         
     + sizeof(DLevel::monster)                                                                                         /* latest monster state */
     + sizeof(uint16_t)                                                                                                /* spawned monster count */
     + ((sizeof(uint16_t) + std::max(sizeof(DSpawnedMonster), sizeof(DSpawnedMonsterPack))) * MonsterStorageCapacity); /* spawned monsters */
-constexpr size_t MaxJunkDeltaSize = 1 + sizeof(DJunk);
+constexpr size_t MaxJunkDeltaSize = MaxItemTransferSnapshotSize + 1 + sizeof(DJunk);
 std::byte sgRecvBuf[std::max(MaxLevelDeltaSize, MaxJunkDeltaSize)];
 static_assert(sizeof(sgRecvBuf) <= std::numeric_limits<uint16_t>::max());
 
@@ -333,6 +347,14 @@ bool receivedJunk;
 bool deltaTransferComplete;
 uint8_t sgbDeltaChunks;
 constexpr size_t MaxBufferedMegaPackets = 128;
+size_t ReservedItemDeltas(uint8_t level);
+bool HasUnreservedItemDelta(uint8_t level);
+std::vector<std::byte> CurrentItemTransferSnapshot();
+bool ReadPendingItemTransferSnapshot(std::span<const std::byte> bytes);
+void ImportItemTransferSnapshot();
+void ResetPendingItemTransferSnapshot();
+void RestoreItemTransferSnapshot();
+
 std::list<TMegaPkt> MegaPktList;
 std::list<Item> PendingItemDrops;
 
@@ -459,6 +481,7 @@ void ResetDeltaTransfer()
 	receivedJunk = false;
 	deltaTransferComplete = false;
 	sgbDeltaChunks = 0;
+	ResetPendingItemTransferSnapshot();
 }
 
 void GetNextPacket()
@@ -469,6 +492,7 @@ void GetNextPacket()
 void FreePackets()
 {
 	MegaPktList.clear();
+	sgnCurrMegaPlayer = -1;
 }
 
 void PrePacket()
@@ -521,6 +545,8 @@ void PrePacket()
 
 void BufferMessage(const void *message, size_t messageSize)
 {
+	if (MegaPktList.empty())
+		GetNextPacket();
 	if (MegaPktList.back().spaceLeft < messageSize) {
 		if (MegaPktList.size() >= MaxBufferedMegaPackets) {
 			LogError("Too many commands buffered during resynchronization");
@@ -593,7 +619,7 @@ int WaitForTurns()
 
 std::byte *DeltaExportItem(std::byte *dst, const TCmdPItem *src)
 {
-	for (int i = 0; i < MAXITEMS; i++, src++) {
+	for (size_t i = 0; i < ItemDeltaCapacity(); i++, src++) {
 		if (src->bCmd == CMD_INVALID) {
 			*dst++ = std::byte { 0xFF };
 		} else {
@@ -608,7 +634,7 @@ std::byte *DeltaExportItem(std::byte *dst, const TCmdPItem *src)
 const std::byte *DeltaImportItem(const std::byte *src, const std::byte *end, TCmdPItem *dst)
 {
 	size_t size = 0;
-	for (int i = 0; i < MAXITEMS; i++, dst++) {
+	for (size_t i = 0; i < ItemDeltaCapacity(); i++, dst++) {
 		if (size >= static_cast<size_t>(end - src))
 			return nullptr;
 		if (src[size] == std::byte { 0xFF }) {
@@ -803,6 +829,11 @@ std::byte *DeltaExportJunk(std::byte *dst)
 		q++;
 	}
 
+	if (sgGameInitInfo.rules == ExtendedSessionRules) {
+		const auto transfers = CurrentItemTransferSnapshot();
+		std::memcpy(dst, transfers.data(), transfers.size());
+		dst += transfers.size();
+	}
 	return dst;
 }
 
@@ -843,6 +874,11 @@ const std::byte *DeltaImportJunk(const std::byte *src, const std::byte *end, DJu
 		q++;
 	}
 
+	if (sgGameInitInfo.rules == ExtendedSessionRules) {
+		if (!ReadPendingItemTransferSnapshot({ src, static_cast<size_t>(end - src) }))
+			return nullptr;
+		src = end;
+	}
 	return src;
 }
 
@@ -863,7 +899,8 @@ uint32_t CompressData(std::byte *buffer, std::byte *end)
 
 bool DeltaImportData(_cmd_id cmd, uint32_t recvOffset)
 {
-	if (recvOffset < 2 || recvOffset > sizeof(sgRecvBuf))
+	const size_t capacity = cmd == CMD_DLEVEL ? MaxLevelDeltaSize : MaxJunkDeltaSize;
+	if (recvOffset < 2 || recvOffset > capacity)
 		return false;
 	const auto marker = static_cast<uint8_t>(sgRecvBuf[0]);
 	if (marker > 1)
@@ -871,7 +908,7 @@ bool DeltaImportData(_cmd_id cmd, uint32_t recvOffset)
 	size_t deltaSize = recvOffset - 1;
 #ifdef USE_PKWARE
 	if (marker != 0) {
-		deltaSize = PkwareDecompress(&sgRecvBuf[1], static_cast<uint32_t>(deltaSize), sizeof(sgRecvBuf) - 1);
+		deltaSize = PkwareDecompress(&sgRecvBuf[1], static_cast<uint32_t>(deltaSize), capacity - 1);
 		if (deltaSize == 0)
 			return false;
 	}
@@ -895,6 +932,8 @@ bool DeltaImportData(_cmd_id cmd, uint32_t recvOffset)
 			return false;
 		DLevel deltaLevel;
 		src = DeltaImportItem(src, end, deltaLevel.item);
+		if (src == nullptr || std::count_if(ItemDeltas(deltaLevel).begin(), ItemDeltas(deltaLevel).end(), [](const TCmdPItem &item) { return IsAnyOf(item.bCmd, TCmdPItem::FloorItem, TCmdPItem::DroppedItem); }) > MAXITEMS)
+			return false;
 		src = DeltaImportObjects(src, end, deltaLevel.object);
 		src = DeltaImportMonster(src, end, deltaLevel.monster);
 		src = DeltaImportSpawnedMonsters(src, end, deltaLevel.spawnedMonsters);
@@ -1020,7 +1059,7 @@ void DeltaLoadObjects(DLevel &deltaLevel)
 
 void DeltaLoadItems(const DLevel &deltaLevel)
 {
-	for (const TCmdPItem &deltaItem : deltaLevel.item) {
+	for (const TCmdPItem &deltaItem : ItemDeltas(deltaLevel)) {
 		if (deltaItem.bCmd == CMD_INVALID)
 			continue;
 
@@ -1036,7 +1075,12 @@ void DeltaLoadItems(const DLevel &deltaLevel)
 				DeleteItem(activeItemIndex);
 			}
 		}
+	}
+
+	for (const TCmdPItem &deltaItem : ItemDeltas(deltaLevel)) {
 		if (deltaItem.bCmd == TCmdPItem::DroppedItem) {
+			if (ActiveItemCount >= MAXITEMS)
+				break;
 			const int ii = AllocateItem();
 			auto &item = Items[ii];
 			RecreateItem(*MyPlayer, deltaItem, item);
@@ -1094,6 +1138,7 @@ size_t OnLevelData(const TCmdPlrInfoHdr &message, size_t maxCmdSize, const Playe
 				return reject();
 			DeltaLevels = std::move(PendingDeltaLevels);
 			sgJunk = pendingJunk;
+			ImportItemTransferSnapshot();
 			ResetDeltaTransfer();
 			sgbDeltaChunks = MaxChunks - 1;
 			deltaTransferComplete = true;
@@ -1103,7 +1148,8 @@ size_t OnLevelData(const TCmdPlrInfoHdr &message, size_t maxCmdSize, const Playe
 		sgbRecvCmd = message.bCmd;
 	}
 
-	if (offset != sgdwRecvOffset || bytes > sizeof(sgRecvBuf) - sgdwRecvOffset)
+	const size_t capacity = message.bCmd == CMD_DLEVEL ? MaxLevelDeltaSize : MaxJunkDeltaSize;
+	if (offset != sgdwRecvOffset || sgdwRecvOffset > capacity || bytes > capacity - sgdwRecvOffset)
 		return reject();
 	memcpy(&sgRecvBuf[sgdwRecvOffset], &message + 1, bytes);
 	sgdwRecvOffset += bytes;
@@ -1152,7 +1198,7 @@ bool DeltaGetItem(const TCmdGItem &message, uint8_t bLevel)
 
 	DLevel &deltaLevel = GetDeltaLevel(bLevel);
 
-	for (TCmdPItem &item : deltaLevel.item) {
+	for (TCmdPItem &item : ItemDeltas(deltaLevel)) {
 		if (item.bCmd == CMD_INVALID || item.def.wIndx != message.def.wIndx
 		    || item.def.wCI != message.def.wCI || item.def.dwSeed != message.def.dwSeed) {
 			continue;
@@ -1178,7 +1224,9 @@ bool DeltaGetItem(const TCmdGItem &message, uint8_t bLevel)
 	if ((Swap16LE(message.def.wCI) & CF_PREGEN) == 0)
 		return false;
 
-	for (TCmdPItem &delta : deltaLevel.item) {
+	if (!HasUnreservedItemDelta(bLevel))
+		return false;
+	for (TCmdPItem &delta : ItemDeltas(deltaLevel)) {
 		if (delta.bCmd == CMD_INVALID) {
 			delta.bCmd = TCmdPItem::PickedUpItem;
 			delta.x = message.x;
@@ -1211,11 +1259,11 @@ bool CanDeltaPutItemImpl(const TCmdPItem &message, const Player &player)
 		return true;
 
 	DLevel &deltaLevel = GetDeltaLevel(player);
-	bool hasFreeSlot = false;
+	size_t freeSlots = 0;
 
-	for (const TCmdPItem &item : deltaLevel.item) {
+	for (const TCmdPItem &item : ItemDeltas(deltaLevel)) {
 		if (item.bCmd == CMD_INVALID) {
-			hasFreeSlot = true;
+			++freeSlots;
 			continue;
 		}
 		if (item.def.wIndx == message.def.wIndx
@@ -1224,7 +1272,7 @@ bool CanDeltaPutItemImpl(const TCmdPItem &message, const Player &player)
 			return false;
 		}
 	}
-	return hasFreeSlot;
+	return freeSlots > ReservedItemDeltas(GetLevelForMultiplayer(player));
 }
 
 bool DeltaPutItemImpl(const TCmdPItem &message, Point position, const Player &player)
@@ -1234,7 +1282,7 @@ bool DeltaPutItemImpl(const TCmdPItem &message, Point position, const Player &pl
 
 	DLevel &deltaLevel = GetDeltaLevel(player);
 
-	for (TCmdPItem &item : deltaLevel.item) {
+	for (TCmdPItem &item : ItemDeltas(deltaLevel)) {
 		if (item.bCmd == CMD_INVALID
 		    || item.def.wIndx != message.def.wIndx
 		    || item.def.wCI != message.def.wCI
@@ -1254,7 +1302,9 @@ bool DeltaPutItemImpl(const TCmdPItem &message, Point position, const Player &pl
 		return false;
 	}
 
-	for (TCmdPItem &item : deltaLevel.item) {
+	if (!HasUnreservedItemDelta(GetLevelForMultiplayer(player)))
+		return false;
+	for (TCmdPItem &item : ItemDeltas(deltaLevel)) {
 		if (item.bCmd == CMD_INVALID) {
 			memcpy(&item, &message, sizeof(TCmdPItem));
 			item.bCmd = TCmdPItem::DroppedItem;
@@ -1424,10 +1474,12 @@ bool IsPItemValid(const TCmdPItem &message, const Player &player)
 		return false;
 
 	auto idx = static_cast<_item_indexes>(Swap16LE(message.def.wIndx));
+	if (!IsItemAvailable(idx))
+		return false;
 
 	if (idx != IDI_EAR) {
 		const uint16_t creationFlags = Swap16LE(message.item.wCI);
-		const uint32_t dwBuff = Swap16LE(message.item.dwBuff);
+		const uint32_t dwBuff = Swap32LE(message.item.dwBuff);
 
 		if (idx != IDI_GOLD)
 			ValidateField(creationFlags, IsCreationFlagComboValid(creationFlags));
@@ -2505,6 +2557,548 @@ size_t OnSpawnItem(const TCmdPItem &message, Player &player)
 	return sizeof(message);
 }
 
+struct LocalItemTransfer {
+	ItemTransferMessage message;
+	Item original;
+	bool received = false;
+	bool offered = false;
+};
+struct ItemReservation {
+	ItemTransferMessage message;
+	bool deltaSlot;
+	bool worldSlot;
+	bool floorSlot;
+};
+ItemTransferCoordinator ItemTransfers;
+std::map<uint32_t, LocalItemTransfer> LocalItemTransfers;
+struct OwnedItemDrop {
+	ItemTransferKind kind;
+	Point position;
+	Item item;
+};
+std::deque<OwnedItemDrop> OwnedItemDrops;
+std::map<uint32_t, ItemReservation> ItemReservations;
+struct StagedItemCreation {
+	_cmd_id command = CMD_DROPITEM;
+	bool publish = false;
+};
+std::map<int, StagedItemCreation> StagedItemCreations;
+bool ItemTransfersEnabled = false;
+bool PlacingReservedItem = false;
+uint32_t NextItemRequest = 0;
+uint32_t LastRewardProposalTick = 0;
+std::optional<ItemTransferCoordinator::Snapshot> PendingItemTransfers;
+std::optional<ItemTransferCoordinator::Snapshot> ImportedItemTransfers;
+
+bool SameItem(const TCmdPItem &a, const TCmdPItem &b)
+{
+	return a.def.wIndx == b.def.wIndx && a.def.wCI == b.def.wCI && a.def.dwSeed == b.def.dwSeed;
+}
+
+uint8_t ItemTransferParticipants()
+{
+	uint8_t active = 0;
+	for (const Player &player : Players) {
+		if (player.plractive)
+			active |= static_cast<uint8_t>(1U << player.getId());
+	}
+	return active;
+}
+
+const Player *LoadedItemLevelOwner(uint8_t level)
+{
+	for (const Player &player : Players) {
+		if (player.plractive && !ItemTransfers.Quiescing(static_cast<uint8_t>(player.getId()))
+		    && !player._pLvlChanging && player._pmode != PM_NEWLVL && GetLevelForMultiplayer(player) == level)
+			return &player;
+	}
+	return nullptr;
+}
+
+size_t ReservedItemDeltas(uint8_t level)
+{
+	return std::count_if(ItemReservations.begin(), ItemReservations.end(), [=](const auto &entry) {
+		return entry.second.message.level == level && entry.second.deltaSlot;
+	});
+}
+
+bool HasUnreservedItemDelta(uint8_t level)
+{
+	const auto records = ItemDeltas(GetDeltaLevel(level));
+	return static_cast<size_t>(std::count_if(records.begin(), records.end(), [](const TCmdPItem &item) { return item.bCmd == CMD_INVALID; })) > ReservedItemDeltas(level);
+}
+
+bool IsLocalItemLevel(uint8_t level)
+{
+	return MyPlayer != nullptr && level == GetLevelForMultiplayer(*MyPlayer);
+}
+
+size_t ReservedWorldItemCount()
+{
+	return std::count_if(ItemReservations.begin(), ItemReservations.end(), [](const auto &entry) { return entry.second.worldSlot && IsLocalItemLevel(entry.second.message.level); });
+}
+
+int TransferFloorItem(const ItemTransferMessage &message)
+{
+	return FindGetItem(Swap32LE(message.item.def.dwSeed), static_cast<_item_indexes>(Swap16LE(message.item.def.wIndx)), Swap16LE(message.item.def.wCI));
+}
+
+bool CanAutomaticallyReceiveItem(const Item &item)
+{
+	return (item._itype == ItemType::Gold && RoomForGold() >= item._ivalue)
+	    || (item._itype != ItemType::Gold && ((AutoEquipEnabled(*MyPlayer, item) && AutoEquip(*MyPlayer, item, false)) || AutoPlaceItemInBelt(*MyPlayer, item) || CanFitItemInInventory(*MyPlayer, item)));
+}
+
+bool ReserveItemTransfer(const ItemTransferMessage &message)
+{
+	for (const auto &[serial, reservation] : ItemReservations) {
+		if (reservation.message.level == message.level && SameItem(reservation.message.item, message.item))
+			return false;
+	}
+	const auto records = ItemDeltas(GetDeltaLevel(message.level));
+	const auto record = std::find_if(records.begin(), records.end(), [&](const TCmdPItem &item) { return item.bCmd != CMD_INVALID && SameItem(item, message.item); });
+	const bool pickup = message.kind == ItemTransferKind::ManualPickup || message.kind == ItemTransferKind::AutoPickup;
+	if (record != records.end() && record->bCmd == TCmdPItem::PickedUpItem)
+		return false;
+	if (pickup && record == records.end() && (Swap16LE(message.item.def.wCI) & CF_PREGEN) == 0)
+		return false;
+	const bool deltaSlot = record == records.end();
+	const bool floorSlot = !pickup && deltaSlot;
+	if (floorSlot) {
+		const auto occupied = std::count_if(records.begin(), records.end(), [](const TCmdPItem &item) { return IsAnyOf(item.bCmd, TCmdPItem::FloorItem, TCmdPItem::DroppedItem); });
+		const auto reserved = std::count_if(ItemReservations.begin(), ItemReservations.end(), [&](const auto &entry) { return entry.second.floorSlot && entry.second.message.level == message.level; });
+		if (occupied + reserved >= MAXITEMS)
+			return false;
+	}
+	// A loaded participant must still validate the actual floor and terrain.
+	// Off-level deltas may not yet contain every pregenerated item.
+	if (message.kind == ItemTransferKind::Creation && LoadedItemLevelOwner(message.level) == nullptr)
+		return false;
+	if (deltaSlot && !HasUnreservedItemDelta(message.level))
+		return false;
+	if (message.kind != ItemTransferKind::Creation && !pickup && record != records.end())
+		return false;
+	const bool onLevel = IsLocalItemLevel(message.level);
+	const int floor = onLevel ? TransferFloorItem(message) : -1;
+	if (pickup && onLevel && floor == -1)
+		return false;
+	const bool worldSlot = onLevel && !pickup && floor == -1;
+	if (worldSlot && (ActiveItemCount + ReservedWorldItemCount() >= MAXITEMS || !CanPut({ message.item.x, message.item.y })))
+		return false;
+	if (message.actor == MyPlayerId && message.kind != ItemTransferKind::Creation) {
+		const auto local = LocalItemTransfers.find(uint32_t { message.request });
+		if (local == LocalItemTransfers.end() || local->second.message.kind != message.kind
+		    || std::memcmp(&local->second.message.item, &message.item, sizeof(message.item)) != 0)
+			return false;
+		if (pickup) {
+			if (!MyPlayer->HoldItem.isEmpty() || !onLevel || MyPlayer->hasNoLife())
+				return false;
+			if (message.kind == ItemTransferKind::AutoPickup && !CanAutomaticallyReceiveItem(Items[ActiveItems[floor]]))
+				return false;
+		} else if (message.kind == ItemTransferKind::HeldDrop) {
+			if (!MyPlayer->HoldItem.keyAttributesMatch(Swap32LE(message.item.def.dwSeed), static_cast<_item_indexes>(Swap16LE(message.item.def.wIndx)), Swap16LE(message.item.def.wCI)))
+				return false;
+		} else if (message.kind == ItemTransferKind::BodyDrop) {
+			if (std::none_of(std::begin(MyPlayer->InvBody), std::end(MyPlayer->InvBody), [&](const Item &item) { return item.keyAttributesMatch(local->second.original._iSeed, local->second.original.IDidx, local->second.original._iCreateInfo); }))
+				return false;
+		} else if (message.kind == ItemTransferKind::GoldDrop && CalculateGold(*MyPlayer) < local->second.original._ivalue) {
+			return false;
+		}
+	}
+	ItemReservations.emplace(uint32_t { message.serial }, ItemReservation { message, deltaSlot, worldSlot, floorSlot });
+	if (message.actor == MyPlayerId && message.kind == ItemTransferKind::Creation) {
+		const auto local = LocalItemTransfers.find(uint32_t { message.request });
+		if (local != LocalItemTransfers.end() && local->second.message.epoch == message.epoch && SameItem(local->second.message.item, message.item))
+			local->second.offered = true;
+	}
+	return true;
+}
+
+bool RecordCreatedItem(const ItemTransferMessage &message)
+{
+	auto records = ItemDeltas(GetDeltaLevel(message.level));
+	for (const TCmdPItem &record : records) {
+		if (record.bCmd != CMD_INVALID && SameItem(record, message.item))
+			return record.bCmd != TCmdPItem::PickedUpItem;
+	}
+	if (!HasUnreservedItemDelta(message.level))
+		return false;
+	for (TCmdPItem &record : records) {
+		if (record.bCmd == CMD_INVALID) {
+			record = message.item;
+			record.bCmd = (Swap16LE(record.def.wCI) & CF_PREGEN) != 0 ? TCmdPItem::FloorItem : TCmdPItem::DroppedItem;
+			return true;
+		}
+	}
+	return false;
+}
+
+void StopItemTransfers()
+{
+	LogError("Extended item synchronization could not be completed");
+	gbGameDestroyed = true;
+	gbRunGame = false;
+}
+
+bool RestoreLocalItemReceipt(const ItemTransferMessage &message)
+{
+	if (message.actor != MyPlayerId || message.kind == ItemTransferKind::Creation)
+		return true;
+	const auto local = LocalItemTransfers.find(uint32_t { message.request });
+	if (local == LocalItemTransfers.end())
+		return false;
+	if (local->second.received)
+		return true;
+	if (message.kind == ItemTransferKind::ManualPickup || message.kind == ItemTransferKind::AutoPickup) {
+		if (!ReceiveTransferredItem(*MyPlayer, local->second.original, message.kind == ItemTransferKind::AutoPickup))
+			return false;
+	} else if (message.kind == ItemTransferKind::HeldDrop) {
+		if (!MyPlayer->HoldItem.keyAttributesMatch(local->second.original._iSeed, local->second.original.IDidx, local->second.original._iCreateInfo))
+			return false;
+		MyPlayer->HoldItem.clear();
+		NewCursor(CURSOR_HAND);
+	} else if (message.kind == ItemTransferKind::BodyDrop) {
+		const Item &original = local->second.original;
+		auto slot = std::find_if(std::begin(MyPlayer->InvBody), std::end(MyPlayer->InvBody), [&](const Item &item) { return item.keyAttributesMatch(original._iSeed, original.IDidx, original._iCreateInfo); });
+		if (slot == std::end(MyPlayer->InvBody))
+			return false;
+		slot->clear();
+		CalcPlrInv(*MyPlayer, false);
+		if (MyPlayer->_pmode == PM_DEATH)
+			SetPlayerHitPoints(*MyPlayer, Fixed26_6::fromInt(0));
+	} else if (message.kind == ItemTransferKind::GoldDrop) {
+		int amount = local->second.original._ivalue;
+		if (CalculateGold(*MyPlayer) < amount)
+			return false;
+		// Remove excess above a changed gold cap, then partial piles, then full
+		// piles. This also preserves the original death-drop packing policy.
+		for (int pass = 0; pass < 3 && amount != 0; ++pass) {
+			for (int i = 0; i < MyPlayer->_pNumInv && amount != 0;) {
+				Item &gold = MyPlayer->InvList[i];
+				const int available = gold._itype != ItemType::Gold ? 0 : pass == 0 ? std::max(0, gold._ivalue - MaxGold)
+				    : pass == 1                                                     ? (gold._ivalue < MaxGold ? gold._ivalue : 0)
+				                                                                    : gold._ivalue;
+				if (available == 0) {
+					++i;
+					continue;
+				}
+				const int debit = std::min(amount, available);
+				amount -= debit;
+				gold._ivalue -= debit;
+				if (gold._ivalue == 0)
+					MyPlayer->RemoveInvItem(i);
+				else {
+					SetPlrHandGoldCurs(gold);
+					NetSyncInvItem(*MyPlayer, i);
+					++i;
+				}
+			}
+		}
+		MyPlayer->_pGold = CalculateGold(*MyPlayer);
+	}
+	local->second.received = true;
+	if (message.kind != ItemTransferKind::Creation || message.item.bCmd == CMD_SPAWNITEM)
+		pfile_update(true);
+	return true;
+}
+
+bool CommitItemTransfer(const ItemTransferMessage &message)
+{
+	const bool pickup = message.kind == ItemTransferKind::ManualPickup || message.kind == ItemTransferKind::AutoPickup;
+	if (pickup) {
+		TCmdGItem item { };
+		item.bCmd = message.kind == ItemTransferKind::AutoPickup ? CMD_AGETITEM : CMD_GETITEM;
+		if (static_cast<_item_indexes>(Swap16LE(message.item.def.wIndx)) == IDI_EAR)
+			item.ear = message.item.ear;
+		else
+			item.item = message.item.item;
+		item.x = message.item.x;
+		item.y = message.item.y;
+		item.bMaster = 0;
+		item.bPnum = message.actor;
+		item.bLevel = message.level;
+		if (!DeltaGetItem(item, message.level)) {
+			StopItemTransfers();
+			return false;
+		}
+		if (!IsLocalItemLevel(message.level))
+			return RestoreLocalItemReceipt(message);
+		const int floor = TransferFloorItem(message);
+		if (floor == -1) {
+			StopItemTransfers();
+			return false;
+		}
+		SyncGetItem({ item.x, item.y }, Swap32LE(item.def.dwSeed), static_cast<_item_indexes>(Swap16LE(item.def.wIndx)), Swap16LE(item.def.wCI));
+		if (message.actor == MyPlayerId && !RestoreLocalItemReceipt(message)) {
+			StopItemTransfers();
+			return false;
+		}
+	} else {
+		Point position { message.item.x, message.item.y };
+		if (IsLocalItemLevel(message.level)) {
+			int floor = TransferFloorItem(message);
+			if (floor != -1)
+				floor = ActiveItems[floor];
+			if (floor == -1) {
+				if (ActiveItemCount + ReservedWorldItemCount() >= MAXITEMS) {
+					StopItemTransfers();
+					return false;
+				}
+				if (message.actor == MyPlayerId && message.kind != ItemTransferKind::Creation) {
+					const auto local = LocalItemTransfers.find(uint32_t { message.request });
+					if (local == LocalItemTransfers.end())
+						return false;
+					Item original = local->second.original;
+					floor = PlaceItemInWorld(std::move(original), position);
+				} else {
+					const bool previous = std::exchange(PlacingReservedItem, true);
+					floor = SyncDropItem(message.item);
+					PlacingReservedItem = previous;
+				}
+				if (floor == -1) {
+					StopItemTransfers();
+					return false;
+				}
+				position = Items[floor].position;
+			}
+		}
+		ItemTransferMessage placed = message;
+		placed.item.x = position.x;
+		placed.item.y = position.y;
+		const bool recorded = RecordCreatedItem(placed);
+		if (!recorded) {
+			StopItemTransfers();
+			return false;
+		}
+		PutItemRecord(Swap32LE(message.item.def.dwSeed), Swap16LE(message.item.def.wCI), static_cast<_item_indexes>(Swap16LE(message.item.def.wIndx)));
+		if (message.kind == ItemTransferKind::BodyDrop && message.actor != MyPlayerId)
+			RemoveSpawnedBodyItem(Players[message.actor], message.item);
+	}
+	if (!RestoreLocalItemReceipt(message)) {
+		StopItemTransfers();
+		return false;
+	}
+	return true;
+}
+
+void SendItemTransfer(ItemTransferMessage message)
+{
+	FlushNetMessageBuffers();
+	SwapItemTransferLE(message);
+	multi_send_msg_packet(PlayerRecipientMask { ItemTransferParticipants() }, reinterpret_cast<const std::byte *>(&message), sizeof(message));
+}
+
+void CompleteItemTransfer(const ItemTransferMessage &message, bool committed)
+{
+	if (message.actor != MyPlayerId)
+		return;
+	const auto local = LocalItemTransfers.find(uint32_t { message.request });
+	if (local != LocalItemTransfers.end() && local->second.message.epoch == message.epoch
+	    && local->second.message.kind == message.kind && SameItem(local->second.message.item, message.item))
+		LocalItemTransfers.erase(local);
+	if (!committed && message.kind != ItemTransferKind::Creation)
+		MyPlayer->Say(message.kind == ItemTransferKind::HeldDrop ? HeroSpeech::WhereWouldIPutThis : HeroSpeech::ICantCarryAnymore);
+	if (!committed && IsLocalItemLevel(message.level)) {
+		const int floor = TransferFloorItem(message);
+		if (floor != -1)
+			Items[ActiveItems[floor]]._iRequest = false;
+	}
+}
+
+bool StartItemTransfer(ItemTransferKind kind, Point position, const Item &item, _cmd_id command)
+{
+	if (!ItemTransfersEnabled || ItemTransfers.Quiescing(MyPlayerId) || ItemTransfers.Quiescing(ItemTransfers.State().coordinator)
+	    || NextItemRequest == std::numeric_limits<uint32_t>::max())
+		return false;
+	if (kind != ItemTransferKind::Creation && std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return entry.second.message.kind != ItemTransferKind::Creation && !entry.second.received; }))
+		return false;
+	if (item.pendingCreation || ((kind == ItemTransferKind::ManualPickup || kind == ItemTransferKind::AutoPickup) && !MyPlayer->HoldItem.isEmpty()))
+		return false;
+	ItemTransferMessage message;
+	message.kind = kind;
+	message.actor = MyPlayerId;
+	message.epoch = ItemTransfers.Epoch(MyPlayerId);
+	message.request = ++NextItemRequest;
+	message.level = GetLevelForMultiplayer(*MyPlayer);
+	message.item.bCmd = command;
+	message.item.x = position.x;
+	message.item.y = position.y;
+	PrepareItemForNetwork(item, message.item);
+	if (kind == ItemTransferKind::Creation)
+		message.item.def.wCI = Swap16LE(item._iCreateInfo & ~CF_PREGEN);
+	LocalItemTransfers.emplace(uint32_t { message.request }, LocalItemTransfer { message, item });
+	SendItemTransfer(message);
+	return true;
+}
+
+bool IsItemTransferPayloadValid(const ItemTransferMessage &message)
+{
+	if (message.actor >= Players.size() || !IsValidLevelForMultiplayer(message.level) || !IsPItemValid(message.item, Players[message.actor]))
+		return false;
+	switch (message.kind) {
+	case ItemTransferKind::ManualPickup:
+		return message.item.bCmd == CMD_REQUESTGITEM;
+	case ItemTransferKind::AutoPickup:
+		return message.item.bCmd == CMD_REQUESTAGITEM;
+	case ItemTransferKind::HeldDrop:
+		return IsAnyOf(message.item.bCmd, CMD_PUTITEM, CMD_SPAWNITEM);
+	case ItemTransferKind::BodyDrop:
+		return message.item.bCmd == CMD_SPAWNITEM;
+	case ItemTransferKind::GoldDrop:
+		return message.item.bCmd == CMD_SPAWNITEM && Swap16LE(message.item.def.wIndx) == IDI_GOLD && Swap16LE(message.item.item.wValue) != 0;
+	case ItemTransferKind::Creation:
+		return IsAnyOf(message.item.bCmd, CMD_DROPITEM, CMD_SPAWNITEM);
+	}
+	return false;
+}
+
+std::vector<std::byte> CurrentItemTransferSnapshot()
+{
+	return EncodeItemTransfers(ImportedItemTransfers ? *ImportedItemTransfers : ItemTransfers.State());
+}
+
+bool ReadPendingItemTransferSnapshot(std::span<const std::byte> bytes)
+{
+	auto snapshot = DecodeItemTransfers(bytes);
+	if (!snapshot)
+		return false;
+	const auto valid = [](const ItemTransferMessage &message) {
+		return IsItemTransferPayloadValid(message);
+	};
+	for (const auto &entry : snapshot->entries) {
+		if (entry && !valid(entry->message))
+			return false;
+	}
+	if (!std::all_of(snapshot->queued.begin(), snapshot->queued.end(), valid) || !std::all_of(snapshot->deferred.begin(), snapshot->deferred.end(), valid))
+		return false;
+	if (ItemTransfersEnabled && (snapshot->finished < ItemTransfers.State().finished || snapshot->applied < ItemTransfers.State().applied))
+		return false;
+	PendingItemTransfers = std::move(snapshot);
+	return true;
+}
+
+void ImportItemTransferSnapshot()
+{
+	ImportedItemTransfers = std::move(PendingItemTransfers);
+}
+
+void ResetPendingItemTransferSnapshot()
+{
+	PendingItemTransfers.reset();
+}
+
+void RestoreItemTransferSnapshot()
+{
+	if (!ImportedItemTransfers)
+		return;
+	if (!ItemTransfersEnabled)
+		return;
+	for (const auto &entry : ImportedItemTransfers->entries) {
+		if (entry && entry->applied && entry->committed && !RestoreLocalItemReceipt(entry->message)) {
+			StopItemTransfers();
+			ImportedItemTransfers.reset();
+			return;
+		}
+	}
+	if (!ItemTransfers.Restore(*ImportedItemTransfers, ItemTransferParticipants()))
+		StopItemTransfers();
+	ImportedItemTransfers.reset();
+}
+
+bool StageItemIntent(const Item &item, _cmd_id command, bool publish)
+{
+	if (!ItemTransfersEnabled)
+		return false;
+	for (int active = 0; active < ActiveItemCount; ++active) {
+		const int ii = ActiveItems[active];
+		if (&Items[ii] != &item)
+			continue;
+		if (gbBufferMsgs == 1 || (MyPlayer->pLvlLoad != 0 && gbBufferMsgs != 2))
+			return true;
+		Items[ii].pendingCreation = true;
+		auto &staged = StagedItemCreations[ii];
+		if (publish)
+			staged.command = command;
+		staged.publish |= publish;
+		return true;
+	}
+	return false;
+}
+
+void FlushStagedItemCreations()
+{
+	struct Candidate {
+		Item item;
+		_cmd_id command;
+	};
+	std::vector<Candidate> candidates;
+	for (const auto &[ii, staged] : StagedItemCreations) {
+		if (!Items[ii].pendingCreation)
+			continue;
+		const auto active = std::find(ActiveItems, ActiveItems + ActiveItemCount, ii);
+		if (active == ActiveItems + ActiveItemCount)
+			continue;
+		Item item = Items[ii];
+		item.pendingCreation = false;
+		Items[ii].pendingCreation = false;
+		if (dItem[item.position.x][item.position.y] == ii + 1)
+			dItem[item.position.x][item.position.y] = 0;
+		DeleteItem(static_cast<int>(active - ActiveItems));
+		if (staged.publish)
+			candidates.push_back({ std::move(item), staged.command });
+	}
+	StagedItemCreations.clear();
+	for (const Candidate &candidate : candidates) {
+		if (!StartItemTransfer(ItemTransferKind::Creation, candidate.item.position, candidate.item, candidate.command))
+			StopItemTransfers();
+	}
+}
+
+void ProposeDeferredRewardPosition()
+{
+	if (gbBufferMsgs != 0 || MyPlayer == nullptr || MyPlayer->pLvlLoad != 0 || !HasWorldItemSpace())
+		return;
+	const uint32_t now = SDL_GetTicks();
+	if (now - LastRewardProposalTick < 250)
+		return;
+	LastRewardProposalTick = now;
+	for (const auto &pending : ItemTransfers.State().deferred) {
+		if (!IsLocalItemLevel(pending.level) || LoadedItemLevelOwner(pending.level) != MyPlayer)
+			continue;
+		const auto position = FindClosestValidPosition(CanPut, { pending.item.x, pending.item.y }, 0, 50);
+		if (!position)
+			continue;
+		ItemTransferMessage proposal = pending;
+		proposal.phase = ItemTransferPhase::Relocate;
+		proposal.serial = 0;
+		proposal.voters = 0;
+		proposal.item.x = position->x;
+		proposal.item.y = position->y;
+		SendItemTransfer(proposal);
+		break;
+	}
+}
+
+size_t OnItemTransfer(const ItemTransferMessage &wire, Player &sender)
+{
+	if (!ItemTransfersEnabled || wire.actor >= Players.size() || wire.phase > ItemTransferPhase::Relocate)
+		return sizeof(wire);
+	const bool control = wire.phase == ItemTransferPhase::LeaveIntent || wire.phase == ItemTransferPhase::LeaveAccepted;
+	if (!control && (!IsItemTransferPayloadValid(wire) || (wire.phase == ItemTransferPhase::Request && wire.level != GetLevelForMultiplayer(sender))))
+		return sizeof(wire);
+	if (gbBufferMsgs == 1) {
+		BufferMessage(sender, &wire, sizeof(wire));
+		return sizeof(wire);
+	}
+	if (wire.phase == ItemTransferPhase::Relocate && LoadedItemLevelOwner(wire.level) != &sender)
+		return sizeof(wire);
+	FlushStagedItemCreations();
+	ItemTransferMessage message = wire;
+	SwapItemTransferLE(message);
+	ItemTransfers.Receive(sender.getId(), message, ItemTransferParticipants());
+	return sizeof(wire);
+}
+
 size_t OnSendPlayerInfo(const TCmdPlrInfoHdr &header, size_t maxCmdSize, Player &player)
 {
 	const uint16_t wBytes = Swap16LE(header.wBytes);
@@ -2911,6 +3505,156 @@ size_t HandleCmd(size_t (*handler)(const TCmdImpl &, const Player &), const Play
 
 } // namespace
 
+void InitItemTransfers()
+{
+	ItemTransfersEnabled = false;
+	ItemTransfers.Reset(MyPlayerId, {
+	                                    .reserve = ReserveItemTransfer,
+	                                    .commit = CommitItemTransfer,
+	                                    .release = [](const ItemTransferMessage &message) { ItemReservations.erase(uint32_t { message.serial }); },
+	                                    .send = SendItemTransfer,
+	                                    .terminate = StopItemTransfers,
+	                                    .complete = CompleteItemTransfer,
+	                                });
+	ItemReservations.clear();
+	StagedItemCreations.clear();
+	LocalItemTransfers.clear();
+	OwnedItemDrops.clear();
+	NextItemRequest = 0;
+	LastRewardProposalTick = 0;
+	ItemTransfersEnabled = gbIsMultiplayer && sgGameInitInfo.rules == ExtendedSessionRules;
+}
+
+bool IsExtendedItemTransferSession()
+{
+	return ItemTransfersEnabled;
+}
+
+bool QueueDeathItemDrop(const Item &item, Point position)
+{
+	if (!ItemTransfersEnabled || item.isEmpty())
+		return false;
+	if (item.IDidx == IDI_EAR)
+		return StartItemTransfer(ItemTransferKind::Creation, position, item, CMD_SPAWNITEM);
+	const bool held = &item == &MyPlayer->HoldItem;
+	const bool body = std::any_of(std::begin(MyPlayer->InvBody), std::end(MyPlayer->InvBody), [&](const Item &slot) { return &slot == &item; });
+	if (!held && !body && item._itype != ItemType::Gold)
+		return false;
+	const auto matches = [&](const Item &other) { return other.keyAttributesMatch(item._iSeed, item.IDidx, item._iCreateInfo); };
+	if (std::any_of(OwnedItemDrops.begin(), OwnedItemDrops.end(), [&](const auto &drop) { return matches(drop.item); })
+	    || std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [&](const auto &entry) { return matches(entry.second.original); }))
+		return false;
+	Item copy = item;
+	const auto kind = held ? ItemTransferKind::HeldDrop : body ? ItemTransferKind::BodyDrop
+	                                                           : ItemTransferKind::GoldDrop;
+	if (kind == ItemTransferKind::GoldDrop) {
+		MakeGoldStack(copy, item._ivalue);
+		// Replicas can share RNG state when players die together. Separate newly
+		// split purse stacks by their actor and slot generation.
+		copy._iSeed ^= 0x9E3779B9U * (static_cast<uint32_t>(MyPlayerId) + 1);
+		copy._iSeed ^= 0x85EBCA6BU * ItemTransfers.Epoch(MyPlayerId);
+	}
+	OwnedItemDrops.push_back({ kind, position, std::move(copy) });
+	return false; // The owned item is removed only after the distributed commit.
+}
+
+void QueueDeathGoldDrop(int amount, Point position)
+{
+	while (amount > 0) {
+		Item gold;
+		MakeGoldStack(gold, std::min(amount, MaxGold));
+		amount -= gold._ivalue;
+		QueueDeathItemDrop(gold, position);
+	}
+}
+
+bool StageGeneratedItem(Item &item)
+{
+	StageItemIntent(item, CMD_DROPITEM, false);
+	return item.pendingCreation;
+}
+
+bool IsItemTransferPending()
+{
+	return ItemTransfersEnabled && (!OwnedItemDrops.empty() || std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return entry.second.message.kind != ItemTransferKind::Creation && !entry.second.received; }));
+}
+
+bool HasUnresolvedItemTransfers()
+{
+	return ItemTransfersEnabled && (!LocalItemTransfers.empty() || !StagedItemCreations.empty() || !OwnedItemDrops.empty());
+}
+
+bool HasWorldItemSpace()
+{
+	if (!ItemTransfersEnabled || gbBufferMsgs == 1 || MyPlayer == nullptr)
+		return ActiveItemCount < MAXITEMS;
+	const size_t pending = PlacingReservedItem ? 0 : std::count_if(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) {
+		return entry.second.message.kind == ItemTransferKind::Creation && !entry.second.offered && IsLocalItemLevel(entry.second.message.level);
+	});
+	return ActiveItemCount + ReservedWorldItemCount() + pending < MAXITEMS && HasUnreservedItemDelta(GetLevelForMultiplayer(*MyPlayer));
+}
+
+bool IsItemTileReserved(Point position)
+{
+	return ItemTransfersEnabled && std::any_of(ItemReservations.begin(), ItemReservations.end(), [=](const auto &entry) {
+		const auto &message = entry.second.message;
+		return IsLocalItemLevel(message.level) && message.item.x == position.x && message.item.y == position.y;
+	});
+}
+
+void ProcessItemTransfers()
+{
+	if (ItemTransfersEnabled) {
+		FlushStagedItemCreations();
+		if (!OwnedItemDrops.empty() && LocalItemTransfers.empty()) {
+			const auto &drop = OwnedItemDrops.front();
+			const auto position = FindClosestValidPosition(ItemSpaceOk, drop.position, 0, 50);
+			if (!position || StartItemTransfer(drop.kind, *position, drop.item, CMD_SPAWNITEM))
+				OwnedItemDrops.pop_front();
+		}
+		ProposeDeferredRewardPosition();
+		ItemTransfers.Pump(ItemTransferParticipants());
+	}
+}
+
+void LeaveItemTransfers(uint8_t player)
+{
+	if (ItemTransfersEnabled)
+		ItemTransfers.Leave(player);
+}
+
+void FinishItemTransfers()
+{
+	if (!ItemTransfersEnabled)
+		return;
+	FlushStagedItemCreations();
+	const uint32_t started = SDL_GetTicks();
+	while ((!LocalItemTransfers.empty() || !OwnedItemDrops.empty()) && !ItemTransfers.Stopped() && SDL_GetTicks() - started < 10000) {
+		ProcessGameMessagePackets();
+		SDL_Delay(1);
+	}
+	ItemTransfers.BeginLeave();
+	while ((!LocalItemTransfers.empty() || !OwnedItemDrops.empty() || !ItemTransfers.CanLeave()) && !ItemTransfers.Stopped() && SDL_GetTicks() - started < 10000) {
+		ProcessGameMessagePackets();
+		SDL_Delay(1);
+	}
+	if (!LocalItemTransfers.empty() || !OwnedItemDrops.empty() || !ItemTransfers.CanLeave())
+		StopItemTransfers();
+}
+
+#ifdef BUILD_TESTING
+bool TestHasCompleteDelta()
+{
+	return deltaTransferComplete;
+}
+#endif
+
+size_t ItemDeltaCapacity()
+{
+	// Pregen tombstones and a full floor of dropped items have independent lifetimes.
+	return sgGameInitInfo.rules == ExtendedSessionRules ? 2 * MAXITEMS : MAXITEMS;
+}
+
 bool CanDeltaPutItem(const TCmdPItem &message, const Player &player)
 {
 	return CanDeltaPutItemImpl(message, player);
@@ -3033,9 +3777,11 @@ void run_delta_info()
 	if (!gbIsMultiplayer)
 		return;
 
+	RestoreItemTransferSnapshot();
 	gbBufferMsgs = 2;
 	PrePacket();
 	gbBufferMsgs = 0;
+	FlushStagedItemCreations();
 	FreePackets();
 }
 
@@ -3044,7 +3790,7 @@ void DeltaExportData(uint8_t pnum)
 	for (const auto &[levelNum, deltaLevel] : DeltaLevels) {
 		const size_t bufferSize = 1U                                                                /* marker byte, always 0 */
 		    + sizeof(uint8_t)                                                                       /* level id */
-		    + sizeof(deltaLevel.item)                                                               /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
+		    + ItemDeltaCapacity() * sizeof(TCmdPItem)                                               /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
 		    + sizeof(uint8_t)                                                                       /* count of object interactions which caused a state change since dungeon generation */
 		    + ((sizeof(WorldTilePosition) + sizeof(DObjectStr)) * deltaLevel.object.size())         /* location/action pairs for the object interactions */
 		    + sizeof(deltaLevel.monster)                                                            /* latest monster state */
@@ -3067,11 +3813,11 @@ void DeltaExportData(uint8_t pnum)
 		multi_send_zero_packet(pnum, CMD_DLEVEL, dst.get(), size);
 	}
 
-	std::byte dst[sizeof(DJunk) + 1];
+	std::vector<std::byte> dst(sgGameInitInfo.rules == ExtendedSessionRules ? MaxJunkDeltaSize : 1 + sizeof(DJunk));
 	std::byte *dstEnd = &dst[1];
 	dstEnd = DeltaExportJunk(dstEnd);
-	const uint32_t size = CompressData(dst, dstEnd);
-	multi_send_zero_packet(pnum, CMD_DLEVEL_JUNK, dst, size);
+	const uint32_t size = CompressData(dst.data(), dstEnd);
+	multi_send_zero_packet(pnum, CMD_DLEVEL_JUNK, dst.data(), size);
 
 	std::byte src[1] = { static_cast<std::byte>(0) };
 	multi_send_zero_packet(pnum, CMD_DLEVEL_END, src, 1);
@@ -3079,6 +3825,16 @@ void DeltaExportData(uint8_t pnum)
 
 void delta_init()
 {
+	ItemTransfersEnabled = false;
+	ItemTransfers.Reset(MyPlayerId, { });
+	LocalItemTransfers.clear();
+	OwnedItemDrops.clear();
+	NextItemRequest = 0;
+	LastRewardProposalTick = 0;
+	ItemReservations.clear();
+	StagedItemCreations.clear();
+	PendingItemTransfers.reset();
+	ImportedItemTransfers.reset();
 	memset(&sgJunk, 0xFF, sizeof(sgJunk));
 	DeltaLevels.clear();
 	LocalLevels.clear();
@@ -3194,7 +3950,7 @@ void DeltaAddItem(int ii)
 	const uint8_t localLevel = GetLevelForMultiplayer(*MyPlayer);
 	DLevel &deltaLevel = GetDeltaLevel(localLevel);
 
-	for (const TCmdPItem &item : deltaLevel.item) {
+	for (const TCmdPItem &item : ItemDeltas(deltaLevel)) {
 		if (item.bCmd != CMD_INVALID
 		    && static_cast<_item_indexes>(Swap16LE(item.def.wIndx)) == Items[ii].IDidx
 		    && Swap16LE(item.def.wCI) == Items[ii]._iCreateInfo
@@ -3204,7 +3960,9 @@ void DeltaAddItem(int ii)
 		}
 	}
 
-	for (TCmdPItem &delta : deltaLevel.item) {
+	if (!HasUnreservedItemDelta(localLevel))
+		return;
+	for (TCmdPItem &delta : ItemDeltas(deltaLevel)) {
 		if (delta.bCmd != CMD_INVALID)
 			continue;
 
@@ -3274,6 +4032,7 @@ void DeltaLoadLevel()
 	}
 
 	DeltaLoadItems(deltaLevel);
+	RestoreItemTransferSnapshot();
 }
 
 void NetSendCmd(bool bHiPri, _cmd_id bCmd)
@@ -3470,8 +4229,10 @@ void NetSendCmdQuest(bool bHiPri, const Quest &quest)
 		NetSendLoPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 }
 
-void NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii)
+bool NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii)
 {
+	if (ItemTransfersEnabled)
+		return &player == MyPlayer && StartItemTransfer(bCmd == CMD_REQUESTAGITEM ? ItemTransferKind::AutoPickup : ItemTransferKind::ManualPickup, Items[ii].position, Items[ii], bCmd);
 	const uint8_t pnum = player.getId();
 
 	TCmdGItem cmd;
@@ -3490,10 +4251,19 @@ void NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii
 		NetSendHiPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 	else
 		NetSendLoPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
+	return true;
 }
 
 bool NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item)
 {
+	if (ItemTransfersEnabled && (bCmd == CMD_DROPITEM || bCmd == CMD_SPAWNITEM)) {
+		if (StageItemIntent(item, bCmd, true))
+			return true;
+		return StartItemTransfer(ItemTransferKind::Creation, position, item, bCmd);
+	}
+	if (ItemTransfersEnabled && bCmd == CMD_PUTITEM)
+		return StartItemTransfer(ItemTransferKind::HeldDrop, position, item, bCmd);
+
 	TCmdPItem cmd {};
 
 	cmd.bCmd = bCmd;
@@ -3594,7 +4364,7 @@ void NetSendCmdDamage(bool bHiPri, const Player &player, uint32_t dwDam, DamageT
 
 	cmd.bCmd = CMD_PLRDAMAGE;
 	cmd.bPlr = player.getId();
-	cmd.dwDam = dwDam;
+	cmd.dwDam = Swap32LE(dwDam);
 	cmd.damageType = damageType;
 	if (bHiPri)
 		NetSendHiPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
@@ -3607,8 +4377,8 @@ void NetSendCmdMonDmg(bool bHiPri, uint16_t wMon, uint32_t dwDam)
 	TCmdMonDamage cmd;
 
 	cmd.bCmd = CMD_MONSTDAMAGE;
-	cmd.wMon = wMon;
-	cmd.dwDam = dwDam;
+	cmd.wMon = Swap16LE(wMon);
+	cmd.dwDam = Swap32LE(dwDam);
 	if (bHiPri)
 		NetSendHiPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 	else
@@ -3653,7 +4423,16 @@ size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize)
 	Log("📥 {}", CmdIdString(pCmd->bCmd));
 #endif
 
+	if (ItemTransfersEnabled && (pCmd->bCmd == CMD_REQUESTGITEM || pCmd->bCmd == CMD_REQUESTAGITEM || pCmd->bCmd == CMD_GETITEM || pCmd->bCmd == CMD_AGETITEM || pCmd->bCmd == CMD_ITEMEXTRA || pCmd->bCmd == CMD_PUTITEM || pCmd->bCmd == CMD_SYNCPUTITEM || pCmd->bCmd == CMD_DROPITEM || pCmd->bCmd == CMD_SPAWNITEM)) {
+		const size_t size = pCmd->bCmd == CMD_GETITEM || pCmd->bCmd == CMD_AGETITEM || pCmd->bCmd == CMD_REQUESTGITEM
+		        || pCmd->bCmd == CMD_REQUESTAGITEM || pCmd->bCmd == CMD_ITEMEXTRA
+		    ? sizeof(TCmdGItem)
+		    : sizeof(TCmdPItem);
+		return ValidateCmdSize(size, maxCmdSize, pnum) ? size : 0;
+	}
 	switch (pCmd->bCmd) {
+	case CMD_ITEMTRANSFER:
+		return HandleCmd(OnItemTransfer, player, pCmd, maxCmdSize);
 	case CMD_SYNCDATA:
 		return HandleCmd(OnSyncData, player, pCmd, maxCmdSize);
 	case CMD_WALKXY:

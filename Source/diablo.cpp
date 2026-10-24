@@ -317,6 +317,8 @@ void LeftMouseCmd(bool bShift)
 
 bool TryOpenDungeonWithMouse()
 {
+	if (IsItemTransferPending())
+		return false;
 	if (leveltype != DTYPE_TOWN)
 		return false;
 
@@ -400,7 +402,7 @@ void LeftMouseDown(uint16_t modState)
 				if (!TryOpenDungeonWithMouse()) {
 					const Point currentPosition = MyPlayer->position.tile;
 					std::optional<Point> itemTile = FindAdjacentPositionForItem(currentPosition, GetDirection(currentPosition, cursPosition));
-					if (itemTile && NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, MyPlayer->HoldItem)) {
+					if (itemTile && NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, MyPlayer->HoldItem) && !IsItemTransferPending()) {
 						NewCursor(CURSOR_HAND);
 					}
 				}
@@ -872,6 +874,8 @@ void RunGameLoop(interface_mode uMsg)
 	StartGame(uMsg);
 	assert(HeadlessMode || ghMainWnd);
 	EventHandler previousHandler = SetEventHandler(GameEventHandler);
+	if (gbIsMultiplayer && (!gbVanilla || IsExtendedItemTransferSession()) && LoadHeldItem(*MyPlayer))
+		NewCursor(MyPlayer->HoldItem);
 	run_delta_info();
 	gbRunGame = true;
 	gbProcessPlayers = IsDiabloAlive(true);
@@ -955,6 +959,7 @@ void RunGameLoop(interface_mode uMsg)
 	demo::NotifyGameLoopEnd();
 
 	if (gbIsMultiplayer) {
+		FinishItemTransfers();
 		pfile_write_hero(/*writeGameData=*/false);
 		sfile_write_stash();
 	}

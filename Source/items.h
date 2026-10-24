@@ -238,6 +238,8 @@ struct Item {
 	int16_t _iPLLight = 0;
 	int8_t _iSplLvlAdd = 0;
 	bool _iRequest = false;
+	/** A generated candidate is invisible until extended admission commits it. */
+	bool pendingCreation = false;
 	/** Unique item ID, used as an index into UniqueItemList */
 	int _iUid = 0;
 	int16_t _iFMinDam = 0;

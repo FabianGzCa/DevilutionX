@@ -367,7 +367,7 @@ bool TrySelectPixelBased(Point tile)
 		}
 
 		uint8_t itemId = dItem[adjacentTile.x][adjacentTile.y];
-		if (itemId != 0) {
+		if (itemId != 0 && !Items[itemId - 1].pendingCreation) {
 			itemId = itemId - 1;
 			const Item &item = Items[itemId];
 			const ClxSprite sprite = item.AnimInfo.currentSprite();

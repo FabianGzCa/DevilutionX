@@ -1926,7 +1926,7 @@ void OperateBook(Player &player, Object &book, bool sendmsg)
 
 void OperateBookLever(Object &questBook, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 	if (questBook.canInteractWith() && !qtextflag) {
@@ -2075,7 +2075,7 @@ void OperateChest(const Player &player, Object &chest, bool sendLootMsg)
 
 void OperateMushroomPatch(const Player &player, Object &mushroomPatch)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 
@@ -2106,7 +2106,7 @@ void OperateMushroomPatch(const Player &player, Object &mushroomPatch)
 
 void OperateInnSignChest(const Player &player, Object &questContainer, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 
@@ -2209,7 +2209,7 @@ void OperateSarcophagus(Object &sarcophagus, bool sendMsg, bool sendLootMsg)
 
 void OperatePedestal(Player &player, Object &pedestal, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 
@@ -3399,7 +3399,7 @@ void OperateStoryBook(Object &storyBook)
 
 void OperateLazStand(Object &stand)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 

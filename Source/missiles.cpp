@@ -850,6 +850,12 @@ void SpawnLightning(Missile &missile, int dam)
 } // namespace
 
 #ifdef BUILD_TESTING
+bool TestPlayerMissileHit(const Player &player, Player &target)
+{
+	bool blocked = false;
+	return Plr2PlrMHit(player, target, 2, 2, 0, MissileID::Firebolt, DamageType::Fire, false, &blocked);
+}
+
 void TestRotateBlockedMissile(Missile &missile)
 {
 	RotateBlockedMissile(missile);

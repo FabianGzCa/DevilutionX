@@ -35,6 +35,7 @@
 #include "headless_mode.hpp"
 #include "hwcursor.hpp"
 #include "loadsave.h"
+#include "msg.h"
 #include "multi.h"
 #include "pfile.h"
 #include "players/level_entry.hpp"
@@ -647,6 +648,8 @@ void CompleteProgress()
 
 void ShowProgress(interface_mode uMsg)
 {
+	if (IsExtendedItemTransferSession())
+		gbBufferMsgs = 1;
 	IsProgress = true;
 	gbSomebodyWonGameKludge = false;
 
@@ -697,6 +700,8 @@ void ShowProgress(interface_mode uMsg)
 	while (HandleProgressBarUpdate()) { }
 	loadThread.join();
 #endif
+	if (IsExtendedItemTransferSession())
+		run_delta_info();
 }
 
 } // namespace devilution

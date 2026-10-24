@@ -278,6 +278,8 @@ void PlayerLeftMsg(Player &player, bool left)
 	RemovePortalMissile(player);
 	DeactivatePortal(player);
 	delta_close_portal(player);
+	if (player.plractive)
+		LeaveItemTransfers(static_cast<uint8_t>(player.getId()));
 	if (!player.plractive) {
 		player = { };
 		return;
@@ -314,9 +316,11 @@ void PlayerLeftMsg(Player &player, bool left)
 	gbActivePlayers--;
 }
 
-void ClearPlayerLeftState()
+void ClearPlayerLeftState(std::optional<uint8_t> only = std::nullopt)
 {
 	for (uint8_t i = 0; i < Players.size(); i++) {
+		if (only && i != *only)
+			continue;
 		if (sgbPlayerLeftGameTbl[i]) {
 			if (gbBufferMsgs == 1)
 				msg_send_drop_pkt(i, sgdwPlayerLeftReasonTbl[i]);
@@ -679,6 +683,14 @@ void NetSendHiPri(uint8_t playerId, const std::byte *data, size_t size)
 	}
 }
 
+void FlushNetMessageBuffers()
+{
+	while (highPriorityBuffer.dwNextWriteOffset != 0 || lowPriorityBuffer.dwNextWriteOffset != 0) {
+		shareNextHighPriorityMessage = true;
+		NetSendHiPri(MyPlayerId, nullptr, 0);
+	}
+}
+
 void multi_send_msg_packet(PlayerRecipientMask recipients, const std::byte *data, size_t size)
 {
 	TPkt pkt;
@@ -775,7 +787,8 @@ bool multi_handle_delta()
 
 void ProcessGameMessagePackets()
 {
-	ClearPlayerLeftState();
+	if (!IsExtendedItemTransferSession())
+		ClearPlayerLeftState();
 	ProcessTmsgs();
 
 	uint8_t playerId = std::numeric_limits<uint8_t>::max();
@@ -783,7 +796,8 @@ void ProcessGameMessagePackets()
 	size_t totalPacketSize = 0;
 	while (SNetReceiveMessage(&playerId, (void **)&pkt, &totalPacketSize)) {
 		dwRecCount++;
-		ClearPlayerLeftState();
+		if (!IsExtendedItemTransferSession())
+			ClearPlayerLeftState();
 		if (totalPacketSize < sizeof(TPktHdr))
 			continue;
 		if (playerId >= Players.size())
@@ -792,6 +806,14 @@ void ProcessGameMessagePackets()
 			continue;
 		if (Swap16LE(pkt->wLen) != totalPacketSize)
 			continue;
+
+		// Drain final item acknowledgements before applying a departure. Player
+		// info marks the boundary when the transport reuses a departed slot.
+		if (IsExtendedItemTransferSession() && sgbPlayerLeftGameTbl[playerId] && totalPacketSize > sizeof(TPktHdr)) {
+			const auto command = static_cast<_cmd_id>(reinterpret_cast<const std::byte *>(pkt + 1)[0]);
+			if (IsAnyOf(command, CMD_SEND_PLRINFO, CMD_ACK_PLRINFO))
+				ClearPlayerLeftState(playerId);
+		}
 
 		// Distrust all messages until player info is received
 		Player &player = Players[playerId];
@@ -817,7 +839,9 @@ void ProcessGameMessagePackets()
 
 		HandleAllPackets(playerId, message, messageSize);
 	}
+	ClearPlayerLeftState();
 	CheckPlayerInfoTimeouts();
+	ProcessItemTransfers();
 }
 
 void multi_send_zero_packet(uint8_t pnum, _cmd_id bCmd, const std::byte *data, size_t size)
@@ -928,6 +952,7 @@ bool NetInit(bool bSinglePlayer)
 		ResetPlayerGFX(myPlayer);
 		myPlayer.plractive = true;
 		gbActivePlayers = 1;
+		InitItemTransfers();
 
 		if (!sgbPlayerTurnBitTbl[MyPlayerId] || msg_wait_resync())
 			break;

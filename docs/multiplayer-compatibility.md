@@ -30,9 +30,11 @@ The session identity uses these byte offsets:
 | 24–39 | 16 | Four existing level seeds |
 
 Rules `(0, 0, 0)` identify classic four-player sessions. Extended rules are
-`(1, 8, 1)`. Every other tuple is rejected. Revision 1 is reserved for the
-forthcoming extended rules; changes to those rules must update the supported
-contract before release. Classic padding at offsets 22–23 is ignored because
+`(2, 8, 1)`. Every other tuple is rejected. Protocol revision 2 adds reserved
+item transfers and expanded item-history snapshots; revision 1 builds cannot
+join these sessions. Balance revision 1 remains reserved for the forthcoming
+extended balance rules; changes must update the supported contract before
+release. Classic padding at offsets 22–23 is ignored because
 old binaries do not initialize it as an edition field.
 
 Both sides validate the descriptor, exact application version, shareware flag

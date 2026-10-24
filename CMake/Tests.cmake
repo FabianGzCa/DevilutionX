@@ -32,6 +32,7 @@ set(tests
   effects_test
   inv_test
   items_test
+  item_transfer_test
   level_entry_test
   math_test
   missiles_test
@@ -60,6 +61,13 @@ set(tests
   char_panel_test
   game_menu_test
 )
+if(UNIX AND NOT NONET AND NOT DISABLE_TCP)
+  list(APPEND tests multiplayer_gameplay_test)
+  add_executable(multiplayer_gameplay_worker test/helpers/multiplayer_gameplay_worker.cpp)
+  target_link_dependencies(multiplayer_gameplay_worker PRIVATE libdevilutionx_so)
+  set_target_properties(multiplayer_gameplay_worker PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+endif()
+
 set(standalone_tests
   cl2_to_clx_test
   codec_test
@@ -102,6 +110,11 @@ foreach(test_target ${tests} ${standalone_tests} ${benchmarks})
     target_link_libraries(${test_target} PUBLIC ${GPERFTOOLS_LIBRARIES})
   endif()
 endforeach()
+
+if(TARGET multiplayer_gameplay_test)
+  add_dependencies(multiplayer_gameplay_test multiplayer_gameplay_worker)
+  target_compile_definitions(multiplayer_gameplay_test PRIVATE GAMEPLAY_WORKER_PATH="$<TARGET_FILE:multiplayer_gameplay_worker>")
+endif()
 
 # Discover the tests when they are run, not right after each one is linked: on
 # Windows, running a test while others are linking and having their DLLs copied

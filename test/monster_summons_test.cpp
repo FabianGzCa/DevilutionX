@@ -15,12 +15,14 @@
 #include "engine/random.hpp"
 #include "engine/surface.hpp"
 #include "game_mode.hpp"
+#include "items.h"
 #include "levels/dun_tile_data.hpp"
 #include "levels/tile_properties.hpp"
 #include "levels/trigs.h"
 #include "lighting.h"
 #include "missiles.h"
 #include "monster.h"
+#include "monsters/party_scaling.hpp"
 #include "monsters/validation.hpp"
 #include "multi.h"
 #include "nthread.h"
@@ -68,6 +70,7 @@ protected:
 		leveltype = DTYPE_CATHEDRAL;
 		setlevel = false;
 		InitGameInfo();
+		sgGameInitInfo.nDifficulty = DIFF_NORMAL;
 		sgGameInitInfo.rules = ExtendedSessionRules;
 		for (uint8_t i = 0; i < 8; ++i) {
 			Player &player = Players[i];
@@ -386,7 +389,11 @@ TEST_F(MonsterSummonsTest, NormalAndExtendedSessionsGenerateIdenticalEnemyPopula
 		std::vector<EnemyState> expected;
 		size_t expectedCount = 0;
 		uint32_t expectedSeed = 0;
-		for (const bool extended : { false, true }) {
+		for (const unsigned count : { 0, 1, 2, 3, 4, 8 }) {
+			const bool extended = count != 0;
+			gbActivePlayers = extended ? count : 4;
+			for (unsigned id = 0; id < Players.size(); ++id)
+				Players[id].plractive = id < gbActivePlayers;
 			sgGameInitInfo.rules = extended ? ExtendedSessionRules : ClassicSessionRules;
 			currlevel = level;
 			leveltype = GetLevelType(level);
@@ -406,6 +413,7 @@ TEST_F(MonsterSummonsTest, NormalAndExtendedSessionsGenerateIdenticalEnemyPopula
 			InitGolems();
 			InitNoTriggers();
 			ASSERT_TRUE(InitMonsters());
+			RecordProperty("level" + std::to_string(level) + "_case" + std::to_string(count) + "_active_monsters", ActiveMonsterCount);
 			if (!extended) {
 				expected = Enemies();
 				expectedCount = ActiveMonsterCount;
@@ -418,6 +426,138 @@ TEST_F(MonsterSummonsTest, NormalAndExtendedSessionsGenerateIdenticalEnemyPopula
 		}
 	}
 	pMegaTiles.reset();
+}
+
+TEST_F(MonsterSummonsTest, NativeMultiplayerStatsAreIdenticalForOneThroughFourParticipants)
+{
+	ASSERT_TRUE(AddMonsterType(MT_DIABLO, PLACE_SPECIAL));
+	for (bool hellfire : { false, true }) {
+		gbIsHellfire = hellfire;
+		for (auto difficulty : { DIFF_NORMAL, DIFF_NIGHTMARE, DIFF_HELL }) {
+			sgGameInitInfo.nDifficulty = difficulty;
+			using Stats = std::tuple<int32_t, int, int, int, int, unsigned, uint32_t, uint32_t>;
+			std::array<Stats, 2> expected;
+			for (unsigned count = 1; count <= 4; ++count) {
+				gbActivePlayers = count;
+				for (unsigned id = 0; id < Players.size(); ++id)
+					Players[id].plractive = id < count;
+				for (unsigned type = 1; type <= 2; ++type) {
+					SetRndSeed(16001);
+					Monster *monster = AddMonster({ 40, 40 }, Direction::South, type, false);
+					ASSERT_NE(monster, nullptr);
+					const Stats stats { monster->maxHitPoints.raw(), monster->minDamage, monster->maxDamage, monster->minDamageSpecial, monster->maxDamageSpecial, monster->exp(difficulty), monster->aiSeed, monster->rndItemSeed };
+					if (count == 1)
+						expected[type - 1] = stats;
+					else
+						EXPECT_EQ(stats, expected[type - 1]);
+					const std::string key = std::string(hellfire ? "hf" : "diablo") + "_difficulty" + std::to_string(difficulty) + "_party" + std::to_string(count) + "_type" + std::to_string(type);
+					RecordProperty(key + "_hp_raw", monster->maxHitPoints.raw());
+					RecordProperty(key + "_damage_min", static_cast<int>(monster->minDamage));
+					RecordProperty(key + "_damage_max", static_cast<int>(monster->maxDamage));
+					RecordProperty(key + "_xp_pool", monster->exp(difficulty));
+				}
+			}
+		}
+	}
+	gbIsHellfire = false;
+}
+
+TEST_F(MonsterSummonsTest, NativeSinglePlayerHealthUsesItsOwnDifficultyRules)
+{
+	ASSERT_TRUE(AddMonsterType(MT_DIABLO, PLACE_SPECIAL));
+	constexpr int Expected[2][3] = { { 833, 2599, 3532 }, { 833, 2549, 3432 } };
+	gbIsMultiplayer = false;
+	for (unsigned edition = 0; edition < 2; ++edition) {
+		gbIsHellfire = edition != 0;
+		for (auto difficulty : { DIFF_NORMAL, DIFF_NIGHTMARE, DIFF_HELL }) {
+			sgGameInitInfo.nDifficulty = difficulty;
+			Monster *monster = AddMonster({ 40, 40 }, Direction::South, 2, false);
+			ASSERT_NE(monster, nullptr);
+			EXPECT_EQ(monster->maxHitPoints, Fixed26_6::fromInt(Expected[edition][difficulty]));
+		}
+	}
+	gbIsHellfire = false;
+}
+
+TEST_F(MonsterSummonsTest, NativeLootRollsDoNotIncreaseWithMultiplayerParticipantCount)
+{
+	for (auto difficulty : { DIFF_NORMAL, DIFF_NIGHTMARE, DIFF_HELL }) {
+		sgGameInitInfo.nDifficulty = difficulty;
+		Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, false);
+		ASSERT_NE(monster, nullptr);
+		using Drop = std::tuple<int, int, uint32_t, uint16_t, int, uint32_t>;
+		std::vector<Drop> expected;
+		for (unsigned count = 1; count <= 4; ++count) {
+			gbActivePlayers = count;
+			unsigned drops = 0;
+			for (unsigned seed = 0; seed < 256; ++seed) {
+				ActiveItemCount = 0;
+				std::memset(dItem, 0, sizeof(dItem));
+				std::iota(std::begin(ActiveItems), std::end(ActiveItems), 0);
+				SetRndSeed(16000 + seed);
+				SpawnItem(*monster, { 40, 40 }, false);
+				ASSERT_LE(ActiveItemCount, 1);
+				drops += ActiveItemCount;
+				const Item item = ActiveItemCount == 0 ? Item { } : Items[ActiveItems[0]];
+				const Drop result { ActiveItemCount, static_cast<int>(item.IDidx), item._iSeed, item._iCreateInfo, item._ivalue, GetLCGEngineState() };
+				if (count == 1)
+					expected.push_back(result);
+				else
+					EXPECT_EQ(result, expected[seed]);
+			}
+			RecordProperty("difficulty" + std::to_string(difficulty) + "_party" + std::to_string(count) + "_drops_per_256", drops);
+		}
+	}
+	ActiveItemCount = 0;
+	std::memset(dItem, 0, sizeof(dItem));
+}
+
+TEST_F(MonsterSummonsTest, FixedDamageBenchmarkPreservesFourPlayerKillTimeAndExperienceForFiveThroughEight)
+{
+	ASSERT_TRUE(AddMonsterType(MT_DIABLO, PLACE_SPECIAL));
+	for (auto difficulty : { DIFF_NORMAL, DIFF_NIGHTMARE, DIFF_HELL }) {
+		sgGameInitInfo.nDifficulty = difficulty;
+		unsigned referenceTurns = 0;
+		uint32_t referenceShare = 0;
+		for (unsigned count = 1; count <= 8; ++count) {
+			gbActivePlayers = count;
+			const auto scale = PartyScaling::ForSession(ExtendedSessionRules, count);
+			ASSERT_TRUE(scale);
+			Monster *monster = AddMonster({ 40, 40 }, Direction::South, 2, false);
+			ASSERT_NE(monster, nullptr);
+			const auto native = monster->maxHitPoints;
+			monster->maxHitPoints = scale->HitPoints(native);
+			monster->hitPoints = monster->maxHitPoints;
+			unsigned turns = 0;
+			while (!monster->hasNoLife() && turns < 10000) {
+				++turns;
+				for (unsigned attacker = 0; attacker < count && !monster->hasNoLife(); ++attacker)
+					ApplyMonsterDamage(DamageType::Physical, *monster, Fixed26_6::fromInt(10));
+				FlushNetMessageBuffers();
+				// Damage was already applied locally; consume its loopback echoes
+				// at each turn rather than accumulating an unbounded test backlog.
+				uint8_t sender;
+				void *data;
+				size_t size;
+				while (SNetReceiveMessage(&sender, &data, &size)) { }
+			}
+			ASSERT_TRUE(monster->hasNoLife());
+			const uint32_t share = scale->Experience(monster->exp(difficulty)) / count;
+			if (count == 4) {
+				referenceTurns = turns;
+				referenceShare = share;
+			} else if (count > 4) {
+				EXPECT_EQ(turns, referenceTurns);
+				EXPECT_LE(share, referenceShare);
+				EXPECT_LE(referenceShare - share, 1U);
+			}
+			const std::string key = "difficulty" + std::to_string(difficulty) + "_party" + std::to_string(count);
+			RecordProperty(key + "_native_hp_raw", native.raw());
+			RecordProperty(key + "_scaled_hp_raw", monster->maxHitPoints.raw());
+			RecordProperty(key + "_turns_10_damage_per_player", turns);
+			RecordProperty(key + "_xp_per_contributor_before_caps", share);
+		}
+	}
 }
 
 TEST_F(MonsterSummonsTest, AuthoritativeSpawnsReplayOnEveryPeerInRequestOrder)

@@ -40,6 +40,7 @@ set(tests
   multi_logging_test
   multiplayer_sync_test
   party_panel_layout_test
+  party_scaling_test
   pack_test
   player_test
   portal_test

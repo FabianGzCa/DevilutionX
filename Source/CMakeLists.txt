@@ -628,6 +628,7 @@ target_link_dependencies(libdevilutionx_level_objects PUBLIC
 )
 
 add_devilutionx_object_library(libdevilutionx_monster
+  monsters/party_scaling.cpp
   tables/monstdat.cpp
   monster.cpp
 )

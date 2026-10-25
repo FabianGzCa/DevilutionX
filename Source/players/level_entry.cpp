@@ -234,6 +234,12 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::StateFor(uint8_t player)
 	message.tickets[player] = request.ticket;
 	message.x[player] = static_cast<uint8_t>(request.position.x);
 	message.y[player] = static_cast<uint8_t>(request.position.y);
+	if (request.pending && reserved_ && transaction_ && transaction_->outcome == LevelEntryOutcome::Placed
+	    && (transaction_->participants & Bit(player)) != 0 && transaction_->tickets[player] == request.ticket) {
+		message.phase = LevelEntryPhase::Propose;
+		message.x[player] = transaction_->x[player];
+		message.y[player] = transaction_->y[player];
+	}
 	return message;
 }
 
@@ -253,6 +259,7 @@ void LevelEntryCoordinator::Release(Update update)
 	votes_ = 0;
 	rejected_ = false;
 	proposed_ = false;
+	reserved_ = false;
 	sent_ = false;
 }
 
@@ -446,6 +453,7 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Receive(uint8_t sender, 
 		sent_ = false;
 		if (accepted)
 			accepted = update(message, LevelEntryStage::Reserve);
+		reserved_ = accepted && message.outcome == LevelEntryOutcome::Placed;
 		if ((message.voters & Bit(local)) == 0)
 			return std::nullopt;
 		LevelEntryMessage vote = message;
@@ -520,6 +528,7 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Receive(uint8_t sender, 
 	votes_ = 0;
 	rejected_ = false;
 	proposed_ = false;
+	reserved_ = false;
 	sent_ = false;
 	return std::nullopt;
 }
@@ -638,8 +647,13 @@ bool RestoreLevelEntryPlayerInfo(Player &player)
 	SetPlayerOld(player);
 	player._pLvlChanging = Entries.Pending(id);
 	player._pInvincible = player._pLvlChanging;
-	if (player._pLvlChanging && player.isOnActiveLevel())
+	if (player._pLvlChanging && player.isOnActiveLevel()) {
 		DeactivateVision(id);
+		if (admission->phase == LevelEntryPhase::Propose) {
+			player.occupyTile(player.position.tile, false);
+			PrepareLevelEntrantGraphics(player);
+		}
+	}
 	return !player._pLvlChanging;
 }
 

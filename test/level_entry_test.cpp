@@ -485,6 +485,36 @@ TEST(LevelEntryProtocolTest, ANewRequestCannotBeOverwrittenByAnOldCommit)
 	EXPECT_TRUE(node.Pending(7));
 }
 
+TEST(LevelEntryProtocolTest, OnlyAcceptedProposalsRestoreReservedCoordinates)
+{
+	for (const bool acceptReservation : { false, true }) {
+		SCOPED_TRACE(acceptReservation);
+		LevelEntryCoordinator node;
+		LevelEntryPeers peers;
+		peers.active = Bit(0) | Bit(7);
+		peers.ready = Bit(0);
+		peers.level.fill(1);
+		const auto update = [&](const LevelEntryMessage &, LevelEntryStage stage) {
+			return stage != LevelEntryStage::Reserve || acceptReservation;
+		};
+		const auto resolve = [](LevelEntryMessage &, std::span<const Point>) { return true; };
+		node.Receive(7, 0, peers, Request(7), update);
+		const auto assignment = node.Poll(0, peers, resolve);
+		ASSERT_TRUE(assignment);
+		node.Receive(0, 0, peers, *assignment, update);
+		auto proposal = *assignment;
+		proposal.phase = LevelEntryPhase::Propose;
+		proposal.x[7] = 45;
+		const auto vote = node.Receive(proposal.authority, 0, peers, proposal, update);
+		ASSERT_TRUE(vote);
+		EXPECT_EQ(vote->outcome, acceptReservation ? LevelEntryOutcome::Placed : LevelEntryOutcome::Retry);
+		const auto state = node.StateFor(7);
+		ASSERT_TRUE(state);
+		EXPECT_EQ(state->phase, acceptReservation ? LevelEntryPhase::Propose : LevelEntryPhase::Request);
+		EXPECT_EQ(state->x[7], acceptReservation ? 45 : 40);
+	}
+}
+
 class LevelEntryPlacementTest : public ::testing::Test {
 protected:
 	static void SetUpTestSuite()
@@ -964,6 +994,9 @@ TEST_F(LevelEntryPlacementTest, ReservedEntrantsCanBeDrawnBeforeTheCommit)
 	// Rendering and cursor hit tests read the sprite of every player that occupies a tile.
 	bool reserved = false;
 	const auto expectDrawable = [&]() {
+		if (reserved) {
+			ASSERT_EQ(dPlayer[45][50], 8) << "late player info must preserve the agreed reservation";
+		}
 		if (dPlayer[45][50] != 8)
 			return;
 		reserved = true;
@@ -993,7 +1026,10 @@ TEST_F(LevelEntryPlacementTest, ReservedEntrantsCanBeDrawnBeforeTheCommit)
 	expectDrawable();
 	ASSERT_TRUE(reserved) << "the entrant should hold its tile before the commit";
 	ASSERT_TRUE(Players[7]._pLvlChanging);
-	// Information completing during the reservation resets graphics; the entrant stays drawable.
+	// Both information paths can finish after another sender reserved the entrant.
+	receiveInfo(CMD_SEND_PLRINFO);
+	expectDrawable();
+	// The acknowledgement also resets graphics; the reservation remains drawable.
 	receiveInfo(CMD_ACK_PLRINFO);
 	expectDrawable();
 	message.phase = LevelEntryPhase::Commit;

@@ -108,6 +108,7 @@ private:
 	bool rejected_ = false;
 	bool sent_ = false;
 	bool proposed_ = false;
+	bool reserved_ = false;
 	void Release(Update update);
 };
 

@@ -279,7 +279,8 @@ void PlayerLeftMsg(Player &player, bool left)
 	RemovePortalMissile(player);
 	DeactivatePortal(player);
 	delta_close_portal(player);
-	if (player.plractive)
+	// Refreshing player information does not replace the connected slot.
+	if (left && player.plractive)
 		LeaveItemTransfers(static_cast<uint8_t>(player.getId()));
 	if (!player.plractive) {
 		player = { };
@@ -1066,6 +1067,7 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	}
 	if (sgGameInitInfo.rules == ExtendedSessionRules && player._pLvlChanging) {
 		player._pmode = PM_NEWLVL;
+		PrepareLevelEntrantGraphics(player);
 		return;
 	}
 	if (restoredAdmission)

@@ -2074,6 +2074,38 @@ TEST_F(MultiplayerSyncTest, PartySnapshotRetainsLocalFutureDamageUntilItsScaleCo
 	EXPECT_EQ(GetPartyLevelState(2).monsters[4].damage, 128 * (3360 / 6));
 }
 
+TEST_F(MultiplayerSyncTest, PlayerInfoRefreshPreservesTheConnectedPeersDamageEpoch)
+{
+	LoadGameArchives();
+	ASSERT_TRUE(HaveMainData());
+	LoadMonsterData();
+	InitItemTransfers();
+	const auto packed = MakePlayer(1);
+	Join(1, packed);
+	ASSERT_TRUE(Players[1].plractive);
+	auto &level = GetPartyLevelState(2);
+	level.participants = 5;
+	auto &monster = level.monsters[4];
+	monster.generation = uint64_t { 1 } << 63;
+	monster.nativeMax = 6400;
+	monster.type = MT_NZOMBIE;
+	monster.flags = PartyMonsterKnown;
+	monster.x = monster.y = 40;
+	const auto epoch = MultiplayerSlotEpoch(1);
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 2, 5, epoch, 1, 4, 64,
+		monster.generation, monster.nativeMax, monster.type, monster.unique, 40, 40 };
+	ReceivePartyMonsterDamage(1, damage);
+	ASSERT_EQ(monster.receipts[1], 1U);
+	const auto previousDamage = monster.damage;
+	// The same connected peer can acknowledge its information after entry messages.
+	Join(1, packed);
+	EXPECT_EQ(MultiplayerSlotEpoch(1), epoch);
+	++damage.receipt;
+	ReceivePartyMonsterDamage(1, damage);
+	EXPECT_EQ(monster.receipts[1], 2U);
+	EXPECT_GT(monster.damage, previousDamage);
+}
+
 TEST_F(MultiplayerSyncTest, AJoiningClientRestoresItemTransfersBeforeReplayingPlayerInfo)
 {
 	// The host in slot 0 coordinates item transfers and exports the world.

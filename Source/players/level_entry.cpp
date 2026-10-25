@@ -183,6 +183,7 @@ bool UpdateWorld(const LevelEntryMessage &message, LevelEntryStage stage)
 		if (player.isOnActiveLevel()) {
 			// Reservations block walking and monsters until the common commit.
 			player.occupyTile(player.position.tile, false);
+			PrepareLevelEntrantGraphics(player);
 		}
 		if (stage != LevelEntryStage::Commit)
 			continue;
@@ -607,6 +608,14 @@ bool IsLevelEntryPending(uint8_t player) { return sgGameInitInfo.rules == Extend
 bool IsLevelEntryBlocked(uint8_t player) { return sgGameInitInfo.rules == ExtendedSessionRules && Entries.Blocked(player); }
 bool IsLevelEntryResolving() { return sgGameInitInfo.rules == ExtendedSessionRules && Entries.IsResolving(setlevel ? static_cast<uint8_t>(setlvlnum) : currlevel, setlevel); }
 bool ShouldWaitForLevelEntry() { return sgGameInitInfo.rules == ExtendedSessionRules && (MyPlayer->_pLvlChanging || IsLevelEntryResolving()); }
+
+void PrepareLevelEntrantGraphics(Player &player)
+{
+	if (!player.isOnActiveLevel() || player.AnimInfo.sprites)
+		return;
+	SetPlrAnims(player);
+	NewPlrAnim(player, player_graphic::Stand, Direction::South);
+}
 
 bool RestoreLevelEntryPlayerInfo(Player &player)
 {

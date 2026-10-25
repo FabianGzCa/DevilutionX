@@ -117,6 +117,8 @@ void ProcessLevelEntries();
 void ReceiveLevelEntry(uint8_t sender, LevelEntryMessage message);
 void CancelLevelEntry(uint8_t player, bool disconnected = false);
 bool RestoreLevelEntryPlayerInfo(Player &player);
+/** A reserved entrant occupies its tile before the commit, so it must have a sprite to draw and hit test. */
+void PrepareLevelEntrantGraphics(Player &player);
 bool IsLevelEntryPending(uint8_t player);
 bool IsLevelEntryBlocked(uint8_t player);
 bool IsLevelEntryResolving();

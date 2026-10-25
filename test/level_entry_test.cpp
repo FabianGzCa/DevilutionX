@@ -15,6 +15,7 @@
 #include "engine/path.h"
 #include "engine/random.hpp"
 #include "game_mode.hpp"
+#include "headless_mode.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/tile_properties.hpp"
 #include "levels/town.h"
@@ -907,6 +908,100 @@ TEST_F(LevelEntryPlacementTest, FragmentedPlayerInfoPreservesPendingAndCommitted
 	EXPECT_EQ(dPlayer[40][50], 1);
 	EXPECT_EQ(dPlayer[45][50], 8);
 	EXPECT_TRUE(VisionActive[7]);
+	FreeCursor();
+	delta_init();
+}
+
+TEST_F(LevelEntryPlacementTest, ReservedEntrantsCanBeDrawnBeforeTheCommit)
+{
+	if (!HaveMainData())
+		LoadGameArchives();
+	if (!HaveMainData())
+		GTEST_SKIP() << "DIABDAT.MPQ not found - skipping entrant graphics";
+	Room();
+	for (uint8_t id = 1; id < 8; ++id)
+		Players[id].plractive = false;
+	MyPlayer->_pLvlChanging = false;
+	MyPlayer->occupyTile(MyPlayer->position.tile, false);
+	FreeCursor();
+	CreatePlayer(Players[7], HeroClass::Warrior);
+	InitCursor();
+	std::strcpy(Players[7]._pName, "Joining");
+	Players[7].setLevel(1);
+	Players[7].position.tile = { 40, 50 };
+	Players[7].position.future = Players[7].position.tile;
+	PlayerNetPack packed { };
+	PackNetPlayer(packed, Players[7]);
+	Players[7] = { };
+	ASSERT_TRUE(SNetInitializeProvider(SELCONN_LOOPBACK, &sgGameInitInfo));
+	GameData wire = sgGameInitInfo;
+	SwapGameDataLE(wire);
+	int playerId;
+	ASSERT_TRUE(SNetCreateGame("draw-test", nullptr, reinterpret_cast<char *>(&wire), sizeof(wire), &playerId));
+	gdwLargestMsgSize = 512;
+	gdwNormalMsgSize = 512;
+	delta_init();
+	const auto receive = [](uint8_t sender, LevelEntryMessage message) {
+		SwapLevelEntryMessageLE(message);
+		ReceiveLevelEntry(sender, message);
+	};
+	const auto receiveInfo = [&](_cmd_id command) {
+		for (size_t offset = 0; offset < sizeof(packed); offset += 193) {
+			const size_t bytes = std::min(size_t(193), sizeof(packed) - offset);
+			std::vector<std::byte> fragment(sizeof(TCmdPlrInfoHdr) + bytes);
+			const TCmdPlrInfoHdr header { command, Swap16LE(static_cast<uint16_t>(offset)), Swap16LE(static_cast<uint16_t>(bytes)) };
+			std::memcpy(fragment.data(), &header, sizeof(header));
+			std::memcpy(fragment.data() + sizeof(header), reinterpret_cast<const std::byte *>(&packed) + offset, bytes);
+			recv_plrinfo(Players[7], *reinterpret_cast<const TCmdPlrInfoHdr *>(fragment.data()), command == CMD_ACK_PLRINFO);
+		}
+	};
+	// Headless runs never load player sprites; a real client does.
+	struct HeadlessRestore {
+		bool value = HeadlessMode;
+		~HeadlessRestore() { HeadlessMode = value; }
+	} restoreHeadless;
+	HeadlessMode = false;
+	// Rendering and cursor hit tests read the sprite of every player that occupies a tile.
+	bool reserved = false;
+	const auto expectDrawable = [&]() {
+		if (dPlayer[45][50] != 8)
+			return;
+		reserved = true;
+		ASSERT_TRUE(Players[7].AnimInfo.sprites.has_value() || Players[7].previewCelSprite.has_value());
+		EXPECT_GT(Players[7].currentSprite().width(), 0);
+	};
+	// A joining client sends its information from NetInit, before it loads the level and requests entry.
+	receiveInfo(CMD_SEND_PLRINFO);
+	auto message = Request(7);
+	receive(7, message);
+	expectDrawable();
+	message.phase = LevelEntryPhase::Assign;
+	message.serial = 8;
+	message.authority = 0;
+	message.voters = Bit(0) | Bit(7);
+	message.members = message.voters;
+	receive(0, message);
+	expectDrawable();
+	message.phase = LevelEntryPhase::Propose;
+	message.x[7] = 45;
+	receive(0, message);
+	expectDrawable();
+	message.phase = LevelEntryPhase::Vote;
+	receive(0, message);
+	expectDrawable();
+	receive(7, message);
+	expectDrawable();
+	ASSERT_TRUE(reserved) << "the entrant should hold its tile before the commit";
+	ASSERT_TRUE(Players[7]._pLvlChanging);
+	// Information completing during the reservation resets graphics; the entrant stays drawable.
+	receiveInfo(CMD_ACK_PLRINFO);
+	expectDrawable();
+	message.phase = LevelEntryPhase::Commit;
+	receive(0, message);
+	ASSERT_FALSE(IsLevelEntryPending(7));
+	EXPECT_EQ(dPlayer[45][50], 8);
+	expectDrawable();
+	EXPECT_EQ(Players[7]._pmode, PM_STAND);
 	FreeCursor();
 	delta_init();
 }

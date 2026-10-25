@@ -2074,6 +2074,33 @@ TEST_F(MultiplayerSyncTest, PartySnapshotRetainsLocalFutureDamageUntilItsScaleCo
 	EXPECT_EQ(GetPartyLevelState(2).monsters[4].damage, 128 * (3360 / 6));
 }
 
+TEST_F(MultiplayerSyncTest, AJoiningClientRestoresItemTransfersBeforeReplayingPlayerInfo)
+{
+	// The host in slot 0 coordinates item transfers and exports the world.
+	MyPlayer->plractive = true;
+	InitItemTransfers();
+	const auto snapshot = Export();
+	// A joining client restores the snapshot before replaying the host's buffered player
+	// information, so the host is connected but not yet active.
+	for (Player &player : Players)
+		player.plractive = false;
+	MyPlayerId = 4;
+	MyPlayer = &Players[4];
+	MyPlayer->plractive = true;
+	player_state[0] = PS_CONNECTED;
+	player_state[4] = PS_CONNECTED;
+	// Same order as NetInit.
+	delta_init();
+	InitItemTransfers();
+	gbDeltaSender = 0;
+	msg_start_resync();
+	for (const auto &message : snapshot)
+		Receive(0, message);
+	ASSERT_TRUE(TestHasCompleteDelta());
+	run_delta_info();
+	EXPECT_FALSE(gbGameDestroyed);
+}
+
 TEST_F(MultiplayerSyncTest, PartySnapshotCannotRewindAppliedDamageReceipts)
 {
 	LoadMonsterData();

@@ -3102,7 +3102,14 @@ void RestoreItemTransferSnapshot()
 			return;
 		}
 	}
-	if (!ItemTransfers.Restore(*ImportedItemTransfers, ItemTransferParticipants()))
+	// A joining client restores the snapshot before it replays the buffered player information
+	// of the peers it is connected to, so those peers are not active yet.
+	uint8_t participants = ItemTransferParticipants();
+	for (size_t i = 0; i < Players.size(); ++i) {
+		if ((player_state[i] & PS_CONNECTED) != 0)
+			participants |= static_cast<uint8_t>(1U << i);
+	}
+	if (!ItemTransfers.Restore(*ImportedItemTransfers, participants))
 		StopItemTransfers();
 	ImportedItemTransfers.reset();
 }

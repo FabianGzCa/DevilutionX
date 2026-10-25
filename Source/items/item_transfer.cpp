@@ -46,7 +46,8 @@ ItemTransferCoordinator::Entry *ItemTransferCoordinator::Find(uint32_t serial)
 
 bool ItemTransferCoordinator::Busy() const
 {
-	return !state_.queued.empty() || std::any_of(state_.entries.begin(), state_.entries.end(), [](const auto &entry) { return entry.has_value(); });
+	return !state_.queued.empty() || std::any_of(state_.earlyVotes.begin(), state_.earlyVotes.end(), [](const auto &entry) { return entry.has_value(); })
+	    || std::any_of(state_.entries.begin(), state_.entries.end(), [](const auto &entry) { return entry.has_value(); });
 }
 
 bool ItemTransferCoordinator::Pending(uint8_t actor) const
@@ -139,7 +140,8 @@ void ItemTransferCoordinator::AcknowledgeDepartures()
 			continue;
 		const bool pending = actor == state_.coordinator ? Busy()
 		                                                 : std::any_of(state_.entries.begin(), state_.entries.end(), [=](const auto &entry) { return entry && (entry->message.voters & Bit(actor)) != 0; })
-		        || std::any_of(state_.queued.begin(), state_.queued.end(), [=](const auto &request) { return request.actor == actor; });
+		        || std::any_of(state_.queued.begin(), state_.queued.end(), [=](const auto &request) { return request.actor == actor; })
+		        || std::any_of(state_.earlyVotes.begin(), state_.earlyVotes.end(), [=](const auto &entry) { return entry && (entry->message.voters & Bit(actor)) != 0; });
 		if (pending)
 			continue;
 		acknowledgedDepartures_ |= Bit(actor);
@@ -177,7 +179,7 @@ void ItemTransferCoordinator::Receive(uint8_t sender, ItemTransferMessage messag
 	    || (message.kind != ItemTransferKind::Creation || message.phase == ItemTransferPhase::Request
 	            ? message.epoch != state_.epochs[message.actor]
 	            : message.epoch > state_.epochs[message.actor])
-	    || message.kind > ItemTransferKind::Creation || message.phase > ItemTransferPhase::Relocate)
+	    || message.kind > ItemTransferKind::MonsterReward || message.phase > ItemTransferPhase::Relocate)
 		return;
 	if (message.phase == ItemTransferPhase::LeaveIntent) {
 		if (sender != message.actor)
@@ -263,7 +265,37 @@ void ItemTransferCoordinator::Receive(uint8_t sender, ItemTransferMessage messag
 		});
 		if (message.kind == ItemTransferKind::Creation && message.epoch == state_.epochs[message.actor])
 			state_.requests[message.actor] = std::max(state_.requests[message.actor], uint32_t { message.request });
+		for (auto &early : state_.earlyVotes) {
+			if (early && early->message.serial == message.serial) {
+				if (Same(early->message, message)) {
+					entry->votes |= early->votes;
+					entry->rejected |= early->rejected;
+				}
+				early.reset();
+			}
+		}
 		Vote(*entry);
+		return;
+	}
+	if (entry == nullptr && message.kind == ItemTransferKind::MonsterReward
+	    && (message.phase == ItemTransferPhase::Ready || message.phase == ItemTransferPhase::Reject)
+	    && message.serial > state_.issued && message.serial - state_.issued <= WindowSize
+	    && (message.voters & Bit(sender)) != 0 && (message.voters & Bit(state_.coordinator)) != 0 && (message.voters & Bit(message.actor)) != 0) {
+		// Other peers can vote before this connection delivers the offer.
+		auto slot = std::find_if(state_.earlyVotes.begin(), state_.earlyVotes.end(), [&](const auto &value) { return value && value->message.serial == message.serial; });
+		if (slot == state_.earlyVotes.end()) {
+			slot = std::find_if(state_.earlyVotes.begin(), state_.earlyVotes.end(), [](const auto &value) { return !value; });
+			if (slot == state_.earlyVotes.end()) {
+				Fail();
+				return;
+			}
+			*slot = Entry { message };
+			(*slot)->message.phase = ItemTransferPhase::Offer;
+		}
+		if (Same((*slot)->message, message)) {
+			(*slot)->votes |= Bit(sender);
+			(*slot)->rejected |= message.phase == ItemTransferPhase::Reject;
+		}
 		return;
 	}
 	if (entry == nullptr || !Same(entry->message, message))
@@ -273,6 +305,7 @@ void ItemTransferCoordinator::Receive(uint8_t sender, ItemTransferMessage messag
 			return;
 		entry->votes |= Bit(sender);
 		entry->rejected |= message.phase == ItemTransferPhase::Reject;
+		DrainDecisions();
 		Decide();
 		return;
 	}
@@ -286,6 +319,10 @@ void ItemTransferCoordinator::Receive(uint8_t sender, ItemTransferMessage messag
 	if (sender != state_.coordinator)
 		return;
 	if (message.phase == ItemTransferPhase::Commit || message.phase == ItemTransferPhase::Cancel) {
+		if (!entry->applied && (message.serial != state_.applied + 1 || (message.kind == ItemTransferKind::MonsterReward && message.phase == ItemTransferPhase::Commit && entry->votes != message.voters))) {
+			entry->deferredDecision = message.phase == ItemTransferPhase::Commit;
+			return;
+		}
 		if (entry->applied) {
 			if (entry->committed != (message.phase == ItemTransferPhase::Commit)) {
 				Fail();
@@ -316,9 +353,14 @@ void ItemTransferCoordinator::Receive(uint8_t sender, ItemTransferMessage messag
 			hooks_.send(acknowledgement);
 		Decide();
 		Finalize();
+		DrainDecisions();
 		return;
 	}
-	if (message.phase != ItemTransferPhase::Finalize || message.serial != state_.finished + 1 || !entry->applied)
+	if (message.phase == ItemTransferPhase::Finalize && (message.serial != state_.finished + 1 || !entry->applied)) {
+		entry->deferredFinalize = true;
+		return;
+	}
+	if (message.phase != ItemTransferPhase::Finalize)
 		return;
 	if (!entry->committed && message.kind == ItemTransferKind::Creation && message.item.bCmd == CMD_SPAWNITEM && Swap16LE(message.item.def.wIndx) != IDI_EAR) {
 		if (state_.deferred.size() >= DeferredSize) {
@@ -338,10 +380,31 @@ void ItemTransferCoordinator::Receive(uint8_t sender, ItemTransferMessage messag
 		}
 	}
 	state_.finished = message.serial;
+	DrainDecisions();
 	AcknowledgeDepartures();
 	Finalize();
 	Decide();
 	Pump(active);
+}
+
+void ItemTransferCoordinator::DrainDecisions()
+{
+	if (stopped_)
+		return;
+	if (auto *entry = Find(state_.applied + 1); entry != nullptr && entry->deferredDecision) {
+		if (entry->message.kind != ItemTransferKind::MonsterReward || !*entry->deferredDecision || entry->votes == entry->message.voters) {
+			auto message = entry->message;
+			message.phase = *entry->deferredDecision ? ItemTransferPhase::Commit : ItemTransferPhase::Cancel;
+			entry->deferredDecision.reset();
+			Receive(state_.coordinator, message, lastActive_);
+		}
+	}
+	if (auto *entry = Find(state_.finished + 1); entry != nullptr && entry->deferredFinalize && entry->applied) {
+		auto message = entry->message;
+		message.phase = ItemTransferPhase::Finalize;
+		entry->deferredFinalize = false;
+		Receive(state_.coordinator, message, lastActive_);
+	}
 }
 
 void ItemTransferCoordinator::Leave(uint8_t player)
@@ -352,7 +415,8 @@ void ItemTransferCoordinator::Leave(uint8_t player)
 	// an undecided transfer must stop the session rather than guess its outcome.
 	if (stopped_)
 		return;
-	const bool involved = std::any_of(state_.entries.begin(), state_.entries.end(), [=](const auto &entry) { return entry && (entry->message.voters & Bit(player)) != 0; });
+	const bool involved = std::any_of(state_.entries.begin(), state_.entries.end(), [=](const auto &entry) { return entry && (entry->message.voters & Bit(player)) != 0; })
+	    || std::any_of(state_.earlyVotes.begin(), state_.earlyVotes.end(), [=](const auto &entry) { return entry && (entry->message.voters & Bit(player)) != 0; });
 	if (involved || (player == state_.coordinator && Busy())) {
 		Fail();
 		return;
@@ -382,13 +446,17 @@ bool ItemTransferCoordinator::Restore(const Snapshot &snapshot, uint8_t active)
 	if (stopped_ || snapshot.finished > snapshot.applied || snapshot.applied > snapshot.issued || snapshot.issued - snapshot.finished > WindowSize || snapshot.coordinator >= PeerCount
 	    || (active & Bit(snapshot.coordinator)) == 0 || !DecodeItemTransfers(EncodeItemTransfers(snapshot)))
 		return false;
+	for (const auto &early : snapshot.earlyVotes) {
+		if (early && (early->message.voters & ~active) != 0)
+			return false;
+	}
 	std::array<bool, WindowSize> serials { };
 	for (const auto &entry : snapshot.entries) {
 		if (!entry)
 			continue;
 		const auto &message = entry->message;
 		if (message.command != CMD_ITEMTRANSFER || message.phase != ItemTransferPhase::Offer
-		    || message.kind > ItemTransferKind::Creation || message.request == 0
+		    || message.kind > ItemTransferKind::MonsterReward || message.request == 0
 		    || message.serial <= snapshot.finished || message.serial > snapshot.issued
 		    || message.actor >= PeerCount
 		    || (message.kind == ItemTransferKind::Creation ? message.epoch > snapshot.epochs[message.actor] : message.epoch != snapshot.epochs[message.actor])
@@ -440,6 +508,17 @@ bool ItemTransferCoordinator::Restore(const Snapshot &snapshot, uint8_t active)
 		}
 	}
 	lastActive_ = active;
+	for (const auto &early : previous.earlyVotes) {
+		if (!early)
+			continue;
+		for (uint8_t sender = 0; sender < PeerCount; ++sender) {
+			if ((early->votes & Bit(sender)) == 0)
+				continue;
+			auto vote = early->message;
+			vote.phase = early->rejected ? ItemTransferPhase::Reject : ItemTransferPhase::Ready;
+			Receive(sender, vote, active);
+		}
+	}
 	for (const auto &entry : state_.entries) {
 		if (!entry || (entry->message.voters & Bit(local_)) == 0)
 			continue;
@@ -449,6 +528,7 @@ bool ItemTransferCoordinator::Restore(const Snapshot &snapshot, uint8_t active)
 		hooks_.send(acknowledgement);
 	}
 	acknowledgedDepartures_ = 0;
+	DrainDecisions();
 	AcknowledgeDepartures();
 	Decide();
 	Finalize();
@@ -500,7 +580,8 @@ std::vector<std::byte> EncodeItemTransfers(const ItemTransferCoordinator::Snapsh
 		data.insert(data.end(), bytes.begin(), bytes.end());
 		data.push_back(static_cast<std::byte>(entry->votes));
 		data.push_back(static_cast<std::byte>((entry->rejected ? 1 : 0) | (entry->decisionSent ? 2 : 0)
-		    | (entry->applied ? 4 : 0) | (entry->committed ? 8 : 0) | (entry->finalizeSent ? 16 : 0)));
+		    | (entry->applied ? 4 : 0) | (entry->committed ? 8 : 0) | (entry->finalizeSent ? 16 : 0)
+		    | (entry->deferredDecision ? (*entry->deferredDecision ? 32 : 64) : 0) | (entry->deferredFinalize ? 128 : 0)));
 		data.push_back(static_cast<std::byte>(entry->acknowledgements));
 	}
 	const uint16_t countDeferred = Swap16LE(static_cast<uint16_t>(snapshot.deferred.size()));
@@ -518,6 +599,18 @@ std::vector<std::byte> EncodeItemTransfers(const ItemTransferCoordinator::Snapsh
 		SwapItemTransferLE(message);
 		const auto bytes = std::as_bytes(std::span(&message, 1));
 		data.insert(data.end(), bytes.begin(), bytes.end());
+	}
+	const auto earlyCount = std::count_if(snapshot.earlyVotes.begin(), snapshot.earlyVotes.end(), [](const auto &entry) { return entry.has_value(); });
+	data.push_back(static_cast<std::byte>(earlyCount));
+	for (const auto &early : snapshot.earlyVotes) {
+		if (!early)
+			continue;
+		auto message = early->message;
+		SwapItemTransferLE(message);
+		const auto bytes = std::as_bytes(std::span(&message, 1));
+		data.insert(data.end(), bytes.begin(), bytes.end());
+		data.push_back(static_cast<std::byte>(early->votes));
+		data.push_back(static_cast<std::byte>(early->rejected ? 1 : 0));
 	}
 	return data;
 }
@@ -559,17 +652,20 @@ std::optional<ItemTransferCoordinator::Snapshot> DecodeItemTransfers(std::span<c
 		SwapItemTransferLE(entry.message);
 		entry.votes = static_cast<uint8_t>(data[offset++]);
 		const uint8_t flags = static_cast<uint8_t>(data[offset++]);
-		if (flags > 31)
+		if ((flags & 96U) == 96U)
 			return std::nullopt;
 		entry.rejected = (flags & 1U) != 0;
 		entry.decisionSent = (flags & 2U) != 0;
 		entry.applied = (flags & 4U) != 0;
 		entry.committed = (flags & 8U) != 0;
 		entry.finalizeSent = (flags & 16U) != 0;
+		if ((flags & 96U) != 0)
+			entry.deferredDecision = (flags & 32U) != 0;
+		entry.deferredFinalize = (flags & 128U) != 0;
 		entry.acknowledgements = static_cast<uint8_t>(data[offset++]);
 		const auto &message = entry.message;
 		if (message.command != CMD_ITEMTRANSFER || message.phase != ItemTransferPhase::Offer
-		    || message.kind > ItemTransferKind::Creation || message.actor >= ItemTransferCoordinator::PeerCount
+		    || message.kind > ItemTransferKind::MonsterReward || message.actor >= ItemTransferCoordinator::PeerCount
 		    || message.request == 0 || message.serial <= snapshot.finished || message.serial > snapshot.issued
 		    || (message.kind == ItemTransferKind::Creation ? message.epoch > snapshot.epochs[message.actor] : message.epoch != snapshot.epochs[message.actor]) || (message.voters & Bit(snapshot.coordinator)) == 0
 		    || (message.kind != ItemTransferKind::Creation && (message.voters & Bit(message.actor)) == 0) || (entry.votes & ~message.voters) != 0 || (entry.acknowledgements & ~message.voters) != 0
@@ -607,14 +703,14 @@ std::optional<ItemTransferCoordinator::Snapshot> DecodeItemTransfers(std::span<c
 	std::memcpy(&queuedCount, data.data() + offset, sizeof(queuedCount));
 	offset += sizeof(queuedCount);
 	queuedCount = Swap16LE(queuedCount);
-	if (queuedCount > ItemTransferCoordinator::MaxQueuedRequests || data.size() - offset != queuedCount * sizeof(ItemTransferMessage))
+	if (queuedCount > ItemTransferCoordinator::MaxQueuedRequests || data.size() - offset < queuedCount * sizeof(ItemTransferMessage) + 1)
 		return std::nullopt;
 	for (size_t i = 0; i < queuedCount; ++i) {
 		ItemTransferMessage message;
 		std::memcpy(&message, data.data() + offset, sizeof(message));
 		offset += sizeof(message);
 		SwapItemTransferLE(message);
-		if (message.command != CMD_ITEMTRANSFER || message.phase != ItemTransferPhase::Request || message.kind > ItemTransferKind::Creation
+		if (message.command != CMD_ITEMTRANSFER || message.phase != ItemTransferPhase::Request || message.kind > ItemTransferKind::MonsterReward
 		    || message.actor >= ItemTransferCoordinator::PeerCount || message.request == 0 || message.serial != 0 || message.voters != 0
 		    || (message.kind == ItemTransferKind::Creation ? message.epoch > snapshot.epochs[message.actor] : message.epoch != snapshot.epochs[message.actor])
 		    || (message.epoch == snapshot.epochs[message.actor] && message.request > snapshot.requests[message.actor]))
@@ -622,6 +718,27 @@ std::optional<ItemTransferCoordinator::Snapshot> DecodeItemTransfers(std::span<c
 		if (std::any_of(snapshot.queued.begin(), snapshot.queued.end(), [&](const auto &previous) { return previous.actor == message.actor && previous.epoch == message.epoch && previous.request == message.request; }))
 			return std::nullopt;
 		snapshot.queued.push_back(message);
+	}
+	const auto earlyCount = static_cast<uint8_t>(data[offset++]);
+	if (earlyCount > ItemTransferCoordinator::WindowSize || data.size() - offset != earlyCount * (sizeof(ItemTransferMessage) + 2))
+		return std::nullopt;
+	for (size_t i = 0; i < earlyCount; ++i) {
+		ItemTransferCoordinator::Entry early;
+		std::memcpy(&early.message, data.data() + offset, sizeof(early.message));
+		offset += sizeof(early.message);
+		SwapItemTransferLE(early.message);
+		early.votes = static_cast<uint8_t>(data[offset++]);
+		const uint8_t rejected = static_cast<uint8_t>(data[offset++]);
+		early.rejected = rejected != 0;
+		const auto &message = early.message;
+		if (message.command != CMD_ITEMTRANSFER || message.phase != ItemTransferPhase::Offer || message.kind != ItemTransferKind::MonsterReward
+		    || message.actor >= ItemTransferCoordinator::PeerCount || message.request == 0 || message.epoch != snapshot.epochs[message.actor]
+		    || message.serial <= snapshot.issued || message.serial - snapshot.issued > ItemTransferCoordinator::WindowSize
+		    || (message.voters & Bit(snapshot.coordinator)) == 0 || (message.voters & Bit(message.actor)) == 0
+		    || early.votes == 0 || (early.votes & ~message.voters) != 0 || rejected > 1
+		    || std::any_of(snapshot.earlyVotes.begin(), snapshot.earlyVotes.end(), [&](const auto &previous) { return previous && previous->message.serial == message.serial; }))
+			return std::nullopt;
+		snapshot.earlyVotes[i] = early;
 	}
 	return snapshot;
 }

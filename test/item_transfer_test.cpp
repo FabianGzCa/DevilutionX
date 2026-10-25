@@ -38,18 +38,20 @@ protected:
 			peers[id].Reset(id, {
 			                        .reserve = [&, id](const ItemTransferMessage &message) {
 				    const bool pickup = message.kind == ItemTransferKind::ManualPickup || message.kind == ItemTransferKind::AutoPickup;
-				    if (!allowed[id] || (pickup ? floors[id] == 0 : floors[id] + reservations[id] >= MAXITEMS))
+				    if (!allowed[id] || (message.kind != ItemTransferKind::MonsterReward && (pickup ? floors[id] == 0 : floors[id] + reservations[id] >= MAXITEMS)))
 					    return false;
 				    ++reservations[id];
 				    return true; },
 			                        .commit = [&, id](const ItemTransferMessage &message) {
 				    ++committed[id];
 				    const bool pickup = message.kind == ItemTransferKind::ManualPickup || message.kind == ItemTransferKind::AutoPickup;
-				    if (pickup)
-					    --floors[id];
-				    else
-					    ++floors[id];
-				    if (message.actor == id && message.kind != ItemTransferKind::Creation) {
+				    if (message.kind != ItemTransferKind::MonsterReward) {
+					    if (pickup)
+						    --floors[id];
+					    else
+						    ++floors[id];
+				    }
+				    if (message.actor == id && IsPrivateItemTransfer(message.kind)) {
 					    if (pickup)
 						    ++inventories[id];
 					    else
@@ -551,6 +553,74 @@ TEST_F(ItemTransferTest, RelocationPreservesTheRewardOriginAndCannotReplayAfterP
 	Drain(73);
 	for (unsigned id = 0; id < 8; ++id) {
 		EXPECT_EQ(floors[id], MAXITEMS - 1);
+		EXPECT_EQ(committed[id], 2U);
+		EXPECT_FALSE(peers[id].Busy());
+		EXPECT_FALSE(terminated[id]);
+	}
+}
+
+TEST_F(ItemTransferTest, RewardVotesBeforeTheOfferSurviveSnapshotAndCompleteOnEveryReplica)
+{
+	ItemTransferMessage request;
+	request.kind = ItemTransferKind::MonsterReward;
+	request.actor = 4;
+	request.request = 1;
+	Broadcast(4, request);
+	DrainExcept(5);
+	std::deque<Envelope> coordinator;
+	for (auto it = inbox[5].begin(); it != inbox[5].end();) {
+		if (it->sender == 0) {
+			coordinator.push_back(*it);
+			it = inbox[5].erase(it);
+		} else {
+			++it;
+		}
+	}
+	ASSERT_FALSE(coordinator.empty());
+	while (Step(5)) { }
+	EXPECT_EQ(reservations[5], 0U);
+	const auto snapshot = DecodeItemTransfers(EncodeItemTransfers(peers[5].State()));
+	ASSERT_TRUE(snapshot);
+	ASSERT_TRUE(std::any_of(snapshot->earlyVotes.begin(), snapshot->earlyVotes.end(), [](const auto &entry) { return entry.has_value(); }));
+	ASSERT_TRUE(peers[5].Restore(*snapshot, active));
+	for (const auto &envelope : coordinator)
+		peers[5].Receive(envelope.sender, envelope.message, active);
+	Drain(17019);
+	for (uint8_t peer = 0; peer < 8; ++peer) {
+		EXPECT_EQ(committed[peer], 1U);
+		EXPECT_FALSE(peers[peer].Busy());
+		EXPECT_FALSE(terminated[peer]);
+	}
+}
+
+TEST_F(ItemTransferTest, MonsterRewardsWaitForEveryContributionFenceBeforeLaterDecisions)
+{
+	ItemTransferMessage request;
+	request.kind = ItemTransferKind::MonsterReward;
+	request.actor = 4;
+	request.request = 1;
+	Broadcast(4, request);
+	DrainExcept(7);
+	while (reservations[7] == 0)
+		ASSERT_TRUE(Step(7));
+	const auto delayed = std::find_if(inbox[7].begin(), inbox[7].end(), [](const auto &envelope) { return envelope.sender == 6 && envelope.message.phase == ItemTransferPhase::Ready; });
+	ASSERT_NE(delayed, inbox[7].end());
+	const Envelope fence = *delayed;
+	inbox[7].erase(delayed);
+	Drain();
+	EXPECT_EQ(committed[0], 1U);
+	EXPECT_EQ(committed[7], 0U);
+	Request(5, 1);
+	Drain();
+	EXPECT_EQ(committed[0], 2U);
+	EXPECT_EQ(committed[7], 0U);
+	const auto snapshot = DecodeItemTransfers(EncodeItemTransfers(peers[7].State()));
+	ASSERT_TRUE(snapshot);
+	ASSERT_TRUE(peers[7].Restore(*snapshot, active));
+	EXPECT_EQ(committed[7], 0U);
+	peers[7].Receive(fence.sender, fence.message, active);
+	Drain(17001);
+	for (unsigned id = 0; id < 8; ++id) {
 		EXPECT_EQ(committed[id], 2U);
 		EXPECT_FALSE(peers[id].Busy());
 		EXPECT_FALSE(terminated[id]);

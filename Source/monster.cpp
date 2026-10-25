@@ -4,6 +4,8 @@
  * Implementation of monster functionality, AI, actions, spawning, loading, etc.
  */
 #include "monster.h"
+#include "monsters/party_balance.hpp"
+#include "monsters/party_scaling.hpp"
 
 #include <algorithm>
 #include <array>
@@ -277,6 +279,7 @@ void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point positio
 		monster.armorClass += HellAcBonus;
 		monster.resistance = monster.data().resistanceHell;
 	}
+	InitializePartyMonster(monster);
 }
 
 bool CanPlaceMonster(Point position)
@@ -350,7 +353,12 @@ void PlaceGroup(size_t typeIndex, size_t num, Monster *leader = nullptr, bool le
 			if (leader != nullptr) {
 				Monster &minion = Monsters[ActiveMonsterCount];
 				minion.maxHitPoints *= 2;
+				minion.partyNativeMax *= 2;
 				minion.hitPoints = minion.maxHitPoints;
+				if (IsPartyBalanceEnabled()) {
+					minion.maxHitPoints = minion.hitPoints = minion.partyNativeMax;
+					InitializePartyMonster(minion);
+				}
 				minion.intelligence = leader->intelligence;
 
 				if (leashed) {
@@ -1126,7 +1134,8 @@ void MonsterAttackMonster(Monster &attacker, Monster &target, int hper, int mind
 		return;
 
 	const int dam = RandomIntBetween(mind, maxd) << 6;
-	ApplyMonsterDamage(DamageType::Physical, target, Fixed26_6::fromRaw(dam));
+	if (IsPartyDamageAuthority(&attacker))
+		ApplyMonsterDamage(DamageType::Physical, target, Fixed26_6::fromRaw(dam), attacker.isPlayerMinion());
 
 	if (attacker.isPlayerMinion()) {
 		const auto playerId = static_cast<size_t>(attacker.goalVar3);
@@ -3282,6 +3291,7 @@ void InitGolem(devilution::Monster &monster, uint8_t golemOwnerPlayerId, int16_t
 	monster.minDamage = 2 * (golemSpellLevel + 4);
 	monster.maxDamage = 2 * (golemSpellLevel + 8);
 	UpdateEnemy(monster);
+	InitializePartyMonster(monster);
 }
 
 bool PosOkMissile(Point position)
@@ -3431,6 +3441,7 @@ std::expected<void, std::string> PrepareUniqueMonst(Monster &monster, UniqueMons
 		monster.flags &= ~MFLAG_ALLOW_SPECIAL;
 		monster.mode = MonsterMode::Stand;
 	}
+	InitializePartyMonster(monster);
 	return {};
 }
 
@@ -3693,10 +3704,18 @@ void WeakenNaKrul()
 	Monster &monster = Monsters[UberDiabloMonsterIndex];
 	PlayEffect(monster, MonsterSound::Death);
 	monster.armorClass -= 50;
-	const Fixed26_6 hp = monster.maxHitPoints / 2;
+	const Fixed26_6 hp = (IsPartyBalanceEnabled() ? monster.partyNativeMax : monster.maxHitPoints) / 2;
 	monster.resistance = 0;
 	monster.hitPoints = hp;
 	monster.maxHitPoints = hp;
+	if (IsPartyBalanceEnabled()) {
+		monster.partyNativeMax = hp;
+		monster.partyLastHitPoints = hp;
+		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
+		state.nativeMax = hp.raw();
+		state.damage = 0;
+		RestorePartyMonsters();
+	}
 }
 
 void InitGolems()
@@ -3892,9 +3911,11 @@ void AddDoppelganger(Monster &monster)
 	}
 }
 
-void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage)
+void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage, bool playerDamage)
 {
 	lua::OnMonsterTakeDamage(&monster, damage.raw(), static_cast<int>(damageType));
+	if (ApplyPartyMonsterDamage(monster, damage, playerDamage))
+		return;
 
 	monster.hitPoints -= damage;
 
@@ -4024,7 +4045,30 @@ void M_StartHit(Monster &monster, const Player &player, int dam)
 
 void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 {
-	if (!monster.isPlayerMinion())
+	const bool party = IsPartyBalanceEnabled() && !monster.isPlayerMinion();
+	if (IsPartyBalanceEnabled() && monster.isPlayerMinion()) {
+		if (monster.partyDeathStarted)
+			return;
+		ReconcilePartyMonster(monster);
+		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
+		state.flags |= PartyMonsterDead | PartyMonsterRewarded;
+		state.deathParticipants = std::max<uint8_t>(1, GetPartyLevelState(CurrentPartyLevel()).participants);
+		monster.partyDeathStarted = true;
+		SyncPartyMonsterDelta(CurrentPartyLevel(), monster.getId());
+	}
+	if (party) {
+		if (monster.partyDeathStarted)
+			return;
+		ReconcilePartyMonster(monster);
+		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
+		if ((state.flags & PartyMonsterDead) == 0) {
+			state.flags |= PartyMonsterDead;
+			state.killer = MyPlayerId;
+			state.deathParticipants = std::max<uint8_t>(1, GetPartyLevelState(CurrentPartyLevel()).participants);
+		}
+		monster.partyDeathStarted = true;
+	}
+	if (!party && !monster.isPlayerMinion())
 		AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), monster.exp(sgGameInitInfo.nDifficulty), monster.whoHit);
 
 	MonsterKillCounts[monster.type().type]++;
@@ -4034,11 +4078,13 @@ void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 	monster.flags &= ~MFLAG_HIDDEN;
 	SetRndSeed(monster.rndItemSeed);
 
-	SpawnLoot(monster, sendmsg);
+	if (!party)
+		SpawnLoot(monster, sendmsg);
 
-	if (monster.type().type == MT_DIABLO)
-		DiabloDeath(monster, true);
-	else
+	if (monster.type().type == MT_DIABLO) {
+		if (!party)
+			DiabloDeath(monster, true);
+	} else
 		PlayEffect(monster, MonsterSound::Death);
 
 	if (monster.mode != MonsterMode::Petrified) {
@@ -4055,7 +4101,8 @@ void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 	monster.position.future = monster.position.old;
 	M_ClearSquares(monster);
 	monster.occupyTile(monster.position.tile, false);
-	CheckQuestKill(monster, sendmsg);
+	if (!party)
+		CheckQuestKill(monster, sendmsg);
 	M_FallenFear(monster.position.tile);
 	if (IsAnyOf(monster.type().type, MT_NACID, MT_RACID, MT_BACID, MT_XACID, MT_SPIDLORD))
 		AddMissile(monster.position.tile, { 0, 0 }, Direction::South, MissileID::AcidPuddle, TARGET_PLAYERS, monster, monster.intelligence + 1, 0);
@@ -4070,9 +4117,49 @@ void StartMonsterDeath(Monster &monster, const Player &player, bool sendmsg)
 
 void KillGolem(Monster &golem)
 {
+	if (IsPartyBalanceEnabled()) {
+		ApplyMonsterDamage(DamageType::Physical, golem, golem.hitPoints);
+		if (!golem.partyDeathStarted)
+			M_StartKill(golem, *MyPlayer);
+		return;
+	}
 	delta_kill_monster(golem, golem.position.tile, *MyPlayer);
 	NetSendCmdLocParam1(false, CMD_MONSTDEATH, golem.position.tile, static_cast<uint16_t>(golem.getId()));
 	M_StartKill(golem, *MyPlayer);
+}
+
+bool IsPartyRandomLoot(uint16_t type, uint8_t unique)
+{
+	if (type >= MonstersData.size() || type == MT_HORKSPWN || type == MT_NAKRUL)
+		return false;
+	if (unique == static_cast<uint8_t>(UniqueMonsterType::Garbud) || unique == static_cast<uint8_t>(UniqueMonsterType::Defiler) || unique == static_cast<uint8_t>(UniqueMonsterType::HorkDemon))
+		return false;
+	const auto treasure = MonstersData[type].treasure;
+	return (treasure & T_NODROP) == 0 && ((treasure & T_UNIQ) == 0 || UseMultiplayerQuests());
+}
+void FinalizePartyMonsterReward(Monster &monster, bool sendmsg, uint8_t participants, uint8_t extraRolls)
+{
+	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, participants);
+	if (!scale || monster.isPlayerMinion())
+		return;
+	AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), scale->Experience(monster.exp(sgGameInitInfo.nDifficulty)), monster.whoHit);
+	const uint32_t previousSeed = GetLCGEngineState();
+	SetRndSeed(monster.rndItemSeed);
+	SpawnLoot(monster, sendmsg);
+	const uint32_t nativeSeed = GetLCGEngineState();
+	if (extraRolls != 0 && IsPartyRandomLoot(monster.type().type, static_cast<uint8_t>(monster.uniqueType))) {
+		SpawnItem(monster, monster.position.tile, sendmsg);
+		SetRndSeed(nativeSeed);
+	}
+	CheckQuestKill(monster, sendmsg);
+	if (monster.type().type == MT_DIABLO)
+		DiabloDeath(monster, true);
+	SetRndSeed(previousSeed);
+}
+
+void StartPartyMonsterDeath(Monster &monster, const Player &player)
+{
+	MonsterDeath(monster, GetDirection(monster.position.tile, player.position.tile), false);
 }
 
 void M_StartKill(Monster &monster, const Player &player)
@@ -4261,7 +4348,7 @@ void DeleteMonsterList()
 	}
 
 	for (size_t i = ReservedMonsterSlotsForGolems; i < ActiveMonsterCount;) {
-		if (Monsters[ActiveMonsters[i]].isInvalid) {
+		if (Monsters[ActiveMonsters[i]].isInvalid && !IsPartyMonsterRewardPending(Monsters[ActiveMonsters[i]])) {
 			if (pcursmonst == static_cast<int>(ActiveMonsters[i])) // Unselect monster if player highlighted it
 				pcursmonst = -1;
 			DeleteMonster(i);

@@ -66,6 +66,7 @@
 #include "levels/trigs.h"
 #include "lighting.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "utils/is_of.hpp"
 #include "utils/str_cat.hpp"
 
@@ -1050,7 +1051,8 @@ bool MonsterTrapHit(Monster &monster, int mindam, int maxdam, int dist, MissileI
 		dam <<= 6;
 	if (resist)
 		dam /= 4;
-	ApplyMonsterDamage(damageType, monster, Fixed26_6::fromRaw(dam));
+	if (IsPartyDamageAuthority())
+		ApplyMonsterDamage(damageType, monster, Fixed26_6::fromRaw(dam), false);
 #ifdef _DEBUG
 	if (DebugGodMode)
 		monster.hitPoints = Fixed26_6::fromInt(0);

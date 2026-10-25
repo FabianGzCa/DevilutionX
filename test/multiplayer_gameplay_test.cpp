@@ -22,6 +22,7 @@
 
 #include "diablo.h"
 #include "engine/assets.hpp"
+#include "monsters/party_balance.hpp"
 #include "quests.h"
 
 extern char **environ;
@@ -361,6 +362,82 @@ TEST_F(MultiplayerGameplayTest, EveryPlayerCanHitEveryOtherPlayerAndSharedPoolsR
 		EXPECT_EQ(missiles, 256U);
 		EXPECT_EQ(objects, 127U);
 	}
+}
+
+TEST_F(MultiplayerGameplayTest, PartyScaleSurvivesLateDamageDeathResurrectionAndSplitGroups)
+{
+	const auto value = [&](unsigned peer, unsigned column) {
+		std::istringstream row(results[peer].substr(results[peer].rfind('\n') + 1));
+		uint64_t result = 0;
+		for (unsigned i = 0; i <= column; ++i)
+			row >> result;
+		return result;
+	};
+	const auto agree = [&]() {
+		for (unsigned peer = 1; peer < 8; ++peer)
+			EXPECT_EQ(results[peer].substr(results[peer].rfind('\n')), results[0].substr(results[0].rfind('\n'))) << peer;
+	};
+	ASSERT_NO_FATAL_FAILURE(Command("party-init"));
+	ASSERT_NO_FATAL_FAILURE(Command("party-spawn"));
+	ASSERT_NO_FATAL_FAILURE(Command("measure"));
+	agree();
+	EXPECT_EQ(value(0, 0), 4U);
+	const uint64_t native = value(0, 2);
+	ASSERT_GT(native, 10U * 64);
+	ASSERT_NO_FATAL_FAILURE(Command("party-stage-hit", 1));
+	ASSERT_NO_FATAL_FAILURE(Command("party-move", 4, 1));
+	ASSERT_NO_FATAL_FAILURE(Command("party-release-hit", 1));
+	agree();
+	EXPECT_EQ(value(0, 0), 5U);
+	EXPECT_EQ(value(0, 4), (native - 10 * 64) * 5 / 4);
+	const auto after = value(0, 4);
+	ASSERT_NO_FATAL_FAILURE(Command("party-buffer", 7));
+	ASSERT_NO_FATAL_FAILURE(Command("party-export", 7));
+	agree();
+	EXPECT_EQ(value(7, 4), after);
+	ASSERT_NO_FATAL_FAILURE(Command("party-replay-hit", 1));
+	agree();
+	EXPECT_EQ(value(0, 4), after);
+	ASSERT_NO_FATAL_FAILURE(Command("party-move", 4, 0));
+	agree();
+	EXPECT_EQ(value(0, 0), 5U);
+	EXPECT_EQ(value(0, 4), after);
+	ASSERT_NO_FATAL_FAILURE(Command("party-move", 4, 1));
+	ASSERT_NO_FATAL_FAILURE(Command("party-dead", 4));
+	ASSERT_NO_FATAL_FAILURE(Command("party-move", 5, 1));
+	agree();
+	EXPECT_EQ(value(0, 0), 6U);
+	ASSERT_NO_FATAL_FAILURE(Command("resurrect", 4));
+	ASSERT_NO_FATAL_FAILURE(Command("party-move", 6, 1));
+	agree();
+	EXPECT_EQ(value(0, 0), 7U);
+	ASSERT_NO_FATAL_FAILURE(Command("party-move", 7, 1));
+	agree();
+	EXPECT_EQ(value(0, 0), 8U);
+	EXPECT_EQ(value(0, 4), (native - 10 * 64) * 2);
+	for (unsigned peer = 1; peer < 8; ++peer)
+		ASSERT_NO_FATAL_FAILURE(Command("party-move", peer, 0));
+	agree();
+	EXPECT_EQ(value(0, 0), 8U);
+	EXPECT_EQ(value(0, 4), (native - 10 * 64) * 2);
+	ASSERT_NO_FATAL_FAILURE(Command("party-kill", 0));
+	agree();
+	EXPECT_EQ(value(0, 4), 0U);
+	EXPECT_NE(value(0, 6) & PartyMonsterRewarded, 0U);
+	const auto experience = Value(0, 4);
+	EXPECT_GT(experience, 0U);
+	ASSERT_NO_FATAL_FAILURE(Command("party-replay-hit", 1));
+	EXPECT_EQ(Value(0, 4), experience);
+	ASSERT_NO_FATAL_FAILURE(Command("party-move", 4, 1));
+	agree();
+	EXPECT_EQ(value(0, 4), 0U);
+	EXPECT_EQ(Value(0, 4), experience);
+	ASSERT_NO_FATAL_FAILURE(Command("party-buffer", 7));
+	ASSERT_NO_FATAL_FAILURE(Command("party-export", 7));
+	agree();
+	ASSERT_NO_FATAL_FAILURE(Command("party-replay-hit", 1));
+	EXPECT_EQ(Value(0, 4), experience);
+	EXPECT_EQ(value(7, 4), 0U);
 }
 
 TEST_F(MultiplayerGameplayTest, EightMeleeAttackersShareBossDeathsLootAndQuestCompletion)

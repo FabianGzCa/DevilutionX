@@ -22,6 +22,7 @@
 #include "lighting.h"
 #include "missiles.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "monsters/party_scaling.hpp"
 #include "monsters/validation.hpp"
 #include "multi.h"
@@ -558,6 +559,351 @@ TEST_F(MonsterSummonsTest, FixedDamageBenchmarkPreservesFourPlayerKillTimeAndExp
 			RecordProperty(key + "_xp_per_contributor_before_caps", share);
 		}
 	}
+}
+
+TEST_F(MonsterSummonsTest, PartyDamageAndEntryCommitsCommuteAtFractionalBoundaries)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 4, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	monster->maxHitPoints = monster->hitPoints = Fixed26_6::fromInt(100);
+	InitializePartyMonster(*monster);
+	CapturePartyMonsters();
+	const auto initial = GetPartyLevelState(1);
+	const auto damage = [&](uint8_t actor, uint32_t amount) {
+		PartyDamageMessage message { CMD_PARTYMONSTDAMAGE, 1, 4, 0, 1, static_cast<uint16_t>(monster->getId()), amount,
+			monster->partyGeneration, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
+		ReceivePartyMonsterDamage(actor, message);
+	};
+	damage(1, 1);
+	damage(2, 3);
+	CommitPartyLevel(1, 5, 0, 0, 16);
+	const int32_t expected = monster->hitPoints.raw();
+	const int64_t debt = GetPartyLevelState(1).monsters[monster->getId()].damage;
+	GetPartyLevelState(1) = initial;
+	monster->hitPoints = monster->maxHitPoints = Fixed26_6::fromInt(100);
+	monster->partyLastHitPoints = monster->hitPoints;
+	monster->partyParticipants = 4;
+	monster->whoHit = { };
+	CommitPartyLevel(1, 5, 0, 0, 16);
+	damage(2, 3);
+	damage(1, 1);
+	EXPECT_EQ(monster->hitPoints.raw(), expected);
+	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].damage, debt);
+	EXPECT_EQ(monster->whoHit.bits, 6);
+	CommitPartyLevel(1, 4, 0, 0, 24);
+	EXPECT_EQ(GetPartyLevelState(1).participants, 5);
+	EXPECT_EQ(monster->hitPoints.raw(), expected);
+}
+
+TEST_F(MonsterSummonsTest, PartySnapshotsRetainFutureDamageAndReceiptWatermarks)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 4, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	monster->maxHitPoints = monster->hitPoints = Fixed26_6::fromInt(100);
+	InitializePartyMonster(*monster);
+	CapturePartyMonsters();
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 1, 5, 0, 1, static_cast<uint16_t>(monster->getId()), 128,
+		monster->partyGeneration, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
+	ReceivePartyMonsterDamage(7, damage);
+	ASSERT_EQ(GetPartyLevelState(1).pending.size(), 1U);
+	const auto bytes = EncodePartyLevel(GetPartyLevelState(1));
+	const auto restored = DecodePartyLevel(bytes);
+	ASSERT_TRUE(restored);
+	GetPartyLevelState(1) = *restored;
+	CommitPartyLevel(1, 5, 0, 0, 16);
+	EXPECT_TRUE(GetPartyLevelState(1).pending.empty());
+	EXPECT_EQ(monster->hitPoints.raw(), 125 * 64 - 128);
+	const auto after = monster->hitPoints;
+	ReceivePartyMonsterDamage(7, damage);
+	EXPECT_EQ(monster->hitPoints, after);
+	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].receipts[7], 1U);
+	ASSERT_TRUE(ResetPartyMonster(1, monster->getId(), 8));
+	ReceivePartyMonsterDamage(7, damage);
+	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].flags, PartyMonsterExpected);
+}
+
+TEST_F(MonsterSummonsTest, PartyCodecRejectsEveryTruncationAndMalformedHealth)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 4, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	CapturePartyMonsters();
+	const auto bytes = EncodePartyLevel(GetPartyLevelState(1));
+	ASSERT_TRUE(DecodePartyLevel(bytes));
+	for (size_t size = 0; size < bytes.size(); ++size)
+		EXPECT_FALSE(DecodePartyLevel(std::span(bytes).first(size))) << size;
+	auto trailing = bytes;
+	trailing.push_back(std::byte { 0 });
+	EXPECT_FALSE(DecodePartyLevel(trailing));
+	auto state = GetPartyLevelState(1).monsters[monster->getId()];
+	state.nativeMax = -1;
+	EXPECT_FALSE(DecodePartyMonster(EncodePartyMonster(state)));
+	state = GetPartyLevelState(1).monsters[monster->getId()];
+	state.damage = static_cast<int64_t>(state.nativeMax) * PartyDamageUnits + 1;
+	EXPECT_FALSE(DecodePartyMonster(EncodePartyMonster(state)));
+}
+
+TEST_F(MonsterSummonsTest, PartyHealthPreservesDeathAndNativeGolemStats)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 4, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	CapturePartyMonsters();
+	auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	state.flags |= PartyMonsterDead;
+	state.deathParticipants = 4;
+	RestorePartyMonsters();
+	ASSERT_TRUE(monster->hasNoLife());
+	CommitPartyLevel(1, 8, 0, 0, 16);
+	EXPECT_TRUE(monster->hasNoLife());
+	EXPECT_TRUE(IsPartyMonsterRewardPending(*monster));
+	SpawnGolem(Players[0], { 60, 70 }, 3);
+	Monster *golem = FindGolemForPlayer(Players[0]);
+	ASSERT_NE(golem, nullptr);
+	const auto native = golem->maxHitPoints;
+	CapturePartyMonsters();
+	EXPECT_EQ(golem->maxHitPoints, native);
+	EXPECT_FALSE(IsPartyMonsterRewardPending(*golem));
+}
+
+TEST_F(MonsterSummonsTest, PartyScaleCommitCannotReviveFractionalNativeDeath)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 4, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	monster->hitPoints = Fixed26_6::fromRaw(63);
+	CommitPartyLevel(1, 8, 0, 0, 16);
+	EXPECT_TRUE(monster->hasNoLife());
+	EXPECT_EQ(monster->hitPoints.raw(), 0);
+	EXPECT_TRUE(IsPartyMonsterRewardPending(*monster));
+}
+
+TEST_F(MonsterSummonsTest, PartyRewardCreditsAdvanceOnceAndPreserveUnrelatedRandomState)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 5, 0, 0, 8);
+	for (unsigned death = 1; death <= 4; ++death) {
+		Monster *monster = AddMonster({ static_cast<WorldTileCoord>(40 + death), 40 }, Direction::South, 1, true);
+		ASSERT_NE(monster, nullptr);
+		monster->tag(*MyPlayer);
+		CapturePartyMonsters();
+		const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+		PartyMonsterReward reward { CMD_PARTYREWARD, static_cast<uint16_t>(monster->getId()), state.generation,
+			state.nativeMax, state.type, state.unique, 5, static_cast<uint8_t>(40 + death), 40 };
+		ASSERT_TRUE(ReservePartyReward(1, reward));
+		const auto seed = GetLCGEngineState();
+		ASSERT_TRUE(CommitPartyReward(1, reward, MyPlayerId));
+		EXPECT_EQ(GetPartyLevelState(1).lootRemainder, death % 4);
+		EXPECT_EQ(GetLCGEngineState(), seed);
+		const auto experience = MyPlayer->_pExperience;
+		ASSERT_TRUE(CommitPartyReward(1, reward, MyPlayerId));
+		EXPECT_EQ(GetPartyLevelState(1).lootRemainder, death % 4);
+		EXPECT_EQ(MyPlayer->_pExperience, experience);
+		EXPECT_EQ(GetLCGEngineState(), seed);
+	}
+}
+
+TEST_F(MonsterSummonsTest, PartyRewardRejectionDoesNotKillAnotherIncarnation)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	CapturePartyMonsters();
+	const auto health = monster->hitPoints;
+	const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	PartyMonsterReward reward { CMD_PARTYREWARD, static_cast<uint16_t>(monster->getId()), state.generation + 1,
+		state.nativeMax, state.type, state.unique, 8, 40, 40 };
+	EXPECT_FALSE(ReservePartyReward(1, reward));
+	EXPECT_EQ(monster->hitPoints, health);
+	EXPECT_EQ(state.flags & PartyMonsterDead, 0);
+	reward.generation = state.generation;
+	++reward.nativeMax;
+	EXPECT_FALSE(ReservePartyReward(1, reward));
+	EXPECT_EQ(monster->hitPoints, health);
+	EXPECT_EQ(state.flags & PartyMonsterDead, 0);
+}
+
+TEST_F(MonsterSummonsTest, PartySpawnReceiptsAndDepartedContributorsCannotBeReused)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	const auto first = AssignPartySpawnGeneration(*monster);
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 1, 8, 0, 1, static_cast<uint16_t>(monster->getId()), 64,
+		first, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
+	ReceivePartyMonsterDamage(7, damage);
+	auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	EXPECT_EQ(state.contributors, 128);
+	const auto debt = state.damage;
+	LeavePartyBalance(7);
+	EXPECT_EQ(state.contributors, 0);
+	EXPECT_EQ(state.receipts[7], 0U);
+	EXPECT_EQ(state.damage, debt);
+	const auto second = AssignPartySpawnGeneration(*monster);
+	ASSERT_NE(first, second);
+	ReceivePartyMonsterDamage(7, damage);
+	EXPECT_EQ(state.receipts[7], 0U);
+	EXPECT_EQ(state.damage, debt);
+}
+
+TEST_F(MonsterSummonsTest, PartyDamageWaitsForItsSpawnAcrossDifferentConnections)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	const auto oldGeneration = monster->partyGeneration;
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 1, 8, 0, 1, static_cast<uint16_t>(monster->getId()), 128,
+		8, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
+	ReceivePartyMonsterDamage(7, damage);
+	EXPECT_EQ(monster->partyGeneration, oldGeneration);
+	ASSERT_EQ(GetPartyLevelState(1).pending.size(), 1U);
+	ASSERT_TRUE(ResetPartyMonster(1, monster->getId(), 8));
+	monster->maxHitPoints = monster->hitPoints = monster->partyNativeMax;
+	InitializePartyMonster(*monster);
+	DrainPartyDamage(1);
+	EXPECT_TRUE(GetPartyLevelState(1).pending.empty());
+	EXPECT_EQ(monster->partyGeneration, 8U);
+	EXPECT_EQ(monster->hitPoints, monster->maxHitPoints - Fixed26_6::fromRaw(128));
+	const auto after = monster->hitPoints;
+	ReceivePartyMonsterDamage(7, damage);
+	EXPECT_EQ(monster->hitPoints, after);
+	EXPECT_FALSE(ResetPartyMonster(1, monster->getId(), 0));
+}
+
+TEST_F(MonsterSummonsTest, PartyEarlySyncDoesNotSuppressSpawnOrReviveItsReplayedGeneration)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	MyPlayerId = 7;
+	MyPlayer = &Players[7];
+	PartyMonsterState incoming;
+	incoming.generation = 8;
+	incoming.nativeMax = 6400;
+	incoming.type = MT_NZOMBIE;
+	incoming.flags = PartyMonsterKnown;
+	incoming.x = incoming.y = 40;
+	std::array<std::byte, sizeof(TSyncPartyHeader) + sizeof(TSyncPartyMonster)> bytes { };
+	auto &header = *reinterpret_cast<TSyncPartyHeader *>(bytes.data());
+	header.native.bCmd = CMD_PARTYSYNCDATA;
+	header.native.bLevel = 1;
+	header.native.wLen = Swap16LE(sizeof(TSyncPartyMonster));
+	header.participants = 8;
+	header.membership = Swap32LE(MultiplayerMembershipDigest());
+	auto &record = *reinterpret_cast<TSyncPartyMonster *>(bytes.data() + sizeof(header));
+	record.native._mndx = 4;
+	record.native._mx = record.native._my = 40;
+	record.native._menemy = 0;
+	record.party = EncodePartyMonster(incoming);
+	EXPECT_EQ(OnPartySyncData(header, bytes.size(), Players[0]), bytes.size());
+	EXPECT_EQ(GetPartyLevelState(1).monsters[4].generation, 8U);
+	EXPECT_EQ(GetPartyLevelState(1).spawns[0], 0U);
+	TCmdPartySpawn spawn { };
+	spawn.native.bCmd = CMD_PARTYSPAWN;
+	spawn.native.monsterId = Swap16LE(4);
+	spawn.native.typeIndex = Swap16LE(1);
+	spawn.native.dir = Direction::South;
+	spawn.native.x = spawn.native.y = 40;
+	spawn.native.seed = Swap32LE(17001);
+	spawn.generation = Swap64LE(8);
+	EXPECT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&spawn), sizeof(spawn)), sizeof(spawn));
+	EXPECT_EQ(Monsters[4].partyGeneration, 8U);
+	const auto health = Monsters[4].hitPoints;
+	ApplyMonsterDamage(DamageType::Physical, Monsters[4], Fixed26_6::fromInt(1));
+	EXPECT_EQ(ParseCmd(0, reinterpret_cast<const TCmd *>(&spawn), sizeof(spawn)), sizeof(spawn));
+	EXPECT_EQ(Monsters[4].hitPoints, health - Fixed26_6::fromInt(1));
+}
+
+TEST_F(MonsterSummonsTest, PartyEnvironmentalDeathCannotGrantThePublisherExperience)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 1, 8, 0, 1, static_cast<uint16_t>(monster->getId()), static_cast<uint32_t>(monster->hitPoints.raw()),
+		monster->partyGeneration, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40, 0 };
+	ReceivePartyMonsterDamage(7, damage);
+	CapturePartyMonsters();
+	EXPECT_TRUE(monster->hasNoLife());
+	EXPECT_EQ(monster->whoHit.bits, 0);
+	const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	EXPECT_EQ(state.contributors, 0);
+	PartyMonsterReward reward { CMD_PARTYREWARD, static_cast<uint16_t>(monster->getId()), state.generation,
+		state.nativeMax, state.type, state.unique, 8, 40, 40 };
+	const auto experience = MyPlayer->_pExperience;
+	ASSERT_TRUE(ReservePartyReward(1, reward));
+	ASSERT_TRUE(CommitPartyReward(1, reward, 7));
+	EXPECT_EQ(MyPlayer->_pExperience, experience);
+}
+
+TEST_F(MonsterSummonsTest, PartyRestoredRewardReceiptsDoNotReplayExperienceLootOrCredits)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	monster->tag(*MyPlayer);
+	CapturePartyMonsters();
+	const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	PartyMonsterReward reward { CMD_PARTYREWARD, static_cast<uint16_t>(monster->getId()), state.generation,
+		state.nativeMax, state.type, state.unique, 8, 40, 40 };
+	ASSERT_TRUE(ReservePartyReward(1, reward));
+	ASSERT_TRUE(CommitPartyReward(1, reward, MyPlayerId));
+	const auto experience = MyPlayer->_pExperience;
+	const auto credits = GetPartyLevelState(1).lootRemainder;
+	const auto seed = GetLCGEngineState();
+	EXPECT_GT(experience, 0U);
+	ASSERT_TRUE(RestorePartyRewardReceipt(1, reward));
+	ASSERT_TRUE(CommitPartyReward(1, reward, MyPlayerId));
+	EXPECT_EQ(MyPlayer->_pExperience, experience);
+	EXPECT_EQ(GetPartyLevelState(1).lootRemainder, credits);
+	EXPECT_EQ(GetLCGEngineState(), seed);
+	// A fresh replica imported the paid world but missed its private XP callback.
+	InitPartyBalance();
+	MyPlayer->_pExperience = 0;
+	ASSERT_TRUE(RestorePartyRewardReceipt(1, reward));
+	EXPECT_EQ(MyPlayer->_pExperience, experience);
+	ASSERT_TRUE(RestorePartyRewardReceipt(1, reward));
+	EXPECT_EQ(MyPlayer->_pExperience, experience);
+	EXPECT_EQ(GetPartyLevelState(1).lootRemainder, credits);
+	EXPECT_EQ(GetLCGEngineState(), seed);
+}
+
+TEST_F(MonsterSummonsTest, PartySharedDamageHasOnePublisherAndPreservesEnvironmentalContributions)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	unsigned publishers = 0;
+	for (uint8_t peer = 0; peer < 8; ++peer) {
+		MyPlayerId = peer;
+		MyPlayer = &Players[peer];
+		publishers += IsPartyDamageAuthority();
+	}
+	EXPECT_EQ(publishers, 1U);
+	MyPlayerId = 0;
+	MyPlayer = &Players[0];
+	const auto before = monster->hitPoints;
+	ApplyMonsterDamage(DamageType::Fire, *monster, Fixed26_6::fromInt(1), false);
+	EXPECT_EQ(monster->hitPoints, before - Fixed26_6::fromInt(1));
+	EXPECT_EQ(monster->whoHit.bits, 0);
+	SpawnGolem(Players[7], { 70, 70 }, 3);
+	const Monster *golem = FindGolemForPlayer(Players[7]);
+	ASSERT_NE(golem, nullptr);
+	EXPECT_FALSE(IsPartyDamageAuthority(golem));
+	MyPlayerId = 7;
+	MyPlayer = &Players[7];
+	EXPECT_TRUE(IsPartyDamageAuthority(golem));
 }
 
 TEST_F(MonsterSummonsTest, AuthoritativeSpawnsReplayOnEveryPeerInRequestOrder)

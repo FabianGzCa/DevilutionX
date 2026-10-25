@@ -1,6 +1,6 @@
 # Extended item transfers
 
-Extended protocol revision 2 admits item transfers before changing private
+Extended protocol revision 3 admits item transfers before changing private
 ownership. Classic sessions retain their existing item commands and wire layout.
 The public game selector remains classic until extended-session admission is
 explicitly enabled.
@@ -26,8 +26,8 @@ Initially slot 0 coordinates; an idle departure elects the lowest remaining ID.
    before acknowledging. Finalization releases the operation; duplicate packets
    cannot apply it again.
 
-The admission window holds 16 offers. The coordinator queues up to 1,024
-requests (127 floor items and one private request per participant); replicas
+The admission window holds 16 offers. The coordinator queues up to 1,032
+requests (127 floor items, one private request and one monster reward per participant); replicas
 can track 16 additional requests while offers are in flight. Deferred reward
 creations are bounded to 254. Ordinary gameplay commands retain native batching.
 Inventory operations wait while private ownership is unresolved; movement and
@@ -91,3 +91,21 @@ TCP, with isolated profiles. It covers pickup rejection, simultaneous drops,
 mission rewards, death, melee and projectile combat, bosses and shared pools.
 The process runner is built on UNIX when TCP is enabled. These focused scenarios
 do not replace full campaign, remote-network or cross-platform release testing.
+
+## Monster reward decisions
+
+Revision 3 also carries a validated monster reward identity in the existing item
+payload. This kind reserves an encounter incarnation instead of floor/inventory
+capacity. It uses the same ordered admission window, with one in-flight reward
+per publisher. Every receiver waits for all voter fences before applying its
+commit; later decisions and finalizations remain deferred in snapshots while
+waiting. This settles damage contributors before XP, advances per-level loot
+credits once, and stages resulting items through ordinary creation admission.
+See [Extended party balance](extended-party-balance.md#synchronized-lifecycle).
+
+Reward votes that overtake their offer on another connection are accumulated
+by serial in a bounded 16-entry table. Offers fold those votes into their own
+receipt set; snapshots preserve this table and restoration merges locally seen
+early votes. This prevents a receiver waiting forever for a vote that arrived
+before it knew the offer. The table adds at most 785 bytes to the junk snapshot,
+within the existing 16-bit transfer limit.

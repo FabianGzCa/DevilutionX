@@ -285,6 +285,13 @@ struct Monster { // note: missing field _mAFNum
 	uint8_t uniqTrans;
 	int8_t corpseId;
 	PlayerExperienceMask whoHit;
+	/** Session-only extended balance state, never written to classic saves. */
+	Fixed26_6 partyNativeMax = Fixed26_6::fromInt(0);
+	Fixed26_6 partyLastHitPoints = Fixed26_6::fromInt(0);
+	uint64_t partyGeneration = 0;
+	uint8_t partyParticipants = 4;
+	bool partyDeathStarted = false;
+
 	uint8_t minDamage;
 	uint8_t maxDamage;
 	uint8_t minDamageSpecial;
@@ -539,7 +546,7 @@ void LoadDeltaSpawnedMonster(size_t typeIndex, size_t monsterId, uint32_t seed, 
  */
 void InitializeSpawnedMonster(Point position, Direction dir, size_t typeIndex, size_t monsterId, uint32_t seed, uint8_t golemOwnerPlayerId, int16_t golemSpellLevel);
 void AddDoppelganger(Monster &monster);
-void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage);
+void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage, bool playerDamage = true);
 void MonsterReducePlayerAttribute(Monster &monster, Player &player);
 bool M_Talker(const Monster &monster);
 void M_StartStand(Monster &monster, Direction md);
@@ -551,6 +558,10 @@ void StartMonsterDeath(Monster &monster, const Player &player, bool sendmsg);
 void MonsterDeath(Monster &monster, Direction md, bool sendmsg);
 void KillGolem(Monster &golem);
 void M_StartKill(Monster &monster, const Player &player);
+void StartPartyMonsterDeath(Monster &monster, const Player &player);
+void FinalizePartyMonsterReward(Monster &monster, bool sendmsg, uint8_t participants, uint8_t extraRolls);
+bool IsPartyRandomLoot(uint16_t type, uint8_t unique);
+
 void M_SyncStartKill(Monster &monster, Point position, const Player &player);
 void M_UpdateRelations(const Monster &monster);
 void DoEnding();

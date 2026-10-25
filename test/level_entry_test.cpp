@@ -195,6 +195,43 @@ TEST(LevelEntryProtocolTest, EightClientsAgreeDespiteCrossSenderDeliveryOrder)
 	}
 }
 
+TEST(LevelEntryProtocolTest, ACommitWaitsForEveryDamageFenceOnEachVotingReplica)
+{
+	LevelEntryCoordinator node;
+	LevelEntryPeers peers;
+	peers.active = peers.ready = 255;
+	peers.level.fill(1);
+	unsigned commits = 0;
+	const auto update = [&](const auto &, LevelEntryStage stage) {
+		commits += stage == LevelEntryStage::Commit;
+		return true;
+	};
+	const auto request = Request(7);
+	node.Receive(7, 7, peers, request, update);
+	auto message = request;
+	message.phase = LevelEntryPhase::Assign;
+	message.serial = 8;
+	message.authority = 0;
+	message.voters = message.members = 255;
+	node.Receive(0, 7, peers, message, update);
+	message.phase = LevelEntryPhase::Propose;
+	message.x[7] = 42;
+	ASSERT_TRUE(node.Receive(0, 7, peers, message, update));
+	message.phase = LevelEntryPhase::Vote;
+	for (uint8_t sender = 0; sender < 8; ++sender) {
+		if (sender != 6)
+			node.Receive(sender, 7, peers, message, update);
+	}
+	message.phase = LevelEntryPhase::Commit;
+	node.Receive(0, 7, peers, message, update);
+	EXPECT_EQ(commits, 0U);
+	EXPECT_TRUE(node.Pending(7));
+	message.phase = LevelEntryPhase::Vote;
+	node.Receive(6, 7, peers, message, update);
+	EXPECT_EQ(commits, 1U);
+	EXPECT_FALSE(node.Pending(7));
+}
+
 TEST(LevelEntryProtocolTest, EightConsecutiveAdmissionsAgreeOnEveryClient)
 {
 	for (unsigned seed = 1; seed <= 20; ++seed) {
@@ -363,7 +400,8 @@ TEST(LevelEntryProtocolTest, CoordinatorDepartureCannotReuseAnOldTransaction)
 	for (uint8_t i = 1; i < 8; ++i) {
 		const auto vote = nodes[i].Receive(1, i, peers, *proposal, update);
 		ASSERT_TRUE(vote);
-		nodes[1].Receive(i, 1, peers, *vote, update);
+		for (uint8_t receiver = 1; receiver < 8; ++receiver)
+			nodes[receiver].Receive(i, receiver, peers, *vote, update);
 	}
 	const auto commit = nodes[1].Poll(1, peers, resolve);
 	ASSERT_TRUE(commit);
@@ -849,10 +887,14 @@ TEST_F(LevelEntryPlacementTest, FragmentedPlayerInfoPreservesPendingAndCommitted
 	message.serial = 8;
 	message.authority = 0;
 	message.voters = Bit(0) | Bit(7);
+	message.members = message.voters;
 	receive(0, message);
 	message.phase = LevelEntryPhase::Propose;
 	message.x[7] = 45;
 	receive(0, message);
+	message.phase = LevelEntryPhase::Vote;
+	receive(0, message);
+	receive(7, message);
 	message.phase = LevelEntryPhase::Commit;
 	receive(0, message);
 	ASSERT_FALSE(IsLevelEntryPending(7));

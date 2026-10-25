@@ -46,6 +46,8 @@ struct LevelEntryMessage {
 	uint8_t command;
 	LevelEntryPhase phase;
 	uint32_t serial;
+	uint32_t epoch;
+	uint8_t members;
 	uint8_t authority;
 	uint8_t participants;
 	uint8_t voters;
@@ -57,11 +59,12 @@ struct LevelEntryMessage {
 	uint8_t y[LevelEntryCapacity];
 };
 #pragma pack(pop)
-static_assert(sizeof(LevelEntryMessage) == 60);
+static_assert(sizeof(LevelEntryMessage) == 65);
 
 struct LevelEntryPeers {
 	uint8_t active = 0;
 	uint8_t ready = 0;
+	std::array<uint32_t, LevelEntryCapacity> epochs { };
 	std::array<uint8_t, LevelEntryCapacity> level { };
 	std::array<bool, LevelEntryCapacity> setLevel { };
 };
@@ -93,6 +96,7 @@ private:
 	std::array<Request, LevelEntryCapacity> requests_ { };
 	std::optional<LevelEntryMessage> transaction_;
 	std::optional<LevelEntryMessage> issuedAssignment_;
+	std::optional<LevelEntryMessage> deferredCommit_;
 	std::array<std::optional<LevelEntryMessage>, LevelEntryCapacity> earlyProposals_ { };
 	std::array<std::optional<LevelEntryMessage>, LevelEntryCapacity> earlyVotes_ { };
 	std::array<std::vector<Point>, NUMLEVELS + SL_LAST> rejectedTiles_;

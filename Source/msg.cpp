@@ -49,6 +49,7 @@
 #include "lighting.h"
 #include "missiles.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "monsters/validation.hpp"
 #include "nthread.h"
 #include "objects.h"
@@ -179,6 +180,11 @@ std::string_view CmdIdString(_cmd_id cmd)
 	case CMD_PLAYER_JOINLEVEL: return "CMD_PLAYER_JOINLEVEL";
 	case CMD_LEVELENTRY: return "CMD_LEVELENTRY";
 	case CMD_GOLEMFAILED: return "CMD_GOLEMFAILED";
+	case CMD_ITEMTRANSFER: return "CMD_ITEMTRANSFER";
+	case CMD_PARTYMONSTDAMAGE: return "CMD_PARTYMONSTDAMAGE";
+	case CMD_PARTYSYNCDATA: return "CMD_PARTYSYNCDATA";
+	case CMD_PARTYSPAWN: return "CMD_PARTYSPAWN";
+	case CMD_PARTYREWARD: return "CMD_PARTYREWARD";
 	case CMD_SEND_PLRINFO: return "CMD_SEND_PLRINFO";
 	case CMD_SATTACKXY: return "CMD_SATTACKXY";
 	case CMD_ACTIVATEPORTAL: return "CMD_ACTIVATEPORTAL";
@@ -266,6 +272,7 @@ size_t SpawnedMonsterDeltaSize()
 }
 
 struct DLevel {
+	PartyLevelState party;
 	TCmdPItem item[2 * MAXITEMS];
 	ankerl::unordered_dense::map<WorldTilePosition, DObjectStr> object;
 	ankerl::unordered_dense::map<size_t, DSpawnedMonster> spawnedMonsters;
@@ -325,14 +332,15 @@ uint8_t sbLastCmd;
 /**
  * @brief buffer used to receive level deltas, size is the worst expected case assuming every object on a level was touched
  */
-constexpr size_t MaxLevelDeltaSize = 1U                                                                               /* marker byte, always 0 */
-    + sizeof(uint8_t)                                                                                                 /* level id */
-    + sizeof(DLevel::item)                                                                                            /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
-    + sizeof(uint8_t)                                                                                                 /* count of object interactions which caused a state change since dungeon generation */
-    + ((sizeof(WorldTilePosition) + sizeof(_cmd_id)) * MAXOBJECTS)                                                    /* location/action pairs for the object interactions */
-    + sizeof(DLevel::monster)                                                                                         /* latest monster state */
-    + sizeof(uint16_t)                                                                                                /* spawned monster count */
-    + ((sizeof(uint16_t) + std::max(sizeof(DSpawnedMonster), sizeof(DSpawnedMonsterPack))) * MonsterStorageCapacity); /* spawned monsters */
+constexpr size_t MaxLevelDeltaSize = 1U                                                                              /* marker byte, always 0 */
+    + sizeof(uint8_t)                                                                                                /* level id */
+    + sizeof(DLevel::item)                                                                                           /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
+    + sizeof(uint8_t)                                                                                                /* count of object interactions which caused a state change since dungeon generation */
+    + ((sizeof(WorldTilePosition) + sizeof(_cmd_id)) * MAXOBJECTS)                                                   /* location/action pairs for the object interactions */
+    + sizeof(DLevel::monster)                                                                                        /* latest monster state */
+    + sizeof(uint16_t)                                                                                               /* spawned monster count */
+    + ((sizeof(uint16_t) + std::max(sizeof(DSpawnedMonster), sizeof(DSpawnedMonsterPack))) * MonsterStorageCapacity) /* spawned monsters */
+    + MaxPartyLevelSnapshotSize;
 constexpr size_t MaxJunkDeltaSize = MaxItemTransferSnapshotSize + 1 + sizeof(DJunk);
 std::byte sgRecvBuf[std::max(MaxLevelDeltaSize, MaxJunkDeltaSize)];
 static_assert(sizeof(sgRecvBuf) <= std::numeric_limits<uint16_t>::max());
@@ -937,6 +945,55 @@ bool DeltaImportData(_cmd_id cmd, uint32_t recvOffset)
 		src = DeltaImportObjects(src, end, deltaLevel.object);
 		src = DeltaImportMonster(src, end, deltaLevel.monster);
 		src = DeltaImportSpawnedMonsters(src, end, deltaLevel.spawnedMonsters);
+		if (sgGameInitInfo.rules == ExtendedSessionRules && src != nullptr) {
+			auto party = DecodePartyLevel({ src, static_cast<size_t>(end - src) });
+			if (!party)
+				return false;
+			if (IsPartyBalanceEnabled()) {
+				const auto current = DeltaLevels.find(level);
+				if (current != DeltaLevels.end()) {
+					const auto &previous = current->second.party;
+					if (previous.participants > party->participants)
+						return false;
+					for (size_t actor = 0; actor < previous.spawns.size(); ++actor) {
+						if (previous.spawns[actor] > party->spawns[actor]
+						    || previous.entryEpochs[actor] > party->entryEpochs[actor]
+						    || (previous.entryEpochs[actor] == party->entryEpochs[actor] && previous.entrySerials[actor] > party->entrySerials[actor]))
+							return false;
+					}
+					for (size_t i = 0; i < previous.monsters.size(); ++i) {
+						const auto &before = previous.monsters[i];
+						const auto &after = party->monsters[i];
+						if (before.flags != 0 && after.flags == 0)
+							return false;
+						if (before.flags == 0 || before.generation != after.generation)
+							continue;
+						if ((before.flags & (PartyMonsterDead | PartyMonsterRewarded) & ~after.flags) != 0)
+							return false;
+						for (size_t actor = 0; actor < before.receipts.size(); ++actor) {
+							if (before.receipts[actor] > after.receipts[actor])
+								return false;
+						}
+					}
+					for (const auto &pending : previous.pending) {
+						const auto &target = party->monsters[pending.message.monster];
+						if (target.generation == pending.message.generation && target.receipts[pending.sender] >= pending.message.receipt)
+							continue;
+						if (std::any_of(party->pending.begin(), party->pending.end(), [&](const auto &candidate) {
+							    return candidate.sender == pending.sender && candidate.message.epoch == pending.message.epoch && candidate.message.receipt == pending.message.receipt;
+						    }))
+							continue;
+						if (party->pending.size() == MaxPendingPartyDamage)
+							return false;
+						party->pending.push_back(pending);
+					}
+				}
+			}
+			if (std::any_of(party->pending.begin(), party->pending.end(), [level](const auto &pending) { return pending.message.level != level; }))
+				return false;
+			deltaLevel.party = std::move(*party);
+			src = end;
+		}
 		if (src != end)
 			return false;
 		PendingDeltaLevels.emplace(level, std::move(deltaLevel));
@@ -1135,6 +1192,8 @@ size_t OnLevelData(const TCmdPlrInfoHdr &message, size_t maxCmdSize, const Playe
 			return reject();
 		if (message.bCmd == CMD_DLEVEL_END) {
 			if (!receivedJunk || bytes != 1 || offset != 0 || *reinterpret_cast<const std::byte *>(&message + 1) != std::byte { 0 })
+				return reject();
+			if (IsPartyBalanceEnabled() && std::any_of(DeltaLevels.begin(), DeltaLevels.end(), [](const auto &level) { return level.second.party.participants != 0 && !PendingDeltaLevels.contains(level.first); }))
 				return reject();
 			DeltaLevels = std::move(PendingDeltaLevels);
 			sgJunk = pendingJunk;
@@ -2171,6 +2230,8 @@ size_t OnPlayerAlive(const TCmd &message, Player &target)
 	}
 
 	ApplyResurrect(target);
+	if (sgGameInitInfo.rules == ExtendedSessionRules && &target == MyPlayer)
+		BeginLevelEntry();
 
 	return sizeof(message);
 }
@@ -2651,8 +2712,26 @@ bool CanAutomaticallyReceiveItem(const Item &item)
 
 bool ReserveItemTransfer(const ItemTransferMessage &message)
 {
+	if (message.kind == ItemTransferKind::MonsterReward) {
+		PartyMonsterReward reward;
+		std::memcpy(&reward, &message.item, sizeof(reward));
+		SwapPartyRewardLE(reward);
+		for (const auto &[serial, existing] : ItemReservations) {
+			if (existing.message.kind != ItemTransferKind::MonsterReward || existing.message.level != message.level)
+				continue;
+			PartyMonsterReward reserved;
+			std::memcpy(&reserved, &existing.message.item, sizeof(reserved));
+			SwapPartyRewardLE(reserved);
+			if (reserved.monster == reward.monster && reserved.generation == reward.generation)
+				return false;
+		}
+		if (!ReservePartyReward(message.level, reward))
+			return false;
+		ItemReservations.emplace(uint32_t { message.serial }, ItemReservation { message, false, false, false });
+		return true;
+	}
 	for (const auto &[serial, reservation] : ItemReservations) {
-		if (reservation.message.level == message.level && SameItem(reservation.message.item, message.item))
+		if (reservation.message.kind != ItemTransferKind::MonsterReward && reservation.message.level == message.level && SameItem(reservation.message.item, message.item))
 			return false;
 	}
 	const auto records = ItemDeltas(GetDeltaLevel(message.level));
@@ -2742,7 +2821,13 @@ void StopItemTransfers()
 
 bool RestoreLocalItemReceipt(const ItemTransferMessage &message)
 {
-	if (message.actor != MyPlayerId || message.kind == ItemTransferKind::Creation)
+	if (message.kind == ItemTransferKind::MonsterReward && (message.voters & (1U << MyPlayerId)) != 0) {
+		PartyMonsterReward reward;
+		std::memcpy(&reward, &message.item, sizeof(reward));
+		SwapPartyRewardLE(reward);
+		return RestorePartyRewardReceipt(message.level, reward);
+	}
+	if (message.actor != MyPlayerId || !IsPrivateItemTransfer(message.kind))
 		return true;
 	const auto local = LocalItemTransfers.find(uint32_t { message.request });
 	if (local == LocalItemTransfers.end())
@@ -2804,6 +2889,12 @@ bool RestoreLocalItemReceipt(const ItemTransferMessage &message)
 
 bool CommitItemTransfer(const ItemTransferMessage &message)
 {
+	if (message.kind == ItemTransferKind::MonsterReward) {
+		PartyMonsterReward reward;
+		std::memcpy(&reward, &message.item, sizeof(reward));
+		SwapPartyRewardLE(reward);
+		return CommitPartyReward(message.level, reward, message.actor);
+	}
 	const bool pickup = message.kind == ItemTransferKind::ManualPickup || message.kind == ItemTransferKind::AutoPickup;
 	if (pickup) {
 		TCmdGItem item { };
@@ -2896,7 +2987,7 @@ void CompleteItemTransfer(const ItemTransferMessage &message, bool committed)
 	if (local != LocalItemTransfers.end() && local->second.message.epoch == message.epoch
 	    && local->second.message.kind == message.kind && SameItem(local->second.message.item, message.item))
 		LocalItemTransfers.erase(local);
-	if (!committed && message.kind != ItemTransferKind::Creation)
+	if (!committed && IsPrivateItemTransfer(message.kind))
 		MyPlayer->Say(message.kind == ItemTransferKind::HeldDrop ? HeroSpeech::WhereWouldIPutThis : HeroSpeech::ICantCarryAnymore);
 	if (!committed && IsLocalItemLevel(message.level)) {
 		const int floor = TransferFloorItem(message);
@@ -2910,7 +3001,7 @@ bool StartItemTransfer(ItemTransferKind kind, Point position, const Item &item, 
 	if (!ItemTransfersEnabled || ItemTransfers.Quiescing(MyPlayerId) || ItemTransfers.Quiescing(ItemTransfers.State().coordinator)
 	    || NextItemRequest == std::numeric_limits<uint32_t>::max())
 		return false;
-	if (kind != ItemTransferKind::Creation && std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return entry.second.message.kind != ItemTransferKind::Creation && !entry.second.received; }))
+	if (kind != ItemTransferKind::Creation && std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return IsPrivateItemTransfer(entry.second.message.kind) && !entry.second.received; }))
 		return false;
 	if (item.pendingCreation || ((kind == ItemTransferKind::ManualPickup || kind == ItemTransferKind::AutoPickup) && !MyPlayer->HoldItem.isEmpty()))
 		return false;
@@ -2933,6 +3024,12 @@ bool StartItemTransfer(ItemTransferKind kind, Point position, const Item &item, 
 
 bool IsItemTransferPayloadValid(const ItemTransferMessage &message)
 {
+	if (message.kind == ItemTransferKind::MonsterReward) {
+		PartyMonsterReward reward;
+		std::memcpy(&reward, &message.item, sizeof(reward));
+		SwapPartyRewardLE(reward);
+		return message.actor < Players.size() && message.level != 0 && IsValidLevelForMultiplayer(message.level) && IsPartyRewardValid(reward);
+	}
 	if (message.actor >= Players.size() || !IsValidLevelForMultiplayer(message.level) || !IsPItemValid(message.item, Players[message.actor]))
 		return false;
 	switch (message.kind) {
@@ -2948,6 +3045,8 @@ bool IsItemTransferPayloadValid(const ItemTransferMessage &message)
 		return message.item.bCmd == CMD_SPAWNITEM && Swap16LE(message.item.def.wIndx) == IDI_GOLD && Swap16LE(message.item.item.wValue) != 0;
 	case ItemTransferKind::Creation:
 		return IsAnyOf(message.item.bCmd, CMD_DROPITEM, CMD_SPAWNITEM);
+	case ItemTransferKind::MonsterReward:
+		return false;
 	}
 	return false;
 }
@@ -3463,6 +3562,60 @@ size_t OnSpawnMonster(const TCmdSpawnMonster &message, const Player &player)
 	return sizeof(message);
 }
 
+size_t OnPartyMonsterDamage(const PartyDamageMessage &wire, const Player &player)
+{
+	if (!IsPartyBalanceEnabled())
+		return sizeof(wire);
+	if (gbBufferMsgs == 1) {
+		BufferMessage(player, &wire, sizeof(wire));
+		return sizeof(wire);
+	}
+	auto message = wire;
+	SwapPartyDamageLE(message);
+	ReceivePartyMonsterDamage(static_cast<uint8_t>(player.getId()), message);
+	return sizeof(wire);
+}
+size_t OnPartySpawn(const TCmdPartySpawn &wire, const Player &player)
+{
+	if (!IsPartyBalanceEnabled() || player.plrlevel == 0 || Swap32LE(wire.epoch) != MultiplayerSlotEpoch(player.getId()))
+		return sizeof(wire);
+	if (gbBufferMsgs == 1) {
+		BufferMessage(player, &wire, sizeof(wire));
+		return sizeof(wire);
+	}
+	const uint16_t index = Swap16LE(wire.native.monsterId);
+	if (index >= MonsterLimit())
+		return sizeof(wire);
+	const uint64_t generation = Swap64LE(wire.generation);
+	const auto previous = GetPartyLevelState(GetLevelForMultiplayer(player)).monsters[index];
+	const auto &current = previous;
+	if (&player != MyPlayer && (current.flags & PartyMonsterKnown) != 0 && current.generation == generation
+	    && GetDeltaLevel(player).spawnedMonsters.contains(index)
+	    && (!player.isOnActiveLevel() || Monsters[index].partyGeneration == generation))
+		return sizeof(wire);
+	if ((generation & 7U) != player.getId() || (generation >> 32) != MultiplayerSlotEpoch(player.getId())
+	    || (generation & 0xFFFFFFF8U) == 0 || wire.native.dir > Direction::SouthEast
+	    || Swap16LE(wire.native.typeIndex) >= MaxLvlMTypes || wire.native.golemOwnerPlayerId >= Players.size()
+	    || (index >= MaxMonsters && Swap16LE(wire.native.typeIndex) != 0)
+	    || !InDungeonBounds({ wire.native.x, wire.native.y })
+	    || !ResetPartyMonster(GetLevelForMultiplayer(player), index, generation))
+		return sizeof(wire);
+	// Sync metadata may arrive first on another connection. Preserve it, but
+	// still initialize the actual monster when its authenticated spawn arrives.
+	auto &state = GetPartyLevelState(GetLevelForMultiplayer(player)).monsters[index];
+	state = { };
+	state.generation = generation;
+	state.flags = PartyMonsterExpected;
+	OnSpawnMonster(wire.native, player);
+	if ((previous.flags & PartyMonsterKnown) != 0 && previous.generation == generation)
+		state = previous;
+	SyncPartyMonsterDelta(GetLevelForMultiplayer(player), index);
+	if (player.isOnActiveLevel())
+		ReconcilePartyMonster(Monsters[index]);
+	DrainPartyDamage(GetLevelForMultiplayer(player));
+	return sizeof(wire);
+}
+
 template <typename TCmdImpl>
 size_t HandleCmd(size_t (*handler)(const TCmdImpl &, size_t, Player &), Player &player, const TCmd *pCmd, size_t maxCmdSize)
 {
@@ -3505,6 +3658,73 @@ size_t HandleCmd(size_t (*handler)(const TCmdImpl &, const Player &), const Play
 
 } // namespace
 
+PartyLevelState &GetPartyLevelState(uint8_t level) { return GetDeltaLevel(level).party; }
+uint32_t MultiplayerSlotEpoch(uint8_t player) { return player < PlayerStorageCapacity ? ItemTransfers.Epoch(player) : 0; }
+uint32_t MultiplayerMembershipDigest()
+{
+	uint32_t digest = 2166136261U;
+	for (uint8_t player = 0; player < PlayerStorageCapacity; ++player) {
+		const uint32_t epoch = MultiplayerSlotEpoch(player);
+		for (unsigned shift = 0; shift < 32; shift += 8)
+			digest = (digest ^ ((epoch >> shift) & 255U)) * 16777619U;
+	}
+	return digest;
+}
+void SyncPartyMonsterDelta(uint8_t level, size_t monster)
+{
+	auto &delta = GetDeltaLevel(level);
+	const auto &party = delta.party.monsters[monster];
+	if ((party.flags & PartyMonsterKnown) == 0)
+		return;
+	auto &native = delta.monster[monster];
+	native.position = { party.x, party.y };
+	native.hitPoints = SwapSigned32LE(PartyMonsterHitPoints(party, delta.party.participants).raw());
+	native.mWhoHit = PlayerExperienceMaskFromByte(party.contributors);
+	native.mactive = 255;
+	if (native.menemy == 255)
+		native.menemy = 0;
+}
+
+void NetSendPartyDamage(PartyDamageMessage message)
+{
+	SwapPartyDamageLE(message);
+	NetSendLoPri(MyPlayerId, reinterpret_cast<const std::byte *>(&message), sizeof(message));
+}
+bool HasLocalPartyRewardTransfer()
+{
+	return std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return entry.second.message.kind == ItemTransferKind::MonsterReward; });
+}
+void NetSendPartyReward(uint8_t level, PartyMonsterReward reward)
+{
+	if (!ItemTransfersEnabled || HasLocalPartyRewardTransfer() || NextItemRequest == std::numeric_limits<uint32_t>::max())
+		return;
+	ItemTransferMessage message;
+	message.kind = ItemTransferKind::MonsterReward;
+	message.actor = MyPlayerId;
+	message.epoch = ItemTransfers.Epoch(MyPlayerId);
+	message.request = ++NextItemRequest;
+	message.level = level;
+	SwapPartyRewardLE(reward);
+	static_assert(sizeof(reward) <= sizeof(message.item));
+	std::memcpy(&message.item, &reward, sizeof(reward));
+	LocalItemTransfers.emplace(uint32_t { message.request }, LocalItemTransfer { message, Item { } });
+	SendItemTransfer(message);
+}
+void ClearPartyContributor(uint8_t player)
+{
+	const auto clear = [player](auto &levels) {
+		for (auto &[levelId, level] : levels) {
+			for (auto &monster : level.party.monsters) {
+				monster.contributors &= static_cast<uint8_t>(~(1U << player));
+				monster.receipts[player] = 0;
+			}
+			std::erase_if(level.party.pending, [player](const auto &pending) { return pending.sender == player; });
+		}
+	};
+	clear(DeltaLevels);
+	clear(PendingDeltaLevels);
+}
+
 void InitItemTransfers()
 {
 	ItemTransfersEnabled = false;
@@ -3523,6 +3743,7 @@ void InitItemTransfers()
 	NextItemRequest = 0;
 	LastRewardProposalTick = 0;
 	ItemTransfersEnabled = gbIsMultiplayer && sgGameInitInfo.rules == ExtendedSessionRules;
+	InitPartyBalance();
 }
 
 bool IsExtendedItemTransferSession()
@@ -3576,12 +3797,12 @@ bool StageGeneratedItem(Item &item)
 
 bool IsItemTransferPending()
 {
-	return ItemTransfersEnabled && (!OwnedItemDrops.empty() || std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return entry.second.message.kind != ItemTransferKind::Creation && !entry.second.received; }));
+	return ItemTransfersEnabled && (!OwnedItemDrops.empty() || std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return IsPrivateItemTransfer(entry.second.message.kind) && !entry.second.received; }));
 }
 
 bool HasUnresolvedItemTransfers()
 {
-	return ItemTransfersEnabled && (!LocalItemTransfers.empty() || !StagedItemCreations.empty() || !OwnedItemDrops.empty());
+	return ItemTransfersEnabled && (!LocalItemTransfers.empty() || !StagedItemCreations.empty() || !OwnedItemDrops.empty() || HasPendingPartyRewards());
 }
 
 bool HasWorldItemSpace()
@@ -3598,13 +3819,14 @@ bool IsItemTileReserved(Point position)
 {
 	return ItemTransfersEnabled && std::any_of(ItemReservations.begin(), ItemReservations.end(), [=](const auto &entry) {
 		const auto &message = entry.second.message;
-		return IsLocalItemLevel(message.level) && message.item.x == position.x && message.item.y == position.y;
+		return message.kind != ItemTransferKind::MonsterReward && IsLocalItemLevel(message.level) && message.item.x == position.x && message.item.y == position.y;
 	});
 }
 
 void ProcessItemTransfers()
 {
 	if (ItemTransfersEnabled) {
+		ProcessPartyRewards();
 		FlushStagedItemCreations();
 		if (!OwnedItemDrops.empty() && LocalItemTransfers.empty()) {
 			const auto &drop = OwnedItemDrops.front();
@@ -3629,7 +3851,7 @@ void FinishItemTransfers()
 		return;
 	FlushStagedItemCreations();
 	const uint32_t started = SDL_GetTicks();
-	while ((!LocalItemTransfers.empty() || !OwnedItemDrops.empty()) && !ItemTransfers.Stopped() && SDL_GetTicks() - started < 10000) {
+	while ((!LocalItemTransfers.empty() || !OwnedItemDrops.empty() || HasPendingPartyRewards()) && !ItemTransfers.Stopped() && SDL_GetTicks() - started < 10000) {
 		ProcessGameMessagePackets();
 		SDL_Delay(1);
 	}
@@ -3787,15 +4009,17 @@ void run_delta_info()
 
 void DeltaExportData(uint8_t pnum)
 {
+	CapturePartyMonsters();
 	for (const auto &[levelNum, deltaLevel] : DeltaLevels) {
-		const size_t bufferSize = 1U                                                                /* marker byte, always 0 */
-		    + sizeof(uint8_t)                                                                       /* level id */
-		    + ItemDeltaCapacity() * sizeof(TCmdPItem)                                               /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
-		    + sizeof(uint8_t)                                                                       /* count of object interactions which caused a state change since dungeon generation */
-		    + ((sizeof(WorldTilePosition) + sizeof(DObjectStr)) * deltaLevel.object.size())         /* location/action pairs for the object interactions */
-		    + sizeof(deltaLevel.monster)                                                            /* latest monster state */
-		    + sizeof(uint16_t)                                                                      /* spawned monster count */
-		    + ((sizeof(uint16_t) + SpawnedMonsterDeltaSize()) * deltaLevel.spawnedMonsters.size()); /* spawned monsters */
+		const size_t bufferSize = 1U                                                               /* marker byte, always 0 */
+		    + sizeof(uint8_t)                                                                      /* level id */
+		    + ItemDeltaCapacity() * sizeof(TCmdPItem)                                              /* items spawned during dungeon generation which have been picked up, and items dropped by a player during a game */
+		    + sizeof(uint8_t)                                                                      /* count of object interactions which caused a state change since dungeon generation */
+		    + ((sizeof(WorldTilePosition) + sizeof(DObjectStr)) * deltaLevel.object.size())        /* location/action pairs for the object interactions */
+		    + sizeof(deltaLevel.monster)                                                           /* latest monster state */
+		    + sizeof(uint16_t)                                                                     /* spawned monster count */
+		    + ((sizeof(uint16_t) + SpawnedMonsterDeltaSize()) * deltaLevel.spawnedMonsters.size()) /* spawned monsters */
+		    + (sgGameInitInfo.rules == ExtendedSessionRules ? MaxPartyLevelSnapshotSize : 0);
 		if (bufferSize > sizeof(sgRecvBuf) || deltaLevel.object.size() > MAXOBJECTS || deltaLevel.spawnedMonsters.size() > MonsterLimit()) {
 			nthread_terminate_game("Delta exceeds transfer capacity");
 			return;
@@ -3809,6 +4033,11 @@ void DeltaExportData(uint8_t pnum)
 		dstEnd = DeltaExportObject(dstEnd, deltaLevel.object);
 		dstEnd = DeltaExportMonster(dstEnd, deltaLevel.monster);
 		dstEnd = DeltaExportSpawnedMonsters(dstEnd, deltaLevel.spawnedMonsters);
+		if (sgGameInitInfo.rules == ExtendedSessionRules) {
+			const auto party = EncodePartyLevel(deltaLevel.party);
+			std::memcpy(dstEnd, party.data(), party.size());
+			dstEnd += party.size();
+		}
 		const uint32_t size = CompressData(dst.get(), dstEnd);
 		multi_send_zero_packet(pnum, CMD_DLEVEL, dst.get(), size);
 	}
@@ -3825,6 +4054,7 @@ void DeltaExportData(uint8_t pnum)
 
 void delta_init()
 {
+	ResetPartyBalance();
 	ItemTransfersEnabled = false;
 	ItemTransfers.Reset(MyPlayerId, { });
 	LocalItemTransfers.clear();
@@ -4021,6 +4251,7 @@ void DeltaLoadLevel()
 	if (leveltype != DTYPE_TOWN) {
 		DeltaLoadSpawnedMonsters(deltaLevel);
 		DeltaLoadMonsters(deltaLevel);
+		RestorePartyMonsters();
 
 		auto localLevelIt = LocalLevels.find(localLevel);
 		if (localLevelIt != LocalLevels.end())
@@ -4033,6 +4264,8 @@ void DeltaLoadLevel()
 
 	DeltaLoadItems(deltaLevel);
 	RestoreItemTransferSnapshot();
+	if (IsPartyBalanceEnabled() && localLevel != 0)
+		DrainPartyDamage(localLevel);
 }
 
 void NetSendCmd(bool bHiPri, _cmd_id bCmd)
@@ -4059,6 +4292,12 @@ void NetSendCmdSpawnMonster(Point position, Direction dir, uint16_t typeIndex, u
 	cmd.seed = Swap32LE(seed);
 	cmd.golemOwnerPlayerId = golemOwnerPlayerId;
 	cmd.golemSpellLevel = golemSpellLevel;
+	if (IsPartyBalanceEnabled()) {
+		TCmdPartySpawn extended { cmd, Swap64LE(AssignPartySpawnGeneration(Monsters[monsterId])), Swap32LE(MultiplayerSlotEpoch(MyPlayerId)) };
+		extended.native.bCmd = CMD_PARTYSPAWN;
+		NetSendHiPri(MyPlayerId, reinterpret_cast<const std::byte *>(&extended), sizeof(extended));
+		return;
+	}
 	NetSendHiPri(MyPlayerId, reinterpret_cast<std::byte *>(&cmd), sizeof(cmd));
 }
 
@@ -4430,7 +4669,18 @@ size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize)
 		    : sizeof(TCmdPItem);
 		return ValidateCmdSize(size, maxCmdSize, pnum) ? size : 0;
 	}
+	if (IsPartyBalanceEnabled() && IsAnyOf(pCmd->bCmd, CMD_MONSTDAMAGE, CMD_MONSTDEATH, CMD_SPAWNMONSTER)) {
+		const size_t size = pCmd->bCmd == CMD_MONSTDAMAGE ? sizeof(TCmdMonDamage) : pCmd->bCmd == CMD_MONSTDEATH ? sizeof(TCmdLocParam1)
+		                                                                                                         : sizeof(TCmdSpawnMonster);
+		return ValidateCmdSize(size, maxCmdSize, pnum) ? size : 0;
+	}
 	switch (pCmd->bCmd) {
+	case CMD_PARTYMONSTDAMAGE:
+		return HandleCmd(OnPartyMonsterDamage, player, pCmd, maxCmdSize);
+	case CMD_PARTYSPAWN:
+		return HandleCmd(OnPartySpawn, player, pCmd, maxCmdSize);
+	case CMD_PARTYSYNCDATA:
+		return HandleCmd(OnPartySyncData, player, pCmd, maxCmdSize);
 	case CMD_ITEMTRANSFER:
 		return HandleCmd(OnItemTransfer, player, pCmd, maxCmdSize);
 	case CMD_SYNCDATA:

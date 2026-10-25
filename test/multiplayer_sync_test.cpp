@@ -30,6 +30,7 @@
 #include "lighting.h"
 #include "loadsave.h"
 #include "missiles.h"
+#include "monsters/party_balance.hpp"
 #include "msg.h"
 #include "multi.h"
 #include "nthread.h"
@@ -2023,6 +2024,62 @@ TEST_F(MultiplayerSyncTest, DonorDepartureDiscardsPartialDataAndAllowsSlotReuse)
 	}
 }
 
+TEST_F(MultiplayerSyncTest, PartySnapshotRetainsLocalFutureDamageUntilItsScaleCommits)
+{
+	LoadMonsterData();
+	Players[7].plractive = true;
+	InitItemTransfers();
+	auto &level = GetPartyLevelState(2);
+	level.participants = 5;
+	auto &monster = level.monsters[4];
+	monster.generation = uint64_t { 1 } << 63;
+	monster.nativeMax = 6400;
+	monster.type = MT_NZOMBIE;
+	monster.flags = PartyMonsterKnown;
+	monster.x = monster.y = 40;
+	const auto snapshot = Export();
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 2, 6, 0, 1, 4, 128,
+		monster.generation, monster.nativeMax, monster.type, monster.unique, 40, 40 };
+	ReceivePartyMonsterDamage(7, damage);
+	ASSERT_EQ(level.pending.size(), 1U);
+	msg_start_resync();
+	gbDeltaSender = 7;
+	for (const auto &message : snapshot)
+		Receive(7, message);
+	ASSERT_TRUE(TestHasCompleteDelta());
+	gbBufferMsgs = 0;
+	EXPECT_EQ(GetPartyLevelState(2).pending.size(), 1U);
+	CommitPartyLevel(2, 6, 0, 0, 8);
+	EXPECT_TRUE(GetPartyLevelState(2).pending.empty());
+	EXPECT_EQ(GetPartyLevelState(2).monsters[4].receipts[7], 1U);
+	EXPECT_EQ(GetPartyLevelState(2).monsters[4].damage, 128 * (3360 / 6));
+}
+
+TEST_F(MultiplayerSyncTest, PartySnapshotCannotRewindAppliedDamageReceipts)
+{
+	LoadMonsterData();
+	InitItemTransfers();
+	auto &level = GetPartyLevelState(2);
+	level.participants = 5;
+	auto &monster = level.monsters[4];
+	monster.generation = uint64_t { 1 } << 63;
+	monster.nativeMax = 6400;
+	monster.type = MT_NZOMBIE;
+	monster.flags = PartyMonsterKnown;
+	monster.x = monster.y = 40;
+	const auto snapshot = Export();
+	monster.receipts[7] = 1;
+	monster.damage = PartyDamageUnits;
+	msg_start_resync();
+	gbDeltaSender = 7;
+	for (const auto &message : snapshot)
+		Receive(7, message);
+	EXPECT_EQ(gbDeltaSender, NoDeltaSender);
+	EXPECT_EQ(GetPartyLevelState(2).monsters[4].receipts[7], 1U);
+	EXPECT_EQ(GetPartyLevelState(2).monsters[4].damage, PartyDamageUnits);
+	gbBufferMsgs = 0;
+}
+
 TEST_F(MultiplayerSyncTest, AnotherPeerCannotHijackAnActiveTransfer)
 {
 	SeedLevel(2, MaxMonsters);
@@ -2138,7 +2195,8 @@ TEST_F(MultiplayerSyncTest, MaximumLevelDeltaRoundTripsWithFixedSpawnRecords)
 	ASSERT_TRUE(expected.contains(2));
 	const auto &level = expected.at(2);
 	const size_t expectedSize = 1 + MAXITEMS * sizeof(TCmdPItem) + (ItemDeltaCapacity() - MAXITEMS) + 1 + MAXOBJECTS * 3 + MonsterLimit() * 9 + 2 + MonsterLimit() * 11;
-	ASSERT_EQ(level.size(), expectedSize);
+	const size_t partyBytes = sgGameInitInfo.rules == ExtendedSessionRules ? EncodePartyLevel(PartyLevelState { }).size() : 0;
+	ASSERT_EQ(level.size(), expectedSize + partyBytes);
 	RecordProperty("raw_level_bytes_with_marker", level.size() + 1);
 	RecordProperty("player_info_bytes", sizeof(PlayerNetPack));
 	RecordProperty("packet_header_bytes", sizeof(TPktHdr));

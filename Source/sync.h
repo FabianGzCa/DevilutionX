@@ -15,6 +15,7 @@ namespace devilution {
 
 size_t sync_all_monsters(std::byte *pbBuf, size_t dwMaxLen);
 size_t OnSyncData(const TSyncHeader &header, size_t maxCmdSize, const Player &player);
+size_t OnPartySyncData(const TSyncPartyHeader &header, size_t maxCmdSize, const Player &player);
 void sync_init();
 
 } // namespace devilution

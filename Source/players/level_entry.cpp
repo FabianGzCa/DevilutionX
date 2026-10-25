@@ -29,7 +29,7 @@ uint8_t Coordinator(uint8_t active) { return static_cast<uint8_t>(std::countr_ze
 
 bool Matches(const LevelEntryMessage &a, const LevelEntryMessage &b)
 {
-	if (a.serial != b.serial || a.authority != b.authority || a.participants != b.participants
+	if (a.epoch != b.epoch || a.members != b.members || a.serial != b.serial || a.authority != b.authority || a.participants != b.participants
 	    || a.voters != b.voters || a.level != b.level || a.setLevel != b.setLevel)
 		return false;
 	for (size_t i = 0; i < LevelEntryCapacity; ++i) {
@@ -60,6 +60,7 @@ LevelEntryPeers Peers()
 		if (!player.plractive)
 			continue;
 		peers.active |= Bit(i);
+		peers.epochs[i] = MultiplayerSlotEpoch(i);
 		peers.level[i] = player.plrlevel;
 		peers.setLevel[i] = player.plrIsOnSetLevel;
 		if (!player._pLvlChanging || Entries.Pending(i))
@@ -107,6 +108,10 @@ bool EntryTile(Point position, uint8_t participants, bool landing = true)
 
 bool UpdateWorld(const LevelEntryMessage &message, LevelEntryStage stage)
 {
+	if (stage == LevelEntryStage::Commit && IsPartyBalanceEnabled()) {
+		const uint8_t level = message.setLevel != 0 ? NUMLEVELS + message.level : message.level;
+		CommitPartyLevel(level, static_cast<uint8_t>(std::popcount(message.members)), message.serial & 7U, message.epoch, message.serial);
+	}
 	if (stage == LevelEntryStage::Reserve) {
 		if (!OnLevel(message) || message.outcome != LevelEntryOutcome::Placed)
 			return true;
@@ -208,6 +213,7 @@ bool UpdateWorld(const LevelEntryMessage &message, LevelEntryStage stage)
 void Send(LevelEntryMessage message)
 {
 	message.command = CMD_LEVELENTRY;
+	FlushNetMessageBuffers();
 	SwapLevelEntryMessageLE(message);
 	NetSendHiPri(MyPlayerId, reinterpret_cast<const std::byte *>(&message), sizeof(message));
 }
@@ -242,6 +248,7 @@ void LevelEntryCoordinator::Release(Update update)
 	if (transaction_)
 		update(*transaction_, LevelEntryStage::Release);
 	transaction_.reset();
+	deferredCommit_.reset();
 	votes_ = 0;
 	rejected_ = false;
 	proposed_ = false;
@@ -258,7 +265,8 @@ void LevelEntryCoordinator::Cancel(uint8_t player, Update update, bool disconnec
 	if (issuedAssignment_ && ((issuedAssignment_->voters & Bit(player)) != 0 || (issuedAssignment_->serial & 7U) == player)) {
 		const uint32_t serial = issuedAssignment_->serial;
 		const uint8_t issuer = serial & 7U;
-		seenSerials_[issuer] = std::max(seenSerials_[issuer], serial);
+		if (!disconnected || issuer != player)
+			seenSerials_[issuer] = std::max(seenSerials_[issuer], serial);
 		issuedAssignment_.reset();
 		sent_ = false;
 	}
@@ -292,6 +300,7 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Poll(uint8_t local, cons
 			// coordinator's transaction even if its last assignment was delayed.
 			assignment.serial = ((std::max(outgoingSerial_, seenSerials_[local]) & ~7U) + 8U) | local;
 			outgoingSerial_ = assignment.serial;
+			assignment.epoch = peers.epochs[local];
 			assignment.level = request.level;
 			assignment.setLevel = request.setLevel ? 1 : 0;
 			for (uint8_t i = 0; i < requests_.size(); ++i) {
@@ -304,8 +313,11 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Poll(uint8_t local, cons
 				}
 				if ((peers.ready & Bit(i)) != 0 && peers.level[i] == request.level && peers.setLevel[i] == request.setLevel)
 					assignment.voters |= Bit(i);
+				if ((peers.active & Bit(i)) != 0 && peers.level[i] == request.level && peers.setLevel[i] == request.setLevel)
+					assignment.members |= Bit(i);
 			}
 			assignment.voters |= assignment.participants;
+			assignment.members |= assignment.participants;
 			const uint8_t residents = assignment.voters & ~assignment.participants;
 			assignment.authority = Coordinator(residents != 0 ? residents : assignment.participants);
 			issuedAssignment_ = assignment;
@@ -344,6 +356,8 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Receive(uint8_t sender, 
 	if (sender >= LevelEntryCapacity || local >= LevelEntryCapacity || message.phase > LevelEntryPhase::Commit || message.outcome > LevelEntryOutcome::Retry || message.setLevel > 1
 	    || (message.setLevel != 0 ? message.level == 0 || message.level > SL_LAST : message.level >= NUMLEVELS))
 		return std::nullopt;
+	if (message.epoch != peers.epochs[message.phase == LevelEntryPhase::Request ? sender : (message.serial & 7U)])
+		return std::nullopt;
 	if (message.phase == LevelEntryPhase::Request) {
 		if (message.participants != Bit(sender) || message.tickets[sender] == 0 || message.tickets[sender] <= requests_[sender].ticket
 		    || !InDungeonBounds({ message.x[sender], message.y[sender] }))
@@ -355,6 +369,8 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Receive(uint8_t sender, 
 		return std::nullopt;
 	}
 	if (message.phase == LevelEntryPhase::Assign) {
+		if (message.members == 0 || (message.members & ~peers.active) != 0 || (message.participants & ~message.members) != 0 || (message.voters & ~message.members) != 0)
+			return std::nullopt;
 		if (peers.active == 0 || sender != Coordinator(peers.active) || (message.serial & 7U) != sender || message.serial <= seenSerials_[sender]
 		    || message.participants == 0 || message.authority >= LevelEntryCapacity
 		    || (message.participants & ~message.voters) != 0 || (message.voters & Bit(message.authority)) == 0)
@@ -441,6 +457,11 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Receive(uint8_t sender, 
 			return std::nullopt;
 		votes_ |= Bit(sender);
 		rejected_ |= message.outcome == LevelEntryOutcome::Retry;
+		if (deferredCommit_ && votes_ == deferredCommit_->voters) {
+			const auto commit = *deferredCommit_;
+			deferredCommit_.reset();
+			return Receive(commit.serial & 7U, local, peers, commit, update);
+		}
 		return std::nullopt;
 	}
 	if (message.phase != LevelEntryPhase::Commit || peers.active == 0 || sender != Coordinator(peers.active)
@@ -461,6 +482,12 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Receive(uint8_t sender, 
 				if ((message.participants & Bit(j)) != 0 && message.x[i] == message.x[j] && message.y[i] == message.y[j])
 					return std::nullopt;
 			}
+		}
+		// Each voter flushes its previous damage before voting. Wait on every
+		// connection so delayed old-scale hits settle before health is rebased.
+		if ((message.voters & Bit(local)) != 0 && votes_ != message.voters) {
+			deferredCommit_ = message;
+			return std::nullopt;
 		}
 		update(message, LevelEntryStage::Commit);
 	} else {
@@ -488,6 +515,7 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Receive(uint8_t sender, 
 		requests_[i].retryAt = ticks_ + 20;
 	}
 	transaction_.reset();
+	deferredCommit_.reset();
 	votes_ = 0;
 	rejected_ = false;
 	proposed_ = false;
@@ -565,6 +593,7 @@ bool FindLevelEntryPositions(LevelEntryMessage &message, std::span<const Point> 
 void SwapLevelEntryMessageLE(LevelEntryMessage &message)
 {
 	message.serial = Swap32LE(message.serial);
+	message.epoch = Swap32LE(message.epoch);
 	for (size_t i = 0; i < LevelEntryCapacity; ++i)
 		message.tickets[i] = Swap32LE(message.tickets[i]);
 }
@@ -610,6 +639,7 @@ void BeginLevelEntry()
 	LevelEntryMessage request { };
 	request.phase = LevelEntryPhase::Request;
 	request.participants = Bit(MyPlayerId);
+	request.epoch = MultiplayerSlotEpoch(MyPlayerId);
 	request.tickets[MyPlayerId] = ++LocalTicket;
 	request.level = MyPlayer->plrlevel;
 	request.setLevel = MyPlayer->plrIsOnSetLevel ? 1 : 0;
@@ -622,6 +652,15 @@ void ReceiveLevelEntry(uint8_t sender, LevelEntryMessage message)
 	if (sgGameInitInfo.rules != ExtendedSessionRules)
 		return;
 	SwapLevelEntryMessageLE(message);
+	if (IsPartyBalanceEnabled() && (message.voters & Bit(MyPlayerId)) == 0
+	    && message.phase == LevelEntryPhase::Commit && message.outcome == LevelEntryOutcome::Placed
+	    && Peers().active != 0 && sender == Coordinator(Peers().active) && message.epoch == MultiplayerSlotEpoch(sender)
+	    && message.members != 0 && (message.members & ~Peers().active) == 0 && (message.participants & ~message.members) == 0
+	    && message.serial != 0 && (message.serial & 7U) == sender
+	    && message.setLevel <= 1 && (message.setLevel != 0 ? message.level > 0 && message.level <= SL_LAST : message.level < NUMLEVELS)) {
+		const uint8_t level = message.setLevel != 0 ? NUMLEVELS + message.level : message.level;
+		CommitPartyLevel(level, static_cast<uint8_t>(std::popcount(message.members)), sender, message.epoch, message.serial);
+	}
 	const bool wasBlocked = Entries.Blocked(MyPlayerId);
 	if (const auto reply = Entries.Receive(sender, MyPlayerId, Peers(), message, UpdateWorld))
 		Send(*reply);

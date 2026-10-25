@@ -2,8 +2,11 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <numeric>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -21,13 +24,16 @@
 #include "loadsave.h"
 #include "missiles.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "msg.h"
 #include "multi.h"
 #include "nthread.h"
 #include "objects.h"
 #include "options.h"
 #include "player.h"
+#include "players/level_entry.hpp"
 #include "storm/storm_net.hpp"
+#include "sync.h"
 #include "tables/playerdat.hpp"
 #include "utils/endian_swap.hpp"
 #include "utils/paths.h"
@@ -42,6 +48,9 @@ unsigned Role;
 unsigned BossId = MonsterStorageCapacity;
 bool Captured = false;
 bool ResumeSnapshot = false;
+bool PartyLifecycle = false;
+uint32_t LastEntryPump = 0;
+std::optional<PartyDamageMessage> DelayedPartyDamage;
 
 [[noreturn]] void Fail(const std::string &message)
 {
@@ -67,6 +76,10 @@ void Pump()
 {
 	FlushNetMessageBuffers();
 	ProcessGameMessagePackets();
+	if (SDL_GetTicks() - LastEntryPump >= 50) {
+		LastEntryPump = SDL_GetTicks();
+		ProcessLevelEntries();
+	}
 	if (Role == 0 && !Captured && std::filesystem::exists(Directory / "capture-request") && IsItemTileReserved({ 41, 45 })) {
 		Captured = true;
 		DeltaExportData(7);
@@ -89,7 +102,7 @@ void Wait(const std::string &name)
 		Pump();
 	}
 }
-void ResetWorld(unsigned count)
+void ResetWorld(unsigned count, uint8_t humans = 8)
 {
 	delta_init();
 	gbBufferMsgs = 0;
@@ -145,6 +158,8 @@ void ResetWorld(unsigned count)
 		DeltaAddItem(index);
 	}
 	InitItemTransfers();
+	GetPartyLevelState(CurrentPartyLevel()).participants = humans;
+	CapturePartyMonsters();
 	NewCursor(CURSOR_HAND);
 }
 void SwitchLevel(unsigned destination, unsigned count)
@@ -165,7 +180,49 @@ void SwitchLevel(unsigned destination, unsigned count)
 		const int index = PlaceItemInWorld(std::move(item), { static_cast<uint8_t>(35 + i % 20), static_cast<uint8_t>(55 + i / 20) });
 		DeltaAddItem(index);
 	}
+	CommitPartyLevel(CurrentPartyLevel(), 8, 0, MultiplayerSlotEpoch(0), 16);
 	DeltaLoadLevel();
+}
+
+void LoadPartyWorld(uint8_t destination)
+{
+	CapturePartyMonsters();
+	MyPlayer->setLevel(destination);
+	currlevel = destination;
+	setlevel = false;
+	leveltype = destination == 0 ? DTYPE_TOWN : DTYPE_CATHEDRAL;
+	gbBufferMsgs = 1;
+	ActiveItemCount = 0;
+	std::iota(std::begin(ActiveItems), std::end(ActiveItems), 0);
+	std::memset(dItem, 0, sizeof(dItem));
+	std::memset(dMonster, 0, sizeof(dMonster));
+	std::memset(dPlayer, 0, sizeof(dPlayer));
+	Missiles.clear();
+	InitLighting();
+	InitLevelMonsters();
+	if (destination != 0) {
+		Require(AddMonsterType(MT_GOLEM, PLACE_SPECIAL).has_value(), "cannot load party golem type");
+		Require(AddMonsterType(MT_SKING, PLACE_SPECIAL).has_value(), "cannot load party boss type");
+		Require(AddMonsterType(MT_DIABLO, PLACE_SPECIAL).has_value(), "cannot load party Diablo type");
+		SetRndSeed(17001);
+		InitGolems();
+	}
+	DeltaLoadLevel();
+	gbBufferMsgs = 0;
+	for (size_t i = 0; i < ActiveMonsterCount; ++i) {
+		const auto id = ActiveMonsters[i];
+		if (Monsters[id].type().type != MT_GOLEM)
+			BossId = id;
+	}
+}
+void PublishPartyState()
+{
+	if (!PartyLifecycle || currlevel == 0)
+		return;
+	std::array<std::byte, 512> bytes;
+	const auto remaining = sync_all_monsters(bytes.data(), bytes.size());
+	if (remaining != bytes.size())
+		multi_send_msg_packet(PlayerRecipientMask { 255 }, bytes.data(), bytes.size() - remaining);
 }
 
 std::string Describe()
@@ -210,6 +267,24 @@ std::string Describe()
 	result += "\n" + std::to_string(Quests[Q_SKELKING]._qactive) + " " + std::to_string(Quests[Q_DIABLO]._qactive) + " " + std::to_string(Missiles.size()) + " " + std::to_string(ActiveObjectCount);
 	if (BossId < MonsterStorageCapacity)
 		result += " " + std::to_string(Monsters[BossId].hitPoints.whole()) + " " + std::to_string(Monsters[BossId].whoHit.bits);
+	if (PartyLifecycle) {
+		const auto &level = GetPartyLevelState(1);
+		size_t index = BossId;
+		if (index >= MonsterStorageCapacity) {
+			for (size_t i = 0; i < level.monsters.size(); ++i) {
+				if ((level.monsters[i].flags & PartyMonsterKnown) != 0 && level.monsters[i].type == MT_SKING) {
+					index = i;
+					break;
+				}
+			}
+		}
+		const auto state = index < MonsterStorageCapacity ? level.monsters[index] : PartyMonsterState { };
+		result += "\n" + std::to_string(level.participants) + " " + std::to_string(level.lootRemainder)
+		    + " " + std::to_string(state.nativeMax) + " " + std::to_string(state.damage)
+		    + " " + std::to_string(PartyMonsterHitPoints(state, level.participants).raw())
+		    + " " + std::to_string(state.contributors) + " " + std::to_string(state.flags)
+		    + " " + std::to_string(state.generation);
+	}
 	return result;
 }
 void Run(unsigned port)
@@ -280,7 +355,47 @@ void Run(unsigned port)
 		input >> action >> actor >> value;
 		if (action == "quit")
 			break;
-		if (action == "reset") {
+		if (action == "party-init") {
+			PartyLifecycle = true;
+			ResetWorld(0, 4);
+			for (unsigned id = 0; id < Players.size(); ++id)
+				Players[id].setLevel(static_cast<uint8_t>(id < 4 ? 1 : 0));
+			LoadPartyWorld(Role < 4 ? 1 : 0);
+		} else if (action == "party-spawn" && Role == 0) {
+			SpawnMonster({ 45, 40 }, Direction::South, 1);
+			BossId = 4;
+		} else if (action == "party-move" && Role == actor) {
+			LoadPartyWorld(static_cast<uint8_t>(value));
+			MyPlayer->_pLvlChanging = true;
+			MyPlayer->_pmode = PM_NEWLVL;
+			MyPlayer->_pInvincible = true;
+			BeginLevelEntry();
+		} else if (action == "party-stage-hit" && Role == actor) {
+			BossId = 4;
+			auto &monster = Monsters[BossId];
+			ReconcilePartyMonster(monster);
+			PartyDamageMessage message { CMD_PARTYMONSTDAMAGE, 1, GetPartyLevelState(1).participants, MultiplayerSlotEpoch(Role), 1, static_cast<uint16_t>(BossId), 10 * 64,
+				monster.partyGeneration, monster.partyNativeMax.raw(), MT_SKING, static_cast<uint8_t>(UniqueMonsterType::None), 45, 40 };
+			ReceivePartyMonsterDamage(Role, message);
+			DelayedPartyDamage = message;
+		} else if ((action == "party-release-hit" || action == "party-replay-hit") && Role == actor) {
+			Require(DelayedPartyDamage.has_value(), "late damage is missing");
+			NetSendPartyDamage(*DelayedPartyDamage);
+		} else if (action == "party-dead") {
+			Players[actor]._pmode = PM_DEATH;
+			SetPlayerHitPoints(Players[actor], Fixed26_6::fromInt(0));
+		} else if (action == "party-kill" && Role == actor) {
+			BossId = 4;
+			ApplyMonsterDamage(DamageType::Physical, Monsters[BossId], Monsters[BossId].hitPoints);
+			M_StartKill(Monsters[BossId], *MyPlayer);
+		} else if (action == "party-buffer" && Role == actor) {
+			GetPartyLevelState(1) = { };
+			msg_start_resync();
+			gbDeltaSender = 0;
+			ResumeSnapshot = true;
+		} else if (action == "party-export" && Role == 0) {
+			DeltaExportData(actor);
+		} else if (action == "reset") {
 			ResetWorld(value);
 		} else if (action == "burst" && actor == Role) {
 			for (unsigned i = 0; i < MAXITEMS; ++i)
@@ -394,7 +509,8 @@ void Run(unsigned port)
 					BossId = id;
 			}
 			Require(BossId < MonsterStorageCapacity, "boss spawn did not arrive");
-			Monsters[BossId].hitPoints = Fixed26_6::fromInt(100);
+			Monsters[BossId].maxHitPoints = Monsters[BossId].hitPoints = Fixed26_6::fromInt(50);
+			InitializePartyMonster(Monsters[BossId]);
 			Monsters[BossId].whoHit = { };
 		} else if (action == "boss-hit") {
 			MyPlayer->_pIMinDam = MyPlayer->_pIMaxDam = 1;
@@ -419,6 +535,7 @@ void Run(unsigned port)
 		} else if (action == "quest" && actor == Role) {
 			SpawnQuestItem(IDI_BRAIN, { 35, 48 }, 0, SelectionRegion::Bottom, true);
 		}
+		PublishPartyState();
 		Mark("sent-" + std::to_string(stage));
 		Wait("settle-" + std::to_string(stage));
 		// The parent waits for every source before asking for a stable result.
@@ -427,9 +544,17 @@ void Run(unsigned port)
 		auto quiet = std::chrono::steady_clock::now();
 		int received = dwRecCount;
 		while (std::chrono::steady_clock::now() - quiet < std::chrono::milliseconds(300)) {
-			Require(std::chrono::steady_clock::now() < deadline, "transfer did not finish");
+			if (std::chrono::steady_clock::now() >= deadline) {
+				std::fprintf(stderr, "unresolved=%d pendingReward=%d localReward=%d level=%u\n", HasUnresolvedItemTransfers(), HasPendingPartyRewards(), HasLocalPartyRewardTransfer(), CurrentPartyLevel());
+				for (size_t i = 0; i < GetPartyLevelState(CurrentPartyLevel()).monsters.size(); ++i) {
+					const auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[i];
+					if ((state.flags & PartyMonsterDead) != 0)
+						std::fprintf(stderr, "monster=%zu flags=%u killer=%u native=%d generation=%llu\n", i, state.flags, state.killer, state.nativeMax, static_cast<unsigned long long>(state.generation));
+				}
+				Fail("transfer did not finish\n" + Describe());
+			}
 			Pump();
-			if (HasUnresolvedItemTransfers() || dwRecCount != received)
+			if (HasUnresolvedItemTransfers() || (PartyLifecycle && std::any_of(Players.begin(), Players.end(), [](const auto &player) { return player.plractive && player._pLvlChanging; })) || dwRecCount != received)
 				quiet = std::chrono::steady_clock::now();
 			received = dwRecCount;
 		}

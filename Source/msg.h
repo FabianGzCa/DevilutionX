@@ -12,6 +12,7 @@
 #include "engine/point.hpp"
 #include "items.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "objects.h"
 #include "player_mask.hpp"
 #include "portal.h"
@@ -430,6 +431,10 @@ enum _cmd_id : uint8_t {
 	CMD_LEVELENTRY,
 	CMD_GOLEMFAILED,
 	CMD_ITEMTRANSFER,
+	CMD_PARTYMONSTDAMAGE,
+	CMD_PARTYSYNCDATA,
+	CMD_PARTYSPAWN,
+	CMD_PARTYREWARD,
 	NUM_CMDS,
 	CMD_INVALID = 0xFF,
 };
@@ -519,6 +524,11 @@ struct TCmdSpawnMonster {
 	uint32_t seed;
 	uint8_t golemOwnerPlayerId;
 	uint8_t golemSpellLevel;
+};
+struct TCmdPartySpawn {
+	TCmdSpawnMonster native;
+	uint64_t generation;
+	uint32_t epoch;
 };
 
 struct TCmdQuest {
@@ -697,6 +707,16 @@ struct TSyncMonster {
 	PlayerExperienceMask mWhoHit;
 };
 
+struct TSyncPartyHeader {
+	TSyncHeader native;
+	uint8_t participants;
+	uint32_t epoch;
+	uint32_t membership;
+};
+struct TSyncPartyMonster {
+	TSyncMonster native;
+	PartyMonsterWire party;
+};
 static_assert(sizeof(TSyncMonster) == 10);
 static_assert(offsetof(TSyncMonster, mWhoHit) == 9);
 
@@ -739,6 +759,18 @@ void DeltaSyncJunk();
 void delta_init();
 /** Initialize the negotiated extended item protocol after network admission. */
 void InitItemTransfers();
+struct PartyLevelState;
+struct PartyDamageMessage;
+struct PartyMonsterReward;
+PartyLevelState &GetPartyLevelState(uint8_t level);
+uint32_t MultiplayerSlotEpoch(uint8_t player);
+uint32_t MultiplayerMembershipDigest();
+void SyncPartyMonsterDelta(uint8_t level, size_t monster);
+void NetSendPartyDamage(PartyDamageMessage message);
+void NetSendPartyReward(uint8_t level, PartyMonsterReward reward);
+bool HasLocalPartyRewardTransfer();
+void ClearPartyContributor(uint8_t player);
+
 bool IsExtendedItemTransferSession();
 bool StageGeneratedItem(Item &item);
 bool QueueDeathItemDrop(const Item &item, Point position);

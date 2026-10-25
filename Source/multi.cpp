@@ -33,6 +33,7 @@
 #include "lighting.h"
 #include "menu.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "msg.h"
 #include "nthread.h"
 #include "options.h"
@@ -334,6 +335,7 @@ void ClearPlayerLeftState(std::optional<uint8_t> only = std::nullopt)
 				// Preserve classic XP divisors, including departed contributors.
 				if (sgGameInitInfo.rules == ExtendedSessionRules)
 					delta_remove_player(i);
+				LeavePartyBalance(i);
 			}
 
 			sgbPlayerLeftGameTbl[i] = false;

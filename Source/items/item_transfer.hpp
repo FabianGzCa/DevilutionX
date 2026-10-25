@@ -32,7 +32,13 @@ enum class ItemTransferKind : uint8_t {
 	BodyDrop,
 	GoldDrop,
 	Creation,
+	MonsterReward,
 };
+
+inline bool IsPrivateItemTransfer(ItemTransferKind kind)
+{
+	return kind != ItemTransferKind::Creation && kind != ItemTransferKind::MonsterReward;
+}
 
 #pragma pack(push, 1)
 struct ItemTransferMessage {
@@ -57,7 +63,7 @@ public:
 	static constexpr size_t PeerCount = 8;
 	static constexpr size_t WindowSize = 16;
 	static constexpr size_t DeferredSize = 2 * MAXITEMS;
-	static constexpr size_t QueueSize = PeerCount * (MAXITEMS + 1);
+	static constexpr size_t QueueSize = PeerCount * (MAXITEMS + 2);
 	static constexpr size_t MaxQueuedRequests = QueueSize + WindowSize;
 
 	struct Hooks {
@@ -79,6 +85,8 @@ public:
 		bool applied = false;
 		bool committed = false;
 		bool finalizeSent = false;
+		std::optional<bool> deferredDecision { };
+		bool deferredFinalize = false;
 	};
 	struct Snapshot {
 		uint32_t issued = 0;
@@ -89,6 +97,7 @@ public:
 		std::array<uint32_t, PeerCount> epochs { };
 		std::array<uint32_t, PeerCount> requests { };
 		std::array<std::optional<Entry>, WindowSize> entries;
+		std::array<std::optional<Entry>, WindowSize> earlyVotes;
 		std::vector<ItemTransferMessage> deferred;
 		std::deque<ItemTransferMessage> queued;
 	};
@@ -120,6 +129,7 @@ private:
 	void Vote(Entry &entry);
 	void Decide();
 	void Finalize();
+	void DrainDecisions();
 	void AcknowledgeDepartures();
 	void Fail();
 	Entry *Find(uint32_t serial);
@@ -127,6 +137,7 @@ private:
 
 constexpr size_t MaxItemTransferSnapshotSize = 4 * (3 + 2 * ItemTransferCoordinator::PeerCount) + 3
     + ItemTransferCoordinator::WindowSize * (sizeof(ItemTransferMessage) + 3)
+    + 1 + ItemTransferCoordinator::WindowSize * (sizeof(ItemTransferMessage) + 2)
     + 4 + (ItemTransferCoordinator::DeferredSize + ItemTransferCoordinator::MaxQueuedRequests) * sizeof(ItemTransferMessage);
 std::vector<std::byte> EncodeItemTransfers(const ItemTransferCoordinator::Snapshot &snapshot);
 std::optional<ItemTransferCoordinator::Snapshot> DecodeItemTransfers(std::span<const std::byte> data);

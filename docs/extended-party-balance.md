@@ -1,10 +1,10 @@
 # Extended party balance: revision 1
 
-This defines the mathematical rules for the existing negotiated balance revision
-1. The functions in `monsters/party_scaling.*` are tested independently; live
-creation, damage, rewards and synchronized level state are integrated in the
-next stage. Public session selection remains classic. These measurements are
-an initial model, not a claim that campaign balance has been playtested.
+Balance revision 1 runs in negotiated extended protocol 3 sessions. The pure
+functions in `monsters/party_scaling.*` define its arithmetic;
+`monsters/party_balance.*` integrates creation, damage, level state and rewards.
+Public session selection remains classic until the session-selection work is
+complete. This is an initial model, not a claim of campaign playtest results.
 
 ## Native reference
 
@@ -79,8 +79,8 @@ Before new participants can damage or receive rewards on a level, agree and
 commit its next scale. A player cannot prepare native-health monsters with
 four, bring eight and receive the larger reward pool at native difficulty.
 Snapshots and late joins must import the committed scale and remainder rather
-than recompute them from local occupancy. This ordering and persistence belong
-to lifecycle integration; the count helper alone does not establish agreement.
+than recompute them from local occupancy. The coordinated level-entry commit establishes that ordering; the count helper
+alone does not establish agreement.
 
 ## Exact arithmetic
 
@@ -104,18 +104,21 @@ below zero remain unchanged. Invalid counts, unsupported session rules and
 invalid loot remainders are rejected. Classic counts above four are invalid.
 One through four preserve every native HP/XP value and leave loot credits alone.
 
-When the committed scale rises, calculate the new maximum from the native base,
-not by multiplying an already rounded/scaled maximum. For a living injured enemy:
+When the committed scale rises, derive the new maximum from the native base.
+Keep damage as exact normalized work: one native raw HP has 840 units;
+a hit of `d` raw HP at numerator `N` adds `d * (3360 / N)` units. Each supported
+numerator 4–8 divides 3360, so old-scale hits and scale commits commute without
+rounding intermediate HP. Derive remaining raw HP as
+`ceil((native_raw * 840 - damage_units) * N / 3360)`. This preserves the completed
+damage fraction; absolute remaining HP can rise with reinforcements, while its
+percentage does not reset. Native healing updates that ledger at the scale in
+which it occurred. The loaded level owner reconciles healing through sync only
+when its receipt vector covers the receiver's applied hits.
 
-`next_HP_raw = ceil(current_HP_raw * next_max_raw / previous_max_raw)`.
-
-This preserves percentage damage progress within one raw unit (1/64 HP), rather
-than resetting the monster to full HP. Absolute remaining HP can increase with
-reinforcements: the health percentage does not reset and no healing event is
-emitted. Native death means less than one whole HP; preserve that exact value
-instead of multiplying it. Never revive, replay a kill or issue rewards during
-rebasing. Reject invalid maxima, health above its old maximum, and a decreasing
-maximum. High-water scaling never lowers the difficulty of an existing level.
+Native death means less than one whole HP. Latch it before rebasing and never
+revive a corpse, replay a kill or grant rewards during a scale commit. The pure
+`RebaseMonsterHitPoints` helper retains the percentage formula for standalone
+callers; runtime damage uses the normalized ledger to handle delayed packets.
 
 ### Random loot credits
 
@@ -134,7 +137,64 @@ the primary item and the unrelated simulation RNG sequence; do not reseed from
 time, host ID, local inventory or transport order. Advance the agreed remainder
 and reward decision once even when the floor is full. Use the existing bounded
 item admission, and never bypass physical limits or duplicate a pending reward.
-The synchronization and scoped extra-roll execution must be tested at integration.
+The lifecycle and engine tests cover synchronization and scoped extra rolls.
+
+## Synchronized lifecycle
+
+| Event | Agreed state and effect |
+| --- | --- |
+| Generate/load level | Keep native difficulty/unique HP, then apply saved high-water and damage; do not scale an already scaled maximum. |
+| Place entrants | Lowest active slot freezes the destination human mask, including dead/loading humans; its epoch/serial-qualified commit raises `H` before entrants resume. |
+| Receive old-scale hit | Check source slot epoch, monster generation and receipt; add normalized damage once at the hit's original scale. |
+| Receive future scale/spawn hit | Retain in a bounded queue; drain after the required placement/spawn. |
+| Leave, split or return to town | Clear departed slot contribution/receipt identity; keep high-water, damage, corpses and loot credits. |
+| Die | Start native death visuals once; retain the monster slot while its reward is unresolved. |
+| Reward | Killer publishes one request at a time; item-transfer coordinator orders it and all receivers wait for every voter fence before XP/loot/quest commit. |
+| Snapshot/reload | Import high-water, credits, generations, receipts, pending damage and paid flags together with world/item state; replay cannot apply damage/rewards twice. |
+
+Each sender flushes earlier damage before its entry or reward vote. A voting
+replica waits for all entry votes before raising health or releasing entrants,
+so old-scale damage settles first on every loaded participant. Non-voting
+observers retain the coordinator commit even if they missed its assignment.
+Each sender also flushes earlier damage before its reward vote. A receiver defers
+reward commit until it has received every vote, so cross-connection delivery
+cannot omit an earlier contribution. Later decisions/finalizations wait behind
+that commit; their deferred state survives snapshots. The coordinator serializes
+all rewards, giving each level a common loot-credit order. A loaded replacement
+publisher handles a dead monster whose killer has already left; disconnects
+inside an undecided ownership transaction retain the item protocol's explicit
+session termination policy rather than guessing an outcome. A clean exit drains
+pending rewards before leaving. Applied snapshot reward entries recover an
+existing voter's missing private XP receipt without recreating loot or credits.
+
+Dynamically spawned monsters carry a 64-bit generation composed of creator slot,
+spawn counter and slot epoch; pregenerated monsters use a separate high-bit seed
+namespace. Per-level spawn watermarks reject old incarnations while allowing a
+hit from another connection to wait for its spawn. Source slot epochs reject
+frames from previous occupants. Counter/queue exhaustion terminates the session
+instead of wrapping or dropping already accepted work. Golem melee damage is
+published by its owner, shared monster/trap damage by the lowest loaded resident;
+environmental damage does not make that publisher an XP contributor.
+
+Extended level snapshots append a 134-byte empty balance body, up to 204 indexed
+61-byte monster records (plus two-byte indices), and up to 512 pending damage
+records. Damage messages are 35 bytes; monster rewards occupy 21 bytes inside
+the existing 29-byte item payload. A periodic record combines the native
+10-byte monster record with its 61-byte balance state; the extended sync header
+adds nine bytes for high-water, sender epoch and membership digest. Scalars are
+explicitly little endian. Decoders bound lengths, counts, identities, health,
+flags and positions, reject truncation/trailing bytes, and preserve the native
+16-bit delta-transfer size ceiling. Snapshots that would lower an established
+high-water or rewind known same-generation death/payment/receipt state are
+rejected before publication. Classic snapshots have none of this suffix.
+
+The eight-engine TCP test covers 4→5, 5→4, 7→8 and 8→1, a wounded boss, delayed
+and duplicate damage, dead humans, resurrection placement, town/split groups,
+return to a corpse, and snapshots both before and after reward. Unit tests cover
+fractional boundaries, future spawn/scale delivery, malformed/truncated codecs,
+slot identities, native golem HP and deferred reward fences. Existing engine
+scenarios exercise concurrent melee, shared XP masks, boss quests and bounded
+loot recovery. These fixtures do not replace campaign or real ZeroTier testing.
 
 ## Numerical tables
 
@@ -196,3 +256,10 @@ classes/levels, melee congestion, area spells, minions and bosses separately.
 Fixed rewards are intentionally not duplicated; report their sharing separately.
 These tolerances are gates for playtests, not results already obtained. Revise
 the balance revision and repeat compatibility checks if formulas change.
+
+Reward votes that overtake their offer on another connection are accumulated
+by serial in a bounded 16-entry table. Offers fold those votes into their own
+receipt set; snapshots preserve this table and restoration merges locally seen
+early votes. This prevents a receiver waiting forever for a vote that arrived
+before it knew the offer. The table adds at most 785 bytes to the junk snapshot,
+within the existing 16-bit transfer limit.

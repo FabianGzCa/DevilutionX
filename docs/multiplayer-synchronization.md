@@ -95,7 +95,7 @@ keeping classic level generation and replay references unchanged.
 ## Town portals
 
 Portal storage has eight entries, one per player ID. Classic snapshots write
-four portal records before quest state; extended revision 2 snapshots write
+four portal records before quest state; extended revision 3 snapshots write
 eight. An open record is five bytes (x, y, level, dungeon type, set-level flag);
 a closed record is a single `0xFF` byte. Import validates each record and clears
 slots absent from classic snapshots without moving the quest-data boundary.
@@ -121,9 +121,12 @@ so no disk extension or new save version is introduced.
 
 Classic sessions keep their original placement and join command. Extended
 sessions append `CMD_LEVELENTRY` without changing existing command IDs. Its
-packed 60-byte body carries a phase, a transaction serial, authority/participant/
-voter masks, an outcome, a level and set-level flag, eight request tickets and
-eight coordinate pairs. Serial and ticket fields are little endian.
+packed 65-byte body carries a phase, a transaction serial, coordinator slot
+epoch, a frozen human membership mask, authority/participant/voter masks, an
+outcome, a level and set-level flag, eight request tickets and eight coordinate
+pairs. Serial, epoch and ticket fields are little endian. A successful placement
+also commits the destination high-water balance before entrants resume. Local
+resurrection uses the same placement flow to finish its level-changing state.
 
 An entrant requests admission after loading its map. The lowest connected player
 coordinates requests for the same destination, ordered by player ID. A resident
@@ -182,8 +185,17 @@ eight-engine TCP gameplay scenarios are covered by `multiplayer_gameplay_test`.
 
 ## Extended item ownership
 
-Protocol revision 2 keeps 254 item-delta records per level: taken pregenerated
+Protocol revision 3 keeps 254 item-delta records per level: taken pregenerated
 items retain their history independently of the 127 physical floor slots.
 Classic snapshots still contain 127 records. Reloading removes taken items
 before allocating dropped items. Extended junk snapshots also carry the bounded
 item-transfer state; see [Extended item transfers](extended-item-transfers.md).
+
+## Extended encounter state
+
+Revision 3 adds `CMD_PARTYMONSTDAMAGE`, `CMD_PARTYSYNCDATA` and `CMD_PARTYSPAWN`;
+classic command IDs, damage/sync layouts and disk saves are unchanged. The
+`CMD_PARTYREWARD` payload belongs inside an item-transfer request, rather than
+being a standalone gameplay command. See the
+[balance lifecycle](extended-party-balance.md#synchronized-lifecycle) for ordering,
+wire sizes, damage receipts, bounded queues and reward recovery.

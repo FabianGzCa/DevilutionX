@@ -6,7 +6,7 @@ The engine allocates one player in single player, four in classic multiplayer,
 and eight after accepting `ExtendedSessionRules`. `Players` reserves eight
 entries before assigning player pointers. Network tables and player-info
 assembly buffers have eight entries; `NoDeltaSender` is 8, outside every valid
-player ID. The public game selector still creates classic sessions.
+player ID. Games use classic rules unless Extended is selected when creating them.
 
 Extended sessions export at most one requested world snapshot per update, so
 concurrent joins allow the transport to drain between transfers.
@@ -179,8 +179,7 @@ slot reuse, owner death/departure, authoritative spawn replay, extra-index sync
 and delta restoration. It compares actual monster generation in all four
 dungeon types and checks the classic RNG initialization sequence.
 
-UI and balancing must be completed before enabling the extended session selector.
-Full campaign and visual integration checks remain part of that work. Focused
+Full campaign and visual integration checks remain separate work. Focused
 eight-engine TCP gameplay scenarios are covered by `multiplayer_gameplay_test`.
 
 ## Extended item ownership

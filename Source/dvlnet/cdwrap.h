@@ -54,6 +54,7 @@ public:
 	void setup_password(std::string pw) override;
 	void clear_password() override;
 	DvlNetLatencies get_latencies(uint8_t playerid) override;
+	std::optional<GameDataError> get_join_rejection() override;
 
 	virtual ~cdwrap() = default;
 };

@@ -2,8 +2,6 @@
 
 Extended protocol revision 3 admits item transfers before changing private
 ownership. Classic sessions retain their existing item commands and wire layout.
-The public game selector remains classic until extended-session admission is
-explicitly enabled.
 
 ## Admission and ordering
 

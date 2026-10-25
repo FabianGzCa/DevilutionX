@@ -199,13 +199,28 @@ bool SNetJoinGame(char *pszGameName, char *pszGamePassword, int *playerID)
 		DvlNet_SetPassword(pszGamePassword);
 	else
 		DvlNet_ClearPassword();
-	GameData localGame = sgGameInitInfo;
-	SwapGameDataLE(localGame);
-	const auto *bytes = reinterpret_cast<const unsigned char *>(&localGame);
-	dvlnet_inst->setup_gameinfo(net::buffer_t(bytes, bytes + sizeof(localGame)));
-	const int joinedPlayerId = dvlnet_inst->join(pszGameName);
+	const auto join = [&](const GameData &game) {
+		GameData localGame = game;
+		SwapGameDataLE(localGame);
+		const auto *bytes = reinterpret_cast<const unsigned char *>(&localGame);
+		dvlnet_inst->setup_gameinfo(net::buffer_t(bytes, bytes + sizeof(localGame)));
+		return dvlnet_inst->join(pszGameName);
+	};
+	GameData requested = sgGameInitInfo;
+	int joinedPlayerId = join(requested);
+	// A direct join cannot know the host's mode in advance. Only new hosts report a mismatch;
+	// original hosts receive the classic request first.
+	if (joinedPlayerId == -1 && dvlnet_inst->get_join_rejection() == GameDataError::SessionMismatch) {
+		if (const auto alternate = AlternateSessionRules(requested.rules)) {
+			LogVerbose("Host uses the other multiplayer mode; retrying the join");
+			requested.rules = *alternate;
+			joinedPlayerId = join(requested);
+		}
+	}
 	if (joinedPlayerId == -1)
 		return false;
+	// Acceptance normally publishes the host descriptor; keep the admitted mode if it was identical.
+	sgGameInitInfo.rules = requested.rules;
 	*playerID = joinedPlayerId;
 	// Join message with seed will be logged in NetInit after game data is synchronized
 	return true;

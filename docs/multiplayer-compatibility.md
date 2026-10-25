@@ -4,11 +4,10 @@
 
 Classic sessions retain four player slots and the existing wire layout. The
 extended descriptor reserves an eight-player protocol and balance revision;
-it does not enable eight-player gameplay or change balancing by itself. The
-transport and engine synchronization support eight slots internally. Public
-menus still create classic sessions until the gameplay requirements are complete.
-See [Multiplayer synchronization](multiplayer-synchronization.md) for transfer
-limits and the remaining work.
+it does not change balancing by itself. TCP and ZeroTier games can be created
+in either mode; see [Selecting a mode](#selecting-a-mode). Classic remains the
+default. See [Multiplayer synchronization](multiplayer-synchronization.md) for
+transfer limits and the remaining work.
 
 ## GameData contract
 
@@ -68,6 +67,27 @@ rejected. Discovery only answers the matching classic/extended request kind.
 Distinct extended kinds prevent old peers from ignoring the new rule bytes and
 silently accepting an extended session.
 
+## Selecting a mode
+
+Creating a TCP or ZeroTier game adds a mode step after the game speed. Classic
+is listed first and selected by default; Extended allows eight players. The
+chosen rules are validated with the other settings before the game is created,
+and offline multiplayer always uses classic rules. Leaving the menu or failing
+to create or join a game resets the mode to classic.
+
+The ZeroTier browser sends both discovery kinds. Each host answers its own kind,
+so classic and extended games are listed together with their mode and occupied
+and total slots, for example `name 3/8`. Selecting a listed game requests its
+advertised rules.
+
+A direct join by address or game ID cannot know the host's mode. It sends the
+classic request first, which original hosts understand. If a new host rejects it
+as a session mismatch, the client retries once with the other mode; a ZeroTier
+host's advertisement provides the same answer without sending a request. Any
+other result, including a full room or a version or edition mismatch, ends the
+attempt with that error. A full room therefore reports "The multiplayer game is
+full." only when the mode and identity are compatible.
+
 ## Legacy compatibility
 
 New classic clients send GameData in the existing join kind; the original server
@@ -89,6 +109,9 @@ with arbitrary releases or mods.
 layout, malformed data, rule/version/edition mismatch, cookie correlation,
 pre-admission state protection, and peer discovery/admission with an in-memory
 transport. The same tests run under `classic-sanitizers`.
+`ctest --preset classic-tests -R StormJoin` joins real localhost TCP rooms through
+the menu's join path, covering mode detection in both directions and full or
+incompatible rooms.
 
 Interop testing must additionally use a separately built original revision,
 checking classic admission and payload exchange in both directions, rejection

@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstring>
 #include <memory>
+#include <string_view>
 
 #include <gtest/gtest.h>
 
@@ -28,6 +30,16 @@ buffer_t Encode(GameData data)
 	SwapGameDataLE(data);
 	const auto *bytes = reinterpret_cast<const unsigned char *>(&data);
 	return { bytes, bytes + sizeof(data) };
+}
+
+buffer_t Advertisement(const GameData &data, std::string_view name, size_t players)
+{
+	buffer_t info = Encode(data);
+	info.resize(sizeof(GameData) + PlayerNameLength * SessionPlayerCapacity(data.rules));
+	for (size_t i = 0; i < players; ++i)
+		info[sizeof(GameData) + i * PlayerNameLength] = static_cast<unsigned char>('a' + i);
+	info.insert(info.end(), name.begin(), name.end());
+	return info;
 }
 
 class session_net : public base {
@@ -217,6 +229,49 @@ TEST_F(PeerSessionCompatibility, IncompatibleIdentityNeverAnnouncesPlayer)
 	EXPECT_EQ(*(*reply)->NewPlayer(), 1);
 }
 
+TEST_F(PeerSessionCompatibility, BrowserListsBothModesAndReportsDirectJoinMismatch)
+{
+	base_protocol<memory_protocol> client;
+	client.clear_password();
+	client.setup_gameinfo(Encode(Game()));
+	memory_protocol::outgoing.clear();
+	ASSERT_TRUE(client.send_info_request());
+	ASSERT_EQ(memory_protocol::outgoing.size(), 2);
+	for (size_t i = 0; i < 2; ++i) {
+		auto request = factory_.make_packet(memory_protocol::outgoing[i]);
+		ASSERT_TRUE(request.has_value());
+		EXPECT_EQ((*request)->Type(), i == 0 ? PT_INFO_REQUEST : PT_INFO_REQUEST_EXTENDED);
+	}
+
+	auto classicReply = factory_.make_packet<PT_INFO_REPLY>(PLR_BROADCAST, PLR_MASTER, Advertisement(Game(), "classic", 2));
+	auto extendedReply = factory_.make_packet<PT_INFO_REPLY_EXTENDED>(PLR_BROADCAST, PLR_MASTER, Advertisement(Game(true), "extended", 5));
+	ASSERT_TRUE(classicReply.has_value());
+	ASSERT_TRUE(extendedReply.has_value());
+	memory_protocol::endpoint classicHost;
+	classicHost.addr[0] = 3;
+	memory_protocol::endpoint extendedHost;
+	extendedHost.addr[0] = 4;
+	memory_protocol::incoming.emplace_back(classicHost, (*classicReply)->Data());
+	memory_protocol::incoming.emplace_back(extendedHost, (*extendedReply)->Data());
+	const std::vector<GameInfo> games = client.get_gamelist();
+	ASSERT_EQ(games.size(), 2);
+	const auto find = [&](std::string_view name) { return std::find_if(games.begin(), games.end(), [&](const GameInfo &game) { return game.name == name; }); };
+	const auto classic = find("classic");
+	const auto extended = find("extended");
+	ASSERT_NE(classic, games.end());
+	ASSERT_NE(extended, games.end());
+	EXPECT_EQ(classic->gameData.rules, ClassicSessionRules);
+	EXPECT_EQ(classic->players.size(), 2);
+	EXPECT_EQ(extended->gameData.rules, ExtendedSessionRules);
+	EXPECT_EQ(extended->players.size(), 5);
+
+	// A classic direct join learns the advertised mode without sending an incompatible request.
+	memory_protocol::outgoing.clear();
+	EXPECT_EQ(client.join("extended"), -1);
+	EXPECT_EQ(client.get_join_rejection(), GameDataError::SessionMismatch);
+	EXPECT_TRUE(memory_protocol::outgoing.empty());
+}
+
 TEST(SessionCompatibility, TruncatedPacketHeadersAreRejected)
 {
 	packet_factory factory;
@@ -324,6 +379,38 @@ TEST(SessionCompatibility, IdentityChecksVersionsEditionsAndRules)
 	client.isHellfire = 255; // Padding in the original client is not an identity field.
 	client.reserved = 255;
 	EXPECT_FALSE(CheckGameCompatibility(Game(), client));
+}
+
+TEST(SessionCompatibility, SupportedModesHaveCapacityAndOneAlternative)
+{
+	EXPECT_TRUE(IsSupportedSessionRules(ClassicSessionRules));
+	EXPECT_TRUE(IsSupportedSessionRules(ExtendedSessionRules));
+	EXPECT_EQ(SessionPlayerCapacity(ClassicSessionRules), 4);
+	EXPECT_EQ(SessionPlayerCapacity(ExtendedSessionRules), 8);
+	EXPECT_EQ(AlternateSessionRules(ClassicSessionRules), ExtendedSessionRules);
+	EXPECT_EQ(AlternateSessionRules(ExtendedSessionRules), ClassicSessionRules);
+	for (const SessionRules rules : { SessionRules { 3, 8, 2 }, SessionRules { 2, 8, 1 }, SessionRules { 3, 4, 1 }, SessionRules { 0, 8, 0 } }) {
+		EXPECT_FALSE(IsSupportedSessionRules(rules));
+		EXPECT_EQ(SessionPlayerCapacity(rules), 0);
+		EXPECT_FALSE(AlternateSessionRules(rules));
+	}
+}
+
+TEST(SessionCompatibility, NewGameSettingsAreValidatedBeforeHosting)
+{
+	EXPECT_FALSE(ValidateNewGame(Game(), false));
+	EXPECT_FALSE(ValidateNewGame(Game(), true));
+	EXPECT_FALSE(ValidateNewGame(Game(true), false));
+	EXPECT_EQ(ValidateNewGame(Game(true), true), GameDataError::UnsupportedRules);
+	GameData data = Game(true);
+	data.rules.maxPlayers = 16;
+	EXPECT_EQ(ValidateNewGame(data, false), GameDataError::UnsupportedRules);
+	data = Game(true);
+	data.nTickRate = 0;
+	EXPECT_EQ(ValidateNewGame(data, false), GameDataError::InvalidParameters);
+	data = Game();
+	data.nDifficulty = static_cast<_difficulty>(DIFF_LAST + 1);
+	EXPECT_EQ(ValidateNewGame(data, false), GameDataError::InvalidParameters);
 }
 
 TEST(SessionCompatibility, LegacyEmptyJoinIsClassicOnly)
@@ -457,11 +544,13 @@ TEST(SessionCompatibility, RejectionIsCorrelatedAndReportsReason)
 	auto reject = factory.make_packet<PT_JOIN_REJECT>(PLR_MASTER, PLR_BROADCAST, cookie_t { 41 }, buffer_t { reason });
 	ASSERT_TRUE(reject.has_value());
 	EXPECT_TRUE(client.Receive(**reject));
+	EXPECT_FALSE(client.get_join_rejection());
 	auto matchingReject = factory.make_packet<PT_JOIN_REJECT>(PLR_MASTER, PLR_BROADCAST, cookie_t { 42 }, buffer_t { reason });
 	ASSERT_TRUE(matchingReject.has_value());
 	const auto result = client.Receive(**matchingReject);
 	ASSERT_FALSE(result.has_value());
 	EXPECT_EQ(result.error().what(), GameDataErrorMessage(GameDataError::UnsupportedRules));
+	EXPECT_EQ(client.get_join_rejection(), GameDataError::UnsupportedRules);
 	EXPECT_EQ(client.PlayerId(), PLR_BROADCAST);
 	for (buffer_t invalid : { buffer_t { }, buffer_t { 255 }, buffer_t { reason, reason } }) {
 		auto invalidReject = factory.make_packet<PT_JOIN_REJECT>(PLR_MASTER, PLR_BROADCAST, cookie_t { 42 }, invalid);

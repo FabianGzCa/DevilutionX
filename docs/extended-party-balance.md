@@ -3,8 +3,8 @@
 Balance revision 1 runs in negotiated extended protocol 3 sessions. The pure
 functions in `monsters/party_scaling.*` define its arithmetic;
 `monsters/party_balance.*` integrates creation, damage, level state and rewards.
-Public session selection remains classic until the session-selection work is
-complete. This is an initial model, not a claim of campaign playtest results.
+It applies only to games created in Extended mode. This is an initial model, not
+a claim of campaign playtest results.
 
 ## Native reference
 

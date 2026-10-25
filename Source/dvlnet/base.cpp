@@ -53,6 +53,11 @@ DvlNetLatencies base::get_latencies(uint8_t playerid)
 	return latencies;
 }
 
+std::optional<GameDataError> base::get_join_rejection()
+{
+	return joinRejection_;
+}
+
 void base::RunEventHandler(_SNETEVENT &ev)
 {
 	auto f = registered_handlers[static_cast<event_type>(ev.eventid)];
@@ -139,7 +144,8 @@ std::expected<void, PacketError> base::HandleReject(packet &pkt)
 		return std::unexpected(info.error());
 	if ((*info)->size() != 1 || (**info)[0] > static_cast<uint8_t>(GameDataError::SessionFull))
 		return std::unexpected("Invalid join rejection");
-	joinError_.emplace(GameDataErrorMessage(static_cast<GameDataError>((**info)[0])));
+	joinRejection_ = static_cast<GameDataError>((**info)[0]);
+	joinError_.emplace(GameDataErrorMessage(*joinRejection_));
 	return std::unexpected(*joinError_);
 }
 

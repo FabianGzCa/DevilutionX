@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,12 @@ public:
 	virtual DvlNetLatencies get_latencies(uint8_t playerid)
 	{
 		return {};
+	}
+
+	/** Reason reported by the host, or found in its advertisement, for the last failed join. */
+	virtual std::optional<GameDataError> get_join_rejection()
+	{
+		return std::nullopt;
 	}
 
 	static std::unique_ptr<abstract_net> MakeNet(provider_t provider);

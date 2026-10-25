@@ -129,8 +129,10 @@ std::expected<void, PacketError> base_protocol<P>::wait_firstpeer()
 			const auto local = DecodeGameData(game_init_info);
 			if (!local.has_value())
 				return std::unexpected(GameDataErrorMessage(local.error()));
-			if (auto error = CheckGameCompatibility(it->second.data, *local))
+			if (auto error = CheckGameCompatibility(it->second.data, *local)) {
+				joinRejection_ = *error;
 				return std::unexpected(GameDataErrorMessage(*error));
+			}
 			firstpeer = it->second.peer;
 			break;
 		}
@@ -153,15 +155,17 @@ bool base_protocol<P>::send_info_request()
 	}
 	if (!*status)
 		return false;
-	std::expected<std::unique_ptr<packet>, PacketError> pkt
-	    = IsExtendedSession(game_init_info)
-	    ? pktfty->make_packet<PT_INFO_REQUEST_EXTENDED>(PLR_BROADCAST, PLR_MASTER)
-	    : pktfty->make_packet<PT_INFO_REQUEST>(PLR_BROADCAST, PLR_MASTER);
-	if (!pkt.has_value()) {
-		LogError("make_packet: {}", pkt.error().what());
-		return false;
+	// Hosts answer only their own kind, so the browser can list both classic and extended games.
+	for (const packet_type type : { PT_INFO_REQUEST, PT_INFO_REQUEST_EXTENDED }) {
+		std::expected<std::unique_ptr<packet>, PacketError> pkt = type == PT_INFO_REQUEST
+		    ? pktfty->make_packet<PT_INFO_REQUEST>(PLR_BROADCAST, PLR_MASTER)
+		    : pktfty->make_packet<PT_INFO_REQUEST_EXTENDED>(PLR_BROADCAST, PLR_MASTER);
+		if (!pkt.has_value()) {
+			LogError("make_packet: {}", pkt.error().what());
+			return false;
+		}
+		proto.send_oob_mc((*pkt)->Data());
 	}
-	proto.send_oob_mc((*pkt)->Data());
 	return true;
 }
 

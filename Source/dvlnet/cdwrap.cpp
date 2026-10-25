@@ -139,4 +139,9 @@ DvlNetLatencies cdwrap::get_latencies(uint8_t playerid)
 	return dvlnet_wrap->get_latencies(playerid);
 }
 
+std::optional<GameDataError> cdwrap::get_join_rejection()
+{
+	return dvlnet_wrap->get_join_rejection();
+}
+
 } // namespace devilution::net

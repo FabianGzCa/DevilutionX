@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <string_view>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -18,16 +19,23 @@
 #include "dvlnet/tcp_server.h"
 #endif
 #include "player.h"
+#include "storm/storm_net.hpp"
 
 namespace devilution::net {
 namespace {
 
-buffer_t GameInfo(bool extended)
+GameData LocalGame(bool extended)
 {
 	GameData data { };
 	data.size = sizeof(data);
 	data.nTickRate = 20;
 	data.rules = extended ? ExtendedSessionRules : ClassicSessionRules;
+	return data;
+}
+
+buffer_t GameInfo(bool extended)
+{
+	GameData data = LocalGame(extended);
 	SwapGameDataLE(data);
 	const auto *bytes = reinterpret_cast<const unsigned char *>(&data);
 	return { bytes, bytes + sizeof(data) };
@@ -282,6 +290,10 @@ protected:
 	}
 	void TearDown() override
 	{
+		if (storm_) {
+			SNetDestroy();
+			sgGameInitInfo = { };
+		}
 		clients_.clear();
 		if (thread_.joinable()) {
 			asio::post(context_, [this] { server_->Close(); });
@@ -299,6 +311,20 @@ protected:
 		client->setup_gameinfo(info_);
 		const int id = client->join(address_);
 		if (id >= 0) clients_.push_back(std::move(client));
+		return id;
+	}
+	// Join through Storm as the menu does, so its classic-first mode detection runs.
+	int StormJoin(const GameData &local)
+	{
+		storm_ = true;
+		sgGameInitInfo = local;
+		if (!SNetInitializeProvider(SELCONN_TCP, &sgGameInitInfo))
+			return -2;
+		std::string address = address_;
+		char password[] = "transport-test";
+		int id = -1;
+		if (!SNetJoinGame(address.data(), GetParam() ? password : nullptr, &id))
+			return -1;
 		return id;
 	}
 	void Pump()
@@ -327,6 +353,7 @@ protected:
 	std::string address_;
 	buffer_t info_;
 	std::vector<std::unique_ptr<transport_client>> clients_;
+	bool storm_ = false;
 };
 
 TEST_P(TcpTransport, EightPeersExchangeOrderedDirectedBroadcastAndTurns)
@@ -631,6 +658,61 @@ TEST_P(TcpTransport, IncompleteJoinsAndWrongPasswordsReleaseResources)
 	EXPECT_EQ(wrongPassword.join(address_), -1);
 	if (GetParam()) { EXPECT_NE(std::string(SDL_GetError()).find("password"), std::string::npos); }
 	ASSERT_EQ(Add(), 2);
+}
+
+TEST_P(TcpTransport, StormJoinDetectsExtendedHostFromClassicRequest)
+{
+	Start(true);
+	ASSERT_EQ(Add(), 0);
+	// The rejected classic attempt must not consume a slot before the extended retry.
+	ASSERT_EQ(StormJoin(LocalGame(false)), 1);
+	EXPECT_EQ(sgGameInitInfo.rules, ExtendedSessionRules);
+	ASSERT_EQ(Add(), 2);
+}
+
+TEST_P(TcpTransport, StormJoinKeepsClassicHostsClassic)
+{
+	Start(false);
+	ASSERT_EQ(Add(), 0);
+	ASSERT_EQ(StormJoin(LocalGame(false)), 1);
+	EXPECT_EQ(sgGameInitInfo.rules, ClassicSessionRules);
+}
+
+TEST_P(TcpTransport, StormJoinFallsBackToClassicHost)
+{
+	Start(false);
+	ASSERT_EQ(Add(), 0);
+	ASSERT_EQ(StormJoin(LocalGame(true)), 1);
+	EXPECT_EQ(sgGameInitInfo.rules, ClassicSessionRules);
+}
+
+TEST_P(TcpTransport, StormJoinReportsFullExtendedRoom)
+{
+	Start(true);
+	for (int id = 0; id < 8; ++id)
+		ASSERT_EQ(Add(), id);
+	EXPECT_EQ(StormJoin(LocalGame(false)), -1);
+	EXPECT_EQ(std::string_view(SDL_GetError()), GameDataErrorMessage(GameDataError::SessionFull));
+}
+
+TEST_P(TcpTransport, StormJoinReportsFullClassicRoom)
+{
+	Start(false);
+	for (int id = 0; id < 4; ++id)
+		ASSERT_EQ(Add(), id);
+	EXPECT_EQ(StormJoin(LocalGame(false)), -1);
+	EXPECT_EQ(std::string_view(SDL_GetError()), GameDataErrorMessage(GameDataError::SessionFull));
+}
+
+TEST_P(TcpTransport, StormJoinDoesNotReportIncompatibleVersionAsFull)
+{
+	Start(true);
+	ASSERT_EQ(Add(), 0);
+	GameData local = LocalGame(false);
+	local.versionMajor = 9;
+	EXPECT_EQ(StormJoin(local), -1);
+	EXPECT_EQ(std::string_view(SDL_GetError()), GameDataErrorMessage(GameDataError::VersionMismatch));
+	ASSERT_EQ(Add(), 1);
 }
 
 INSTANTIATE_TEST_SUITE_P(PlainAndEncrypted, TcpTransport, ::testing::Bool());

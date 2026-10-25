@@ -24,8 +24,8 @@ using net::leaveinfo_t;
 // Defined in player.h, forward declared here to allow for functions which operate in the context of a player.
 struct Player;
 
-// The classic protocol and currently available session size are both four, but
-// remain separate so the protocol limit does not define engine storage.
+// The classic protocol and the session size used before a game's rules are known
+// are both four, but remain separate so the protocol limit does not define engine storage.
 constexpr int ClassicPlayerLimit = 4;
 constexpr int SessionPlayerLimit = 4;
 // Engine storage is independent of the negotiated four- or eight-slot session.

@@ -14,6 +14,29 @@ void OptionSharewareChanged()
 const auto OptionChangeHandlerShareware = (GetOptions().GameMode.shareware.SetValueChangedCallback(OptionSharewareChanged), true);
 } // namespace
 
+bool IsSupportedSessionRules(SessionRules rules)
+{
+	return rules == ClassicSessionRules || rules == ExtendedSessionRules;
+}
+
+uint8_t SessionPlayerCapacity(SessionRules rules)
+{
+	if (rules == ClassicSessionRules)
+		return 4;
+	if (rules == ExtendedSessionRules)
+		return ExtendedSessionRules.maxPlayers;
+	return 0;
+}
+
+std::optional<SessionRules> AlternateSessionRules(SessionRules rules)
+{
+	if (rules == ClassicSessionRules)
+		return ExtendedSessionRules;
+	if (rules == ExtendedSessionRules)
+		return ClassicSessionRules;
+	return std::nullopt;
+}
+
 std::optional<GameDataError> ValidateGameData(const GameData &data)
 {
 	if (data.size != sizeof(GameData))
@@ -28,6 +51,15 @@ std::optional<GameDataError> ValidateGameData(const GameData &data)
 		if (data.isHellfire > 1 || (data.isSpawn != 0 && data.isHellfire != 0) || data.reserved != 0)
 			return GameDataError::InvalidParameters;
 	}
+	return std::nullopt;
+}
+
+std::optional<GameDataError> ValidateNewGame(const GameData &data, bool offline)
+{
+	if (auto error = ValidateGameData(data))
+		return error;
+	if (offline && data.isExtended())
+		return GameDataError::UnsupportedRules;
 	return std::nullopt;
 }
 

@@ -67,7 +67,14 @@ enum class GameDataError : uint8_t {
 	SessionFull,
 };
 
+DVL_API_FOR_TEST bool IsSupportedSessionRules(SessionRules rules);
+/** Player slots of a supported session; zero for rules this build cannot use. */
+DVL_API_FOR_TEST uint8_t SessionPlayerCapacity(SessionRules rules);
+/** The other supported mode, tried once when a host rejects a join as a mode mismatch. */
+DVL_API_FOR_TEST std::optional<SessionRules> AlternateSessionRules(SessionRules rules);
 DVL_API_FOR_TEST std::optional<GameDataError> ValidateGameData(const GameData &data);
+/** Validate settings chosen locally before hosting. The offline provider has a single participant. */
+DVL_API_FOR_TEST std::optional<GameDataError> ValidateNewGame(const GameData &data, bool offline);
 DVL_API_FOR_TEST std::optional<GameDataError> CheckGameCompatibility(const GameData &host, const GameData &client);
 DVL_API_FOR_TEST std::string_view GameDataErrorMessage(GameDataError error);
 

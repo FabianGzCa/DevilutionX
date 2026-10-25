@@ -43,6 +43,7 @@ public:
 	void clear_password() override;
 
 	DvlNetLatencies get_latencies(uint8_t playerid) override;
+	std::optional<GameDataError> get_join_rejection() override;
 
 	~base() override = default;
 
@@ -51,6 +52,7 @@ protected:
 	buffer_t game_init_info;
 	uint8_t player_limit_ = ClassicPlayerLimit;
 	std::optional<PacketError> joinError_;
+	std::optional<GameDataError> joinRejection_;
 
 	struct message_t {
 		uint8_t sender;

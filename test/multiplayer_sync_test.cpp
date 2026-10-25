@@ -1835,6 +1835,25 @@ TEST_F(MultiplayerSyncTest, LateJoinImportsTheSameLevelStateAtACommonTurn)
 	}
 }
 
+TEST_F(MultiplayerSyncTest, JoinProgressClosesAfterACompleteSnapshot)
+{
+	SeedLevel(2, 17);
+	const auto snapshot = Export();
+	delta_init();
+	MyPlayerId = 4;
+	MyPlayer = &Players[4];
+	gbDeltaSender = 1;
+	msg_start_resync();
+	for (const auto &message : snapshot)
+		Receive(1, message);
+	ASSERT_TRUE(TestHasCompleteDelta());
+	// The dialog shows completion and then closes, as msg_wait_resync requires.
+	EXPECT_EQ(TestWaitForTurns(), 99);
+	EXPECT_EQ(TestWaitForTurns(), 100);
+	EXPECT_TRUE(TestHasCompleteDelta());
+	gbBufferMsgs = 0;
+}
+
 TEST_F(MultiplayerSyncTest, DamageSendersEncodeTheirPayloadsInLittleEndian)
 {
 	NetSendCmdMonDmg(true, 0x1234, 0x11223344);

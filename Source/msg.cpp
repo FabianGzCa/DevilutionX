@@ -619,6 +619,9 @@ int WaitForTurns()
 		nthread_set_turn_upper_bit();
 	}
 	if (deltaTransferComplete) {
+		// Show completion once; the progress dialog closes on the following call.
+		if (sgbDeltaChunks == MaxChunks)
+			return 100;
 		sgbDeltaChunks = MaxChunks;
 		return 99;
 	}
@@ -3868,6 +3871,11 @@ void FinishItemTransfers()
 bool TestHasCompleteDelta()
 {
 	return deltaTransferComplete;
+}
+
+int TestWaitForTurns()
+{
+	return WaitForTurns();
 }
 #endif
 

@@ -837,6 +837,8 @@ size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize);
 
 #ifdef BUILD_TESTING
 bool TestHasCompleteDelta();
+/** One update of the join progress dialog; 100 closes it. */
+int TestWaitForTurns();
 #endif
 
 } // namespace devilution

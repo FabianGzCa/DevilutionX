@@ -194,7 +194,11 @@ std::expected<bool, PacketError> protocol_zt::send_queued_peer(const endpoint &p
 		auto len = frame->size() - state.sentBytes;
 		auto r = lwip_send(state.fd, frame->data() + state.sentBytes, len, 0);
 		if (r < 0) {
-			return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS;
+			const int error = errno;
+			const bool retry = error == EAGAIN || error == EWOULDBLOCK || error == EINPROGRESS;
+			if (!retry)
+				LogVerbose("ZeroTier stream {} send failed: {} ({})", state.fd, strerror(error), error);
+			return retry;
 		}
 		if (r == 0)
 			return false;
@@ -222,14 +226,20 @@ bool protocol_zt::recv_peer(const endpoint &peer)
 	peer_state &state = peer_list[peer];
 	while (true) {
 		auto len = lwip_recv(state.fd, buf, sizeof(buf), 0);
-		if (len == 0)
+		if (len == 0) {
+			LogVerbose("ZeroTier stream {} closed by its peer", state.fd);
 			return false;
+		}
 		if (len > 0) {
 			state.lastActivity = current_ms();
 			if (!state.recv_queue.Write(buffer_t(buf, buf + len)).has_value())
 				return false;
 		} else {
-			return errno == EAGAIN || errno == EWOULDBLOCK;
+			const int error = errno;
+			const bool retry = error == EAGAIN || error == EWOULDBLOCK;
+			if (!retry)
+				LogVerbose("ZeroTier stream {} receive failed: {} ({})", state.fd, strerror(error), error);
+			return retry;
 		}
 	}
 }
@@ -290,6 +300,7 @@ bool protocol_zt::accept_all()
 		std::copy(in6.sin6_addr.s6_addr, in6.sin6_addr.s6_addr + 16, ep.addr.begin());
 		if ((!peer_list.contains(ep) && peer_list.size() >= MaxPendingPeers)
 		    || (peer_list.contains(ep) && peer_list[ep].fd != -1)) {
+			LogVerbose("ZeroTier stream {} rejected: duplicate endpoint or pending-peer limit", newfd);
 			lwip_close(newfd);
 			continue;
 		}

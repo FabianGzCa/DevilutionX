@@ -610,6 +610,16 @@ int WaitForTurns()
 		nthread_recv_turns();
 	}
 
+	if (!deltaTransferComplete && sgGameInitInfo.rules == ExtendedSessionRules
+	    && (player_state[MyPlayerId] & PS_CONNECTED) != 0) {
+		// An incomplete world cannot be recovered after every remote connection is lost.
+		const bool hasDonor = std::any_of(Players.begin(), Players.end(), [](const Player &player) {
+			return &player != MyPlayer && (player_state[player.getId()] & PS_CONNECTED) != 0;
+		});
+		if (!hasDonor)
+			gbGameDestroyed = true;
+	}
+
 	if (gbGameDestroyed)
 		return 100;
 	if (gbDeltaSender >= Players.size()) {

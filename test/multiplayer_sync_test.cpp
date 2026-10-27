@@ -2133,6 +2133,37 @@ TEST_F(MultiplayerSyncTest, AJoiningClientRestoresItemTransfersBeforeReplayingPl
 	EXPECT_FALSE(gbGameDestroyed);
 }
 
+TEST_F(MultiplayerSyncTest, LosingEveryDeltaDonorClosesExtendedResynchronization)
+{
+	msg_start_resync();
+	// Loopback deliberately leaves connection flags untouched. Model the turn
+	// transport's membership snapshots while exercising the real resync update.
+	player_state[MyPlayerId] = PS_CONNECTED;
+	Players[7].plractive = true;
+	gbActivePlayers = 2;
+	player_state[7] = PS_CONNECTED;
+	gbDeltaSender = 7;
+	EXPECT_LT(TestWaitForTurns(), 100);
+	EXPECT_FALSE(gbGameDestroyed);
+
+	multi_player_left(7, leaveinfo_t::LEAVE_DROP);
+	player_state[7] = 0; // The next transport snapshot contains only the local peer.
+	EXPECT_EQ(TestWaitForTurns(), 100);
+	EXPECT_TRUE(gbGameDestroyed);
+	EXPECT_FALSE(TestHasCompleteDelta());
+}
+
+TEST_F(MultiplayerSyncTest, ResynchronizationWaitsUntilTransportMembershipIsKnown)
+{
+	msg_start_resync();
+	const int previousTick = last_tick;
+	last_tick = SDL_GetTicks() + 1000;
+	EXPECT_LT(TestWaitForTurns(), 100);
+	EXPECT_FALSE(gbGameDestroyed);
+	EXPECT_FALSE(TestHasCompleteDelta());
+	last_tick = previousTick;
+}
+
 TEST_F(MultiplayerSyncTest, PartySnapshotCannotRewindAppliedDamageReceipts)
 {
 	LoadMonsterData();

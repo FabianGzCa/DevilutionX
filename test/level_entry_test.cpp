@@ -792,6 +792,37 @@ TEST_F(LevelEntryPlacementTest, RealNetworkCommandsCompleteLocalAdmissionOnlyAft
 	EXPECT_FALSE(MyPlayer->_pLvlChanging);
 }
 
+TEST_F(LevelEntryPlacementTest, ReusedSlotRequestBeforePlayerInfoAckKeepsItsCurrentEpoch)
+{
+	Room();
+	InitItemTransfers();
+	LeaveItemTransfers(7);
+	ASSERT_EQ(MultiplayerSlotEpoch(7), 1U);
+	// SEND_PLRINFO has unpacked the new player; ACK_PLRINFO has not activated it yet.
+	Players[7]._pClass = HeroClass::Warrior;
+	Players[7].setCharacterLevel(1);
+	std::strcpy(Players[7]._pName, "Rejoined");
+	Players[7].plractive = false;
+	Players[7].setLevel(1);
+	Players[7].position.tile = { 40, 50 };
+	gbActivePlayers = 7;
+	auto request = Request(7);
+	request.epoch = MultiplayerSlotEpoch(7);
+	SwapLevelEntryMessageLE(request);
+	ReceiveLevelEntry(7, request);
+	EXPECT_TRUE(IsLevelEntryPending(7));
+	EXPECT_TRUE(Players[7].plractive);
+	EXPECT_EQ(gbActivePlayers, 8);
+
+	CancelLevelEntry(7, true);
+	Players[7].plractive = false;
+	request = Request(7); // The previous occupant used epoch zero.
+	SwapLevelEntryMessageLE(request);
+	ReceiveLevelEntry(7, request);
+	EXPECT_FALSE(IsLevelEntryPending(7));
+	EXPECT_FALSE(Players[7].plractive);
+}
+
 TEST_F(LevelEntryPlacementTest, BlockedEngineAdmissionRetriesAfterSpaceBecomesAvailable)
 {
 	for (uint8_t i = 1; i < 8; ++i)

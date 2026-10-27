@@ -273,8 +273,11 @@ void PlayerLeftMsg(Player &player, bool left)
 
 	if (&player == MyPlayer)
 		return;
-	if (left)
+	if (left) {
+		// Native leave events and replayed drop messages share this cleanup.
+		CancelLevelEntry(static_cast<uint8_t>(player.getId()), true);
 		ForgetChatRecipientSelection(player.getId());
+	}
 	DeactivateVision(player.getId());
 	RemovePortalMissile(player);
 	DeactivatePortal(player);
@@ -728,7 +731,6 @@ void multi_player_left(uint8_t pnum, leaveinfo_t reason)
 {
 	if (pnum >= Players.size() || pnum == MyPlayerId)
 		return;
-	CancelLevelEntry(pnum, true);
 	sgbPlayerLeftGameTbl[pnum] = true;
 	sgbPlayerTurnBitTbl[pnum] = false;
 	sgbSendDeltaTbl[pnum] = false;

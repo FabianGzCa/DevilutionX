@@ -57,10 +57,11 @@ LevelEntryPeers Peers()
 	LevelEntryPeers peers;
 	for (uint8_t i = 0; i < Players.size(); ++i) {
 		const Player &player = Players[i];
+		// A valid request can arrive after SEND_PLRINFO but before ACK_PLRINFO activates the slot.
+		peers.epochs[i] = MultiplayerSlotEpoch(i);
 		if (!player.plractive)
 			continue;
 		peers.active |= Bit(i);
-		peers.epochs[i] = MultiplayerSlotEpoch(i);
 		peers.level[i] = player.plrlevel;
 		peers.setLevel[i] = player.plrIsOnSetLevel;
 		if (!player._pLvlChanging || Entries.Pending(i))

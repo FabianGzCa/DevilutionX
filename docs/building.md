@@ -5,7 +5,7 @@ all the dependencies that must be vendored, the version information, and `devilu
 This is the version most appropriate for packaging DevilutionX for Linux distributions.
 For other use cases, use the git repository.
 
-For repeatable game, test, and sanitizer builds, see [Classic regression testing](testing-classic.md).
+For repeatable game, test, and sanitizer builds, see [Classic regression testing](testing-classic.md). Multiplayer integration and fault tests are described in [Multiplayer integration testing](multiplayer-testing.md).
 
 <details><summary>Linux</summary>
 

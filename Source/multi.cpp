@@ -908,6 +908,13 @@ void NetClose()
 	}
 }
 
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST void TestRegisterNetEventHandlers()
+{
+	RegisterNetEventHandlers();
+}
+#endif
+
 bool NetInit(bool bSinglePlayer)
 {
 	while (true) {

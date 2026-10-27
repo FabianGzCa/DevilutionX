@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -8,6 +9,7 @@
 #include <numeric>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,6 +34,7 @@
 #include "options.h"
 #include "player.h"
 #include "players/level_entry.hpp"
+#include "portal.h"
 #include "storm/storm_net.hpp"
 #include "sync.h"
 #include "tables/playerdat.hpp"
@@ -42,9 +45,17 @@ namespace devilution {
 bool TestDeadItem(Player &player, Item &item, Displacement direction);
 bool TestPlayerMeleeHit(Player &player, Monster &monster);
 void TestDropHalfPlayersGold(Player &player);
+void TestRegisterNetEventHandlers();
 namespace {
 std::filesystem::path Directory;
 unsigned Role;
+unsigned PeerCount = 8;
+uint32_t ScenarioSeed = 19001;
+bool Classic = false;
+bool SessionScenario = false;
+bool PrivateGame = false;
+uint32_t ConfirmedTurn = 0;
+uint32_t GenerationRng = 0;
 unsigned BossId = MonsterStorageCapacity;
 bool Captured = false;
 bool ResumeSnapshot = false;
@@ -102,7 +113,7 @@ void Wait(const std::string &name)
 		Pump();
 	}
 }
-void ResetWorld(unsigned count, uint8_t humans = 8)
+void ResetWorld(unsigned count, uint8_t humans = 0)
 {
 	delta_init();
 	gbBufferMsgs = 0;
@@ -158,7 +169,7 @@ void ResetWorld(unsigned count, uint8_t humans = 8)
 		DeltaAddItem(index);
 	}
 	InitItemTransfers();
-	GetPartyLevelState(CurrentPartyLevel()).participants = humans;
+	GetPartyLevelState(CurrentPartyLevel()).participants = humans != 0 ? humans : PeerCount;
 	CapturePartyMonsters();
 	NewCursor(CURSOR_HAND);
 }
@@ -204,7 +215,7 @@ void LoadPartyWorld(uint8_t destination)
 		Require(AddMonsterType(MT_GOLEM, PLACE_SPECIAL).has_value(), "cannot load party golem type");
 		Require(AddMonsterType(MT_SKING, PLACE_SPECIAL).has_value(), "cannot load party boss type");
 		Require(AddMonsterType(MT_DIABLO, PLACE_SPECIAL).has_value(), "cannot load party Diablo type");
-		SetRndSeed(17001);
+		SetRndSeed(SessionScenario ? ScenarioSeed : 17001);
 		InitGolems();
 	}
 	DeltaLoadLevel();
@@ -287,6 +298,81 @@ std::string Describe()
 	}
 	return result;
 }
+/** Native transport turns fence the checkpoint; wall-clock quiet is not its identity. */
+void ConfirmTurn(unsigned stage)
+{
+	std::byte empty { };
+	multi_send_msg_packet(PlayerRecipientMask { (1U << PeerCount) - 1 }, &empty, 0);
+	FlushNetMessageBuffers();
+	uint32_t turn = Swap32LE(stage + 1);
+	Require(SNetSendTurn(reinterpret_cast<char *>(&turn), sizeof(turn)), "cannot send checkpoint turn");
+	std::array<char *, PlayerStorageCapacity> data { };
+	std::array<size_t, PlayerStorageCapacity> sizes { };
+	std::array<uint32_t, PlayerStorageCapacity> status { };
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+	while (!SNetReceiveTurns(Players.size(), data.data(), sizes.data(), status.data())) {
+		Require(std::chrono::steady_clock::now() < deadline, "checkpoint turn did not arrive");
+		Pump();
+	}
+	for (unsigned peer = 0; peer < PeerCount; ++peer) {
+		Require((status[peer] & PS_TURN_ARRIVED) != 0 && sizes[peer] == sizeof(turn), "checkpoint omitted an active peer");
+		uint32_t received;
+		std::memcpy(&received, data[peer], sizeof(received));
+		Require(Swap32LE(received) == stage + 1, "checkpoint mixed different turns");
+	}
+	Pump();
+	ConfirmedTurn = stage + 1;
+}
+
+/** Field-wise serialization of replicated state, never pointers, padding or local inventory. */
+std::string CanonicalState()
+{
+	std::ostringstream state;
+	state << "turn " << ConfirmedTurn << " generation-rng " << GenerationRng << '\n';
+	for (const Player &player : Players) {
+		state << "player " << static_cast<unsigned>(player.getId()) << ' ' << player.plractive << " epoch " << MultiplayerSlotEpoch(static_cast<uint8_t>(player.getId()));
+		if (player.plractive)
+			state << ' ' << static_cast<unsigned>(player.plrlevel) << ' ' << player.plrIsOnSetLevel
+			      << ' ' << +player.position.tile.x << ' ' << +player.position.tile.y
+			      << ' ' << player._pLvlChanging << ' ' << player._pHitPoints.raw();
+		state << '\n';
+	}
+	for (unsigned owner = 0; owner < Players.size(); ++owner) {
+		const auto &portal = Portals[owner];
+		state << "portal " << owner << ' ' << portal.open;
+		if (portal.open)
+			state << ' ' << portal.position.x << ' ' << portal.position.y << ' ' << portal.level << ' ' << static_cast<int>(portal.ltype) << ' ' << portal.setlvl;
+		state << '\n';
+	}
+	for (const auto &quest : Quests)
+		state << "quest " << static_cast<int>(quest._qidx) << ' ' << static_cast<int>(quest._qactive) << ' ' << static_cast<int>(quest._qvar1) << ' ' << static_cast<int>(quest._qvar2) << '\n';
+	state << "end-shared\nlevel " << static_cast<unsigned>(currlevel) << ' ' << setlevel << '\n';
+	std::vector<unsigned> monsters(ActiveMonsters, ActiveMonsters + ActiveMonsterCount);
+	std::sort(monsters.begin(), monsters.end());
+	for (unsigned id : monsters) {
+		const auto &monster = Monsters[id];
+		// Disconnect cleanup kills a summon locally on each peer. Its dead attribution awards no XP or loot.
+		state << "monster " << id << ' ' << static_cast<int>(monster.type().type) << ' ' << +monster.position.tile.x << ' ' << +monster.position.tile.y
+		      << ' ' << monster.hitPoints.raw() << ' ' << monster.maxHitPoints.raw() << ' ' << monster.aiSeed
+		      << ' ' << (monster.isPlayerMinion() && monster.hitPoints == 0 ? 0U : static_cast<unsigned>(monster.whoHit.bits)) << ' ' << +monster.goalVar3 << '\n';
+	}
+	// Describe already canonicalizes floor items, including their generation seeds and properties.
+	const auto items = Describe();
+	const auto start = items.find('\n') + 1;
+	state << "items " << ActiveItemCount << ' ' << items.substr(start, items.find('\n', start) - start) << '\n';
+	state << "pools " << ActiveObjectCount << ' ' << Missiles.size() << '\n';
+	return state.str();
+}
+std::string Checkpoint()
+{
+	const std::string state = CanonicalState();
+	uint64_t digest = 14695981039346656037ULL;
+	for (const unsigned char byte : state)
+		digest = (digest ^ byte) * 1099511628211ULL;
+	// Retain the canonical payload as well: failures cannot hide behind a hash collision.
+	return Describe() + "\ncheckpoint " + std::to_string(ConfirmedTurn) + " " + std::to_string(digest) + "\n" + state;
+}
+
 void Run(unsigned port)
 {
 	HeadlessMode = true;
@@ -314,11 +400,11 @@ void Run(unsigned port)
 	currlevel = 1;
 	setlevel = false;
 	leveltype = DTYPE_CATHEDRAL;
-	ResizePlayersForSession(PlayerStorageCapacity);
+	ResizePlayersForSession(Classic ? ClassicPlayerLimit : PlayerStorageCapacity);
 	for (unsigned id = 0; id < Players.size(); ++id) {
 		CreatePlayer(Players[id], HeroClass::Warrior);
 		std::snprintf(Players[id]._pName, sizeof(Players[id]._pName), "Peer%u", id);
-		Players[id].plractive = true;
+		Players[id].plractive = id < PeerCount;
 		Players[id].setLevel(currlevel);
 		Players[id].position.tile = { static_cast<uint8_t>(35 + id), 40 };
 		Players[id].position.future = Players[id].position.tile;
@@ -326,23 +412,37 @@ void Run(unsigned port)
 	MyPlayerId = Role;
 	MyPlayer = &Players[Role];
 	InspectPlayer = MyPlayer;
-	gbActivePlayers = 8;
+	gbActivePlayers = PeerCount;
 	FreeCursor();
 	InitCursor();
 	InitGameInfo();
-	sgGameInitInfo.rules = ExtendedSessionRules;
+	sgGameInitInfo.rules = Classic ? ClassicSessionRules : ExtendedSessionRules;
 	sgGameInitInfo.fullQuests = 0;
+	if (SessionScenario) {
+		sgGameInitInfo.gameSeed[0] = ScenarioSeed;
+		sgGameInitInfo.gameSeed[1] = 19;
+		sgGameInitInfo.gameSeed[2] = 1;
+		sgGameInitInfo.gameSeed[3] = 8;
+	}
 	GetOptions().Network.port.SetValue(static_cast<uint16_t>(port));
 	std::snprintf(GetOptions().Network.szBindAddress, sizeof(GetOptions().Network.szBindAddress), "%s", "127.0.0.1");
 	provider = SELCONN_TCP;
 	Require(SNetInitializeProvider(SELCONN_TCP, &sgGameInitInfo), "cannot initialize TCP");
+	if (SessionScenario)
+		TestRegisterNetEventHandlers();
 	GameData wire = sgGameInitInfo;
 	SwapGameDataLE(wire);
 	int player;
 	std::string address = "127.0.0.1:" + std::to_string(port);
-	Require(Role == 0 ? SNetCreateGame("127.0.0.1", nullptr, reinterpret_cast<char *>(&wire), sizeof(wire), &player) : SNetJoinGame(address.data(), nullptr, &player), "cannot join TCP session");
+	// Exercise the same classic-first negotiation as direct joins from the real menu.
+	if (SessionScenario && Role != 0)
+		sgGameInitInfo.rules = ClassicSessionRules;
+	char password[] = "eight-engine-session";
+	char *sessionPassword = PrivateGame ? password : nullptr;
+	Require(Role == 0 ? SNetCreateGame("127.0.0.1", sessionPassword, reinterpret_cast<char *>(&wire), sizeof(wire), &player) : SNetJoinGame(address.data(), sessionPassword, &player), "cannot join TCP session");
 	Require(player == static_cast<int>(Role), "unexpected assigned slot");
 	gdwNormalMsgSize = gdwLargestMsgSize = 512;
+	SetRndSeed(ScenarioSeed);
 	ResetWorld(2);
 	Mark("ready");
 	for (unsigned stage = 0;; ++stage) {
@@ -353,9 +453,34 @@ void Run(unsigned port)
 		unsigned actor = 0;
 		unsigned value = 0;
 		input >> action >> actor >> value;
+		const uint32_t rngBefore = GetLCGEngineState();
 		if (action == "quit")
 			break;
-		if (action == "party-init") {
+		if (action == "session-init") {
+			ResetWorld(2);
+			InitPortals();
+			SetRndSeed(ScenarioSeed);
+			Require(AddMonsterType(MT_GOLEM, PLACE_SPECIAL).has_value(), "cannot load session golems");
+			Require(AddMonsterType(MT_SKING, PLACE_SPECIAL).has_value(), "cannot load session boss");
+			InitGolems();
+			GenerationRng = GetLCGEngineState();
+		} else if (action == "session-entry" && !Classic) {
+			for (Player &player : Players) {
+				if (player.plractive)
+					player._pLvlChanging = true;
+			}
+			BeginLevelEntry();
+		} else if (action == "session-portal") {
+			NetSendCmdLocParam3(true, CMD_ACTIVATEPORTAL, { 50 + static_cast<int>(Role) * 2, 50 }, currlevel, DTYPE_CATHEDRAL, 0);
+		} else if (action == "session-golem" && actor == Role) {
+			NetSendCmdLocParam1(true, CMD_REQUESTSPAWNGOLEM, { 45 + static_cast<int>(Role) * 2, 45 }, 1);
+		} else if (action == "session-diverge" && actor == Role) {
+			Quests[Q_GARBUD]._qvar1 = value == 1 ? 1 : 0;
+			if (value >= 2)
+				Monsters[0].aiSeed ^= 1;
+			if (value == 3)
+				LeaveItemTransfers(MyPlayerId);
+		} else if (action == "party-init") {
 			PartyLifecycle = true;
 			ResetWorld(0, 4);
 			for (unsigned id = 0; id < Players.size(); ++id)
@@ -538,6 +663,37 @@ void Run(unsigned port)
 		PublishPartyState();
 		Mark("sent-" + std::to_string(stage));
 		Wait("settle-" + std::to_string(stage));
+		if (action == "session-fault") {
+			const auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+			bool lost = false;
+			while (std::chrono::steady_clock::now() < timeout) {
+				ProcessGameMessagePackets();
+				std::array<char *, PlayerStorageCapacity> turns { };
+				std::array<size_t, PlayerStorageCapacity> sizes { };
+				std::array<uint32_t, PlayerStorageCapacity> status { };
+				SNetReceiveTurns(Players.size(), turns.data(), sizes.data(), status.data());
+				if (actor == 0 || actor == Role) {
+					lost = std::all_of(status.begin(), status.end(), [](uint32_t flags) { return (flags & PS_CONNECTED) == 0; });
+				} else {
+					lost = !Players[actor].plractive && !Portals[actor].open && FindGolemForPlayer(Players[actor]) == nullptr;
+				}
+				if (lost)
+					break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			Require(lost, "the native transport did not close or clean the departed slot");
+			if (actor == 0 || actor == Role) {
+				uint32_t turn = 0;
+				Require(!SNetSendTurn(reinterpret_cast<char *>(&turn), sizeof(turn)), "disconnected TCP transport still accepts turns");
+				Mark("result-" + std::to_string(stage), "closed");
+				break;
+			}
+			Require(!RestoreLevelEntryPlayerInfo(Players[actor]), "departed slot kept its old level admission");
+			--PeerCount;
+			Require(gbActivePlayers == PeerCount, "departed peer stayed active");
+			Mark("result-" + std::to_string(stage), "departed");
+			continue;
+		}
 		// The parent waits for every source before asking for a stable result.
 		// Keep draining the real network; the barrier does not process commands.
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
@@ -554,11 +710,37 @@ void Run(unsigned port)
 				Fail("transfer did not finish\n" + Describe());
 			}
 			Pump();
-			if (HasUnresolvedItemTransfers() || (PartyLifecycle && std::any_of(Players.begin(), Players.end(), [](const auto &player) { return player.plractive && player._pLvlChanging; })) || dwRecCount != received)
+			if (HasUnresolvedItemTransfers() || ((PartyLifecycle || SessionScenario) && std::any_of(Players.begin(), Players.end(), [](const auto &player) { return player.plractive && player._pLvlChanging; })) || dwRecCount != received)
 				quiet = std::chrono::steady_clock::now();
 			received = dwRecCount;
 		}
-		Mark("result-" + std::to_string(stage), Describe());
+		if (SessionScenario) {
+			ConfirmTurn(stage * 2);
+			// Drain effects emitted while the first fence was in flight, then confirm again.
+			const auto settled = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+			while (std::chrono::steady_clock::now() < settled)
+				Pump();
+			ConfirmTurn(stage * 2 + 1);
+		}
+		if (SessionScenario) {
+			if (action == "session-entry" && !Classic) {
+				Require(GetLCGEngineState() == rngBefore, "level admission consumed the world RNG");
+				for (unsigned peer = 0; peer < PeerCount; ++peer) {
+					const auto position = Players[peer].position.tile;
+					Require(!Players[peer]._pLvlChanging && dPlayer[position.x][position.y] == static_cast<int>(peer + 1), "entry did not reserve a unique tile");
+				}
+			} else if (action == "session-portal") {
+				for (unsigned peer = 0; peer < PeerCount; ++peer)
+					Require(Portals[peer].open && Portals[peer].level == currlevel, "a participant lost its portal");
+			} else if (action == "session-golem") {
+				Require(FindGolemForPlayer(Players[actor]) != nullptr, "a participant lost its summon");
+			} else if (action == "boss-hit") {
+				Require(Monsters[BossId].whoHit.bits == (1U << PeerCount) - 1, "boss damage lost a contributor");
+			} else if (action == "boss-kill") {
+				Require(Monsters[BossId].hitPoints == 0 && Quests[Q_SKELKING]._qactive == QUEST_DONE, "boss death or quest completion did not arrive");
+			}
+		}
+		Mark("result-" + std::to_string(stage), SessionScenario ? Checkpoint() : Describe());
 	}
 	delta_init();
 	SNetDestroy();
@@ -571,10 +753,19 @@ void Run(unsigned port)
 
 int main(int argc, char **argv)
 {
-	if (argc != 4)
+	if (argc != 4 && argc != 8)
 		return 2;
 	devilution::Directory = argv[1];
 	devilution::Role = static_cast<unsigned>(std::strtoul(argv[2], nullptr, 10));
+	if (argc == 8) {
+		devilution::PeerCount = static_cast<unsigned>(std::strtoul(argv[4], nullptr, 10));
+		devilution::Classic = std::strcmp(argv[5], "classic") == 0;
+		devilution::ScenarioSeed = static_cast<uint32_t>(std::strtoul(argv[6], nullptr, 10));
+		devilution::SessionScenario = true;
+		devilution::PrivateGame = std::strcmp(argv[7], "private") == 0;
+		if (devilution::PeerCount == 0 || devilution::PeerCount > (devilution::Classic ? 4U : 8U) || devilution::Role >= devilution::PeerCount)
+			return 2;
+	}
 	devilution::Run(static_cast<unsigned>(std::strtoul(argv[3], nullptr, 10)));
 	return 0;
 }

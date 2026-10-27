@@ -52,11 +52,27 @@ public:
 		it->second->incoming_.emplace_back(Address(), data);
 		return { };
 	}
-	bool send_oob(const endpoint &peer, const buffer_t &data) { return send(peer, data).has_value(); }
+	bool send_oob(const endpoint &peer, const buffer_t &data)
+	{
+		const auto it = instances.find(peer.addr[0]);
+		if (it == instances.end()) return false;
+		if (observe) observe(data);
+		if (intercept && !intercept(peer, data)) return true;
+		it->second->datagrams_.emplace_back(Address(), data);
+		return true;
+	}
 	bool send_oob_mc(const buffer_t &data)
 	{
 		for (auto &[id, wire] : instances)
-			if (id != id_) wire->incoming_.emplace_back(Address(), data);
+			if (id != id_) wire->datagrams_.emplace_back(Address(), data);
+		return true;
+	}
+	bool recv_oob(endpoint &sender, buffer_t &data)
+	{
+		if (datagrams_.empty()) return false;
+		sender = datagrams_.front().first;
+		data = std::move(datagrams_.front().second);
+		datagrams_.pop_front();
 		return true;
 	}
 	bool recv(endpoint &sender, buffer_t &data)
@@ -86,6 +102,7 @@ public:
 private:
 	uint8_t id_;
 	std::deque<std::pair<endpoint, buffer_t>> incoming_;
+	std::deque<std::pair<endpoint, buffer_t>> datagrams_;
 	std::deque<endpoint> disconnected_;
 };
 
@@ -277,6 +294,38 @@ TEST_P(PeerTransport, HigherSlotsReplyBeforeProbingTheLowerPeersDuringAdmission)
 	Pump();
 	for (size_t peer = 1; peer < 7; ++peer)
 		EXPECT_GT(probes[peer], 0U); // Established streams still carry latency probes.
+}
+
+TEST_P(PeerTransport, UnreadableDiscoveryDatagramsDoNotDropTheirSender)
+{
+	Start(true);
+	for (int id = 1; id < 8; ++id)
+		ASSERT_EQ(Add(), id);
+	Pump();
+	// A node browses without the session password, or a datagram is truncated, while it is a peer.
+	packet_factory browser;
+	auto request = browser.make_packet<PT_INFO_REQUEST_EXTENDED>(PLR_BROADCAST, PLR_MASTER);
+	ASSERT_TRUE(request.has_value());
+	memory_wire &browsingPeer = *memory_wire::instances.at(4);
+	ASSERT_TRUE(browsingPeer.send_oob_mc((*request)->Data()));
+	ASSERT_TRUE(browsingPeer.send_oob_mc(buffer_t { 0x23, 0xFF }));
+	Pump();
+	Pump();
+	for (uint8_t destination = 0; destination < 8; ++destination) {
+		if (destination == 3)
+			continue;
+		uint8_t value = destination;
+		ASSERT_TRUE(nets_[destination]->SNetSendMessage(3, &value, 1));
+		EXPECT_TRUE(Receive(3, destination, value)) << "peer " << int { destination } << " dropped the browsing peer";
+		ASSERT_TRUE(nets_[3]->SNetSendMessage(destination, &value, 1));
+		EXPECT_TRUE(Receive(destination, 3, value)) << "the browsing peer lost peer " << int { destination };
+	}
+	// A malformed session frame is still a protocol violation by that peer.
+	ASSERT_TRUE(memory_wire::instances.at(6)->send(memory_wire::instances.at(1)->Address(), buffer_t { 0x23, 0xFF }));
+	Pump();
+	uint8_t value = 42;
+	ASSERT_TRUE(nets_[0]->SNetSendMessage(5, &value, 1));
+	EXPECT_FALSE(Receive(5, 0, value));
 }
 
 TEST_P(PeerTransport, ClassicRoomRejectsFifthPeer)

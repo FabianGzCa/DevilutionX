@@ -94,6 +94,7 @@ struct memory_protocol {
 		incoming.pop_front();
 		return true;
 	}
+	bool recv_oob(endpoint &, buffer_t &) { return false; }
 	bool get_disconnected(endpoint &) { return false; }
 	std::expected<bool, PacketError> network_online() { return true; }
 	std::expected<bool, PacketError> peers_ready() { return true; }

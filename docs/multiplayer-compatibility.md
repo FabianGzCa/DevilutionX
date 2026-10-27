@@ -80,6 +80,11 @@ so classic and extended games are listed together with their mode and occupied
 and total slots, for example `name 3/8`. Selecting a listed game requests its
 advertised rules.
 
+Any node can send discovery datagrams, including a peer of a password-protected
+session that is browsing without that password. A peer therefore ignores
+discovery datagrams it cannot read. Only malformed data on a peer's session
+stream drops that peer.
+
 A direct join by address or game ID cannot know the host's mode. It sends the
 classic request first, which original hosts understand. If a new host rejects it
 as a session mismatch, the client retries once with the other mode; a ZeroTier

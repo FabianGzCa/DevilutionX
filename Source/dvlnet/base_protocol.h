@@ -326,6 +326,17 @@ void base_protocol<P>::recv()
 {
 	buffer_t pkt_buf;
 	endpoint_t sender;
+	while (proto.recv_oob(sender, pkt_buf)) {
+		// Any node may send discovery datagrams, including a peer browsing without this session's
+		// password. An unreadable datagram says nothing about that peer's session stream.
+		std::expected<void, PacketError> result
+		    = pktfty->make_packet(pkt_buf)
+		          .and_then([&](std::unique_ptr<packet> &&pkt) {
+			          return recv_decrypted(*pkt, sender);
+		          });
+		if (!result.has_value())
+			LogVerbose("Ignoring discovery datagram: {}", result.error().what());
+	}
 	while (proto.recv(sender, pkt_buf)) { // read until kernel buffer is empty?
 		std::expected<void, PacketError> result
 		    = pktfty->make_packet(pkt_buf)

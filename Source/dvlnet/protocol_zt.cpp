@@ -313,20 +313,23 @@ bool protocol_zt::accept_all()
 	return true;
 }
 
+bool protocol_zt::recv_oob(endpoint &peer, buffer_t &data)
+{
+	recv_from_udp();
+	if (oob_recv_queue.empty())
+		return false;
+	peer = oob_recv_queue.front().first;
+	oobQueueBytes_ -= oob_recv_queue.front().second.size();
+	data = std::move(oob_recv_queue.front().second);
+	oob_recv_queue.pop_front();
+	return true;
+}
+
 bool protocol_zt::recv(endpoint &peer, buffer_t &data)
 {
 	accept_all();
 	send_queued_all();
 	recv_from_peers();
-	recv_from_udp();
-
-	if (!oob_recv_queue.empty()) {
-		peer = oob_recv_queue.front().first;
-		oobQueueBytes_ -= oob_recv_queue.front().second.size();
-		data = std::move(oob_recv_queue.front().second);
-		oob_recv_queue.pop_front();
-		return true;
-	}
 
 	for (auto &p : peer_list) {
 		std::expected<bool, PacketError> ready = p.second.recv_queue.PacketReady();

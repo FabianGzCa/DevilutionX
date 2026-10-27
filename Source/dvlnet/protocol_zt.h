@@ -87,7 +87,10 @@ public:
 	std::expected<void, PacketError> send(const endpoint &peer, const buffer_t &data);
 	bool send_oob(const endpoint &peer, const buffer_t &data) const;
 	bool send_oob_mc(const buffer_t &data) const;
+	/** Receive one framed packet from a peer stream. */
 	bool recv(endpoint &peer, buffer_t &data);
+	/** Receive one discovery datagram. Any node on the network can send these. */
+	bool recv_oob(endpoint &peer, buffer_t &data);
 	bool get_disconnected(endpoint &peer);
 	std::expected<bool, PacketError> network_online();
 	std::expected<bool, PacketError> peers_ready();

@@ -4,6 +4,8 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -22,6 +24,9 @@ public:
 	using endpoint = protocol_zt::endpoint;
 	static inline std::map<uint8_t, memory_wire *> instances;
 	static inline std::function<void(uint8_t)> pump;
+	static inline std::function<void(const buffer_t &)> observe;
+	static inline std::function<bool(const endpoint &, const buffer_t &)> intercept;
+	static inline bool streamsConnected = true;
 	static inline uint8_t nextId = 1;
 	memory_wire()
 	    : id_(nextId++)
@@ -42,6 +47,8 @@ public:
 	{
 		const auto it = instances.find(destination.addr[0]);
 		if (it == instances.end()) return std::unexpected("Disconnected memory peer");
+		if (observe) observe(data);
+		if (intercept && !intercept(destination, data)) return { };
 		it->second->incoming_.emplace_back(Address(), data);
 		return { };
 	}
@@ -71,7 +78,7 @@ public:
 	}
 	std::expected<bool, PacketError> network_online() { return true; }
 	std::expected<bool, PacketError> peers_ready() { return true; }
-	bool is_peer_connected(const endpoint &peer) { return instances.contains(peer.addr[0]); }
+	bool is_peer_connected(const endpoint &peer) { return streamsConnected && instances.contains(peer.addr[0]); }
 	std::optional<bool> is_peer_relayed(const endpoint &) { return false; }
 	std::optional<int> get_latency_to(const endpoint &) { return 0; }
 	std::string make_default_gamename() { return "eight-peers"; }
@@ -100,6 +107,9 @@ protected:
 	void TearDown() override
 	{
 		memory_wire::pump = { };
+		memory_wire::observe = { };
+		memory_wire::intercept = { };
+		memory_wire::streamsConnected = true;
 		nets_.clear();
 		Players.clear();
 	}
@@ -206,6 +216,67 @@ TEST_P(PeerTransport, EightPeersRouteMessagesTurnsAndEightNames)
 		EXPECT_EQ(games[0].players[player], "Player" + std::to_string(player));
 	EXPECT_EQ(Add(), -1);
 	std::cout << "peer transport: IDs 0-7, directed/broadcast/turns, eight names, ninth rejected\n";
+}
+
+TEST_P(PeerTransport, HigherSlotsReplyBeforeProbingTheLowerPeersDuringAdmission)
+{
+	Start(true);
+	for (int id = 1; id < 7; ++id)
+		ASSERT_EQ(Add(), id);
+	Pump();
+	auto factory = GetParam() ? std::make_unique<packet_factory>("peer-test") : std::make_unique<packet_factory>();
+	std::array<std::optional<packet_type>, 8> first;
+	std::array<unsigned, 8> probes { };
+	std::vector<std::pair<plr_t, buffer_t>> delayed;
+	memory_wire::streamsConnected = false;
+	memory_wire::intercept = [&](const auto &, const buffer_t &bytes) {
+		auto packet = factory->make_packet(bytes);
+		EXPECT_TRUE(packet.has_value());
+		if (!packet) return true;
+		const plr_t source = (*packet)->Source();
+		if ((*packet)->Type() == PT_ECHO_REQUEST && (*packet)->Destination() == 7 && source > 0 && source < 7) {
+			delayed.emplace_back(source, bytes);
+			return false; // The lower peer's initial handshake is still in flight.
+		}
+		return true;
+	};
+	memory_wire::observe = [&](const buffer_t &bytes) {
+		auto packet = factory->make_packet(bytes);
+		ASSERT_TRUE(packet.has_value());
+		const auto type = (*packet)->Type();
+		const auto destination = (*packet)->Destination();
+		if ((*packet)->Source() != 7 || destination == 0 || destination >= 7
+		    || (type != PT_ECHO_REQUEST && type != PT_ECHO_REPLY))
+			return;
+		if (!first[destination])
+			first[destination] = type;
+		if (type == PT_ECHO_REQUEST)
+			++probes[destination];
+	};
+	ASSERT_EQ(Add(), 7);
+	ASSERT_EQ(delayed.size(), 6U);
+	uint8_t sender;
+	void *data;
+	size_t size;
+	// The ordinary five-second probe path runs before the delayed handshakes arrive.
+	nets_[7]->SNetReceiveMessage(&sender, &data, &size);
+	for (size_t peer = 1; peer < 7; ++peer)
+		EXPECT_FALSE(first[peer]) << "higher slot opened a competing stream to " << peer;
+	memory_wire::intercept = { };
+	memory_wire::streamsConnected = true;
+	for (const auto &[source, bytes] : delayed)
+		ASSERT_TRUE(memory_wire::instances.at(source + 1)->send(memory_wire::instances.at(8)->Address(), bytes));
+	Pump();
+	for (size_t peer = 1; peer < 7; ++peer) {
+		ASSERT_TRUE(first[peer]);
+		EXPECT_EQ(*first[peer], PT_ECHO_REPLY);
+		auto probe = factory->make_packet<PT_ECHO_REQUEST>(plr_t { 7 }, static_cast<plr_t>(peer), timestamp_t { 0 });
+		ASSERT_TRUE(probe.has_value());
+		ASSERT_TRUE(nets_[7]->send(**probe));
+	}
+	Pump();
+	for (size_t peer = 1; peer < 7; ++peer)
+		EXPECT_GT(probes[peer], 0U); // Established streams still carry latency probes.
 }
 
 TEST_P(PeerTransport, ClassicRoomRejectsFifthPeer)

@@ -304,6 +304,10 @@ std::expected<void, PacketError> base_protocol<P>::SendTo(plr_t player, packet &
 	if (!peer.endpoint)
 		return {};
 
+	// Periodic probes must obey the same single-initiator rule as the handshake.
+	if (player_limit_ > ClassicPlayerLimit && peer.sendQueue && plr_self > player && pkt.Type() == PT_ECHO_REQUEST)
+		return { };
+
 	// The handshake uses echo packets so clients know
 	// when they can safely drain their send queues
 	if (peer.sendQueue && !IsAnyOf(pkt.Type(), PT_ECHO_REQUEST, PT_ECHO_REPLY)) {

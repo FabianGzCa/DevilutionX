@@ -1000,7 +1000,7 @@ std::optional<std::pair<unsigned, int>> PartyPosition()
 	return std::nullopt;
 }
 
-/** Endurance sample: resources and timing since the previous sample, one JSON line per call. */
+/** Endurance sample: resources now and timing since the previous minute sample, one JSON line per call. */
 void WriteSample(const char *reason)
 {
 	const auto window = [](const std::vector<double> &values, size_t from) {
@@ -1016,11 +1016,14 @@ void WriteSample(const char *reason)
 	};
 	const auto logic = window(State.logicMs, State.sampledLogic);
 	const auto ticks = window(State.tickMs, State.sampledTicks);
-	// Endurance runs keep only the window since the previous sample; the series lives on disk.
-	State.logicMs.clear();
-	State.tickMs.clear();
-	State.sampledLogic = 0;
-	State.sampledTicks = 0;
+	// Endurance runs keep only the window since the previous minute sample; the series lives on disk.
+	// Event samples leave the window alone, so every minute covers a whole minute of ticks.
+	if (std::string_view(reason) == "minute") {
+		State.logicMs.clear();
+		State.tickMs.clear();
+		State.sampledLogic = 0;
+		State.sampledTicks = 0;
+	}
 	rusage usage {};
 	getrusage(RUSAGE_SELF, &usage);
 	const double cpuSeconds = static_cast<double>(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + static_cast<double>(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6;

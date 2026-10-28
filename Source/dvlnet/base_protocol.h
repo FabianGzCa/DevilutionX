@@ -54,6 +54,8 @@ private:
 		endpoint_t endpoint;
 		std::unique_ptr<std::deque<packet>> sendQueue;
 		size_t queuedBytes = 0;
+		// The handshake never completed and the queue overflowed; recv() drops the peer.
+		bool stalled = false;
 	};
 
 	endpoint_t firstpeer;
@@ -311,8 +313,15 @@ std::expected<void, PacketError> base_protocol<P>::SendTo(plr_t player, packet &
 	// The handshake uses echo packets so clients know
 	// when they can safely drain their send queues
 	if (peer.sendQueue && !IsAnyOf(pkt.Type(), PT_ECHO_REQUEST, PT_ECHO_REPLY)) {
-		if (peer.sendQueue->size() >= MaxQueuedPackets || pkt.Data().size() > MaxQueuedBytes - peer.queuedBytes)
-			return std::unexpected("Peer handshake queue is full");
+		if (peer.stalled)
+			return { };
+		if (peer.sendQueue->size() >= MaxQueuedPackets || pkt.Data().size() > MaxQueuedBytes - peer.queuedBytes) {
+			// Only this peer is unreachable: drop it rather than end the session for everyone else.
+			peer.sendQueue->clear();
+			peer.queuedBytes = 0;
+			peer.stalled = true;
+			return { };
+		}
 		peer.queuedBytes += pkt.Data().size();
 		peer.sendQueue->push_back(pkt);
 		return {};
@@ -362,6 +371,12 @@ void base_protocol<P>::recv()
 				SNetDropPlayer(i, leaveinfo_t::LEAVE_DROP);
 				break;
 			}
+		}
+	}
+	for (plr_t i = 0; i < player_limit_; ++i) {
+		if (peers[i].stalled && plr_self < player_limit_) {
+			Log("Dropping player {}: its handshake did not complete", i);
+			SNetDropPlayer(i, leaveinfo_t::LEAVE_DROP);
 		}
 	}
 }

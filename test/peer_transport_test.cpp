@@ -296,6 +296,38 @@ TEST_P(PeerTransport, HigherSlotsReplyBeforeProbingTheLowerPeersDuringAdmission)
 		EXPECT_GT(probes[peer], 0U); // Established streams still carry latency probes.
 }
 
+TEST_P(PeerTransport, StalledHandshakeDropsOnlyThatPeer)
+{
+	Start(false);
+	ASSERT_EQ(Add(), 1);
+	memory_wire::streamsConnected = false;
+	auto factory = GetParam() ? std::make_unique<packet_factory>("peer-test") : std::make_unique<packet_factory>();
+	memory_wire::intercept = [&](const auto &destination, const buffer_t &bytes) {
+		auto packet = factory->make_packet(bytes);
+		if (!packet) return true;
+		const plr_t source = (*packet)->Source();
+		return !((source == 1 && destination.addr[0] == 3) || (source == 2 && destination.addr[0] == 2));
+	};
+	ASSERT_EQ(Add(), 2); // Player 1 never hears back from the newcomer.
+	Pump();
+	std::vector<uint8_t> left;
+	static std::vector<uint8_t> *leaves;
+	leaves = &left;
+	ASSERT_TRUE(nets_[1]->SNetRegisterEventHandler(EVENT_TYPE_PLAYER_LEAVE_GAME, [](_SNETEVENT *event) { leaves->push_back(static_cast<uint8_t>(event->playerid)); }));
+	const auto sends = static_cast<unsigned>(MaxQueuedPackets) + 8;
+	for (unsigned i = 0; i < sends; ++i) {
+		uint8_t value = static_cast<uint8_t>(i);
+		ASSERT_TRUE(nets_[1]->SNetSendMessage(2, &value, 1)) << "message " << i << " ended the session";
+	}
+	Pump();
+	EXPECT_EQ(left, std::vector<uint8_t> { 2 });
+	memory_wire::intercept = { };
+	uint8_t value = 42;
+	ASSERT_TRUE(nets_[1]->SNetSendMessage(0, &value, 1));
+	EXPECT_TRUE(Receive(0, 1, value));
+	leaves = nullptr;
+}
+
 TEST_P(PeerTransport, UnreadableDiscoveryDatagramsDoNotDropTheirSender)
 {
 	Start(true);

@@ -153,7 +153,9 @@ connections retain the 60-second timeout. Disconnect callbacks are idempotent,
 so delayed cancellation cannot clear a newly reused player slot. ZeroTier stream
 queues use the same bounds, retain partial writes, recognize EOF and expire idle
 streams after 60 seconds; the native provider limits pending/active endpoints to
-16. Real ZeroTier connectivity still requires separate integration testing.
+16. Packets for a peer whose handshake has not completed wait in a queue with the
+same bounds. If that queue fills, only that peer is dropped from the session; the
+others keep playing. Real ZeroTier connectivity still requires separate integration testing.
 
 `ctest --preset classic-tests -R 'Network|Transport' -V` exercises the TCP listener
 and eight real TCP clients on an ephemeral localhost port, with and without

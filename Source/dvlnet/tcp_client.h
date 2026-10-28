@@ -49,6 +49,7 @@ private:
 	std::optional<PacketError> ioHandlerResult;
 
 	int Join(std::string_view addrstr);
+	void CloseSocket();
 	void CloseConnection();
 	void HandleReceive(const asio::error_code &error, size_t bytesRead);
 	void StartReceive();

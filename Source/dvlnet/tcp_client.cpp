@@ -265,8 +265,10 @@ void tcp_client::HandleTcpErrorCode()
 
 std::expected<void, PacketError> tcp_client::send(packet &pkt)
 {
+	// After a lost connection, sends are discarded as the original client did: the game notices
+	// the silent peers through its turn timeouts instead of failing fatally on the next send.
 	if (closed_)
-		return std::unexpected("Connection is closed");
+		return {};
 	auto frame = frame_queue::MakeFrame(pkt.Data());
 	if (!frame.has_value())
 		return std::unexpected(frame.error());
@@ -302,18 +304,24 @@ std::string tcp_client::make_default_gamename()
 void tcp_client::RaiseIoHandlerError(const PacketError &error)
 {
 	ioHandlerResult.emplace(error);
-	CloseConnection();
+	// Keep the local player and the session state, so the game can drop the remote players.
+	CloseSocket();
+}
+
+void tcp_client::CloseSocket()
+{
+	closed_ = true;
+	outgoing_.Clear();
+	asio::error_code ignored;
+	sock.close(ignored);
 }
 
 void tcp_client::CloseConnection()
 {
-	closed_ = true;
+	CloseSocket();
 	plr_self = PLR_BROADCAST;
 	for (plr_t player = 0; player < player_limit_; ++player)
 		ResetPlayerState(player);
-	outgoing_.Clear();
-	asio::error_code ignored;
-	sock.close(ignored);
 }
 
 tcp_client::~tcp_client()

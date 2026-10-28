@@ -1,13 +1,20 @@
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "dvlnet/base.h"
+#if !defined(NONET) && !defined(DISABLE_TCP)
+#include "dvlnet/tcp_client.h"
+#include "dvlnet/tcp_server.h"
+#endif
 
 namespace devilution::net {
 namespace {
@@ -176,6 +183,69 @@ TEST_F(DvlNetErrorTest, TurnHandlingPropagatesFailureToSendQueuedTurns)
 	EXPECT_EQ(result.error().what(), "injected send failure");
 	EXPECT_EQ(net_.SendCount(), 1);
 }
+
+#if !defined(NONET) && !defined(DISABLE_TCP)
+std::vector<uint8_t> LeftPlayers;
+
+void RecordLeftPlayer(_SNETEVENT *event)
+{
+	LeftPlayers.push_back(static_cast<uint8_t>(event->playerid));
+}
+
+TEST(TcpClientConnectionLoss, LostServerKeepsTheSessionUsableUntilTheHostIsDropped)
+{
+	GameData data {};
+	data.size = sizeof(data);
+	data.nTickRate = 20;
+	SwapGameDataLE(data);
+	const auto *bytes = reinterpret_cast<const unsigned char *>(&data);
+	const buffer_t info { bytes, bytes + sizeof(data) };
+	asio::io_context context;
+	packet_factory factory;
+	auto server = std::make_unique<tcp_server>(context, "127.0.0.1", 0, factory, info);
+	const std::string address = server->LocalhostSelf();
+	std::thread thread([&] { context.run(); });
+	tcp_client host;
+	tcp_client client;
+	for (tcp_client *peer : { &host, &client }) {
+		peer->clear_password();
+		peer->setup_gameinfo(info);
+	}
+	ASSERT_EQ(host.join(address), 0);
+	ASSERT_EQ(client.join(address), 1);
+	LeftPlayers.clear();
+	ASSERT_TRUE(client.SNetRegisterEventHandler(EVENT_TYPE_PLAYER_LEAVE_GAME, RecordLeftPlayer));
+	char marker = 7;
+	ASSERT_TRUE(host.SNetSendMessage(1, &marker, 1));
+	uint8_t sender = 0;
+	void *payload = nullptr;
+	size_t size = 0;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!client.SNetReceiveMessage(&sender, &payload, &size) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	ASSERT_EQ(size, 1U);
+
+	// The host disappears without a goodbye, as when its process or network fails.
+	asio::post(context, [&] { server->Close(); });
+	thread.join();
+	bool lost = false;
+	while (!lost && std::chrono::steady_clock::now() < deadline + std::chrono::seconds(5)) {
+		lost = !client.poll().has_value();
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	ASSERT_TRUE(lost);
+
+	// The engine keeps calling these every tick; none may fail before the host is dropped.
+	uint32_t turns = 0;
+	EXPECT_TRUE(client.SNetGetTurnsInTransit(&turns));
+	int32_t turn = 1;
+	EXPECT_TRUE(client.SNetSendTurn(reinterpret_cast<char *>(&turn), sizeof(turn)));
+	EXPECT_TRUE(client.SNetSendMessage(0, &marker, 1));
+	EXPECT_TRUE(client.SNetDropPlayer(0, leaveinfo_t::LEAVE_DROP));
+	EXPECT_EQ(LeftPlayers, std::vector<uint8_t> { 0 });
+	EXPECT_TRUE(client.SNetLeaveGame(leaveinfo_t::LEAVE_EXIT));
+}
+#endif
 
 } // namespace
 } // namespace devilution::net

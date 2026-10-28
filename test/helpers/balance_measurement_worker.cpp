@@ -430,6 +430,7 @@ struct Bot {
 	int level = 0;
 	unsigned cycle = 0;
 	unsigned townTicks = 0;
+	unsigned emptyTicks = 0;
 	bool rejoinFromTown = false;
 	bool portalCast = false;
 	bool warpSent = false;
@@ -1081,6 +1082,7 @@ void AdvanceSoak()
 	State.settleTicks = 0;
 	State.stuckTicks = 0;
 	State.townTicks = 0;
+	State.emptyTicks = 0;
 	State.blockedUntil.fill(0);
 	State.outcome = "timeout";
 	const int level = SoakLevel(State.cycle);
@@ -1102,6 +1104,7 @@ bool CatchUpWithParty()
 	State.target = -1;
 	State.settleTicks = 0;
 	State.townTicks = 0;
+	State.emptyTicks = 0;
 	State.blockedUntil.fill(0);
 	if (party->second == State.level && currlevel == State.level) {
 		State.phase = Phase::Waiting;
@@ -1213,12 +1216,19 @@ void Tick(bool before)
 		if (Config.role == 0 ? PartyOnLevel() : Exists(TargetsFile())) {
 			BeginFight();
 			if (State.monsters.empty()) {
-				WriteSample("no-targets");
-				AdvanceSoak();
+				// Cleared levels stay cleared in multiplayer: stay a minute on each, as in town, instead of
+				// turning the rest of the run into back-to-back level loads.
+				State.phase = Phase::Waiting;
+				if (++State.emptyTicks >= 1200) {
+					WriteSample("no-targets");
+					AdvanceSoak();
+				}
 			}
 		}
 		break;
 	case Phase::Fighting:
+		if (Config.soakSeconds != 0 && player._pLvlChanging)
+			break; // a stair tile was stepped on; wait for the native level change to finish
 		if (Config.soakSeconds != 0 && !player._pLvlChanging && player.isOnActiveLevel() && currlevel != State.level) {
 			// Stopping on a stair tile changes level natively; count it and take the stairs back.
 			++State.strayLevels;

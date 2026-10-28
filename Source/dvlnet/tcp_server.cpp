@@ -214,7 +214,7 @@ std::expected<void, PacketError> tcp_server::SendPacket(packet &pkt)
 	const scc recipient = connections[pkt.Destination()];
 	if (auto result = StartSend(recipient, pkt); !result.has_value())
 		DropConnection(recipient);
-	return { };
+	return {};
 }
 
 std::expected<void, PacketError> tcp_server::StartSend(const scc &con, packet &pkt)

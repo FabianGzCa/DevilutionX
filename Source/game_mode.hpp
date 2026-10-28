@@ -19,7 +19,7 @@ struct SessionRules {
 	bool operator==(const SessionRules &) const = default;
 };
 
-constexpr SessionRules ClassicSessionRules { };
+constexpr SessionRules ClassicSessionRules {};
 constexpr SessionRules ExtendedSessionRules { 3, 8, 1 };
 
 struct GameData {

@@ -97,7 +97,7 @@ Fixed26_6 PartyMonsterHitPoints(const PartyMonsterState &state, uint8_t particip
 
 PartyMonsterWire EncodePartyMonster(const PartyMonsterState &state)
 {
-	PartyMonsterWire wire { };
+	PartyMonsterWire wire {};
 	wire.generation = Swap64LE(state.generation);
 	wire.nativeMax = SwapSigned32LE(state.nativeMax);
 	wire.damage = Swap64LE(static_cast<uint64_t>(state.damage));
@@ -305,7 +305,7 @@ void InitializePartyMonster(Monster &monster)
 	monster.partyDeathStarted = false;
 	if (Enabled && gbBufferMsgs == 0 && MyPlayer != nullptr && MyPlayer->pLvlLoad == 0 && leveltype != DTYPE_TOWN) {
 		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
-		state = { };
+		state = {};
 		ReconcilePartyMonster(monster);
 	}
 }
@@ -332,7 +332,7 @@ void ReconcilePartyMonster(Monster &monster)
 	auto &level = GetPartyLevelState(CurrentPartyLevel());
 	auto &state = level.monsters[monster.getId()];
 	if ((state.flags & PartyMonsterKnown) == 0 || state.generation != monster.partyGeneration) {
-		state = { };
+		state = {};
 		state.generation = monster.partyGeneration;
 		state.nativeMax = monster.partyNativeMax.raw();
 		state.flags = PartyMonsterKnown | (monster.type().type == MT_GOLEM ? PartyMonsterGolem : 0);
@@ -413,7 +413,7 @@ bool ApplyPartyMonsterDamage(Monster &monster, Fixed26_6 damage, bool playerDama
 	auto &state = level.monsters[monster.getId()];
 	if ((state.flags & PartyMonsterDead) != 0)
 		return true;
-	PartyDamageMessage message { };
+	PartyDamageMessage message {};
 	message.command = CMD_PARTYMONSTDAMAGE;
 	message.level = CurrentPartyLevel();
 	message.participants = std::max<uint8_t>(1, level.participants);
@@ -471,7 +471,7 @@ bool ResetPartyMonster(uint8_t level, size_t monster, uint64_t generation)
 	if ((generation >> 63) != 0 || generation <= encounter.spawns[generation & 7U])
 		return false;
 	encounter.spawns[generation & 7U] = generation;
-	state = { };
+	state = {};
 	state.flags = PartyMonsterExpected;
 	state.generation = generation;
 	return true;

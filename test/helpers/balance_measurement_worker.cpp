@@ -375,7 +375,7 @@ struct Bot {
 	unsigned fightEnd = 0;
 	unsigned nextDecision = 0;
 	unsigned stuckTicks = 0;
-	Point previousTile { };
+	Point previousTile {};
 	int target = -1;
 	uint32_t startExperience = 0;
 	unsigned healingPotions = 0;
@@ -403,13 +403,13 @@ struct Bot {
 	unsigned targetUnchangedTicks = 0;
 	int observedTarget = -1;
 	int32_t observedHp = 0;
-	std::array<unsigned, MonsterStorageCapacity> blockedUntil { };
+	std::array<unsigned, MonsterStorageCapacity> blockedUntil {};
 	std::vector<double> tickMs;
 	std::vector<double> logicMs;
 	std::chrono::steady_clock::time_point logicStart;
 	std::chrono::steady_clock::time_point lastTick;
 	std::string outcome = "timeout";
-	std::array<uint8_t, MAXDUNX * MAXDUNY> reachable { };
+	std::array<uint8_t, MAXDUNX * MAXDUNY> reachable {};
 };
 
 Bot State;

@@ -84,7 +84,7 @@ protected:
 		gbActivePlayers = 1;
 		InitPortals();
 		for (int i = 0; i < MAXQUESTS; ++i) {
-			Quests[i] = { };
+			Quests[i] = {};
 			Quests[i]._qidx = static_cast<quest_id>(i);
 		}
 		InitGameInfo();
@@ -195,7 +195,7 @@ protected:
 	static void SeedLevel(uint8_t level, unsigned count = 1)
 	{
 		for (unsigned i = 0; i < count; ++i) {
-			TSyncMonster monster { };
+			TSyncMonster monster {};
 			monster._mndx = static_cast<uint16_t>(i);
 			monster._mx = static_cast<uint8_t>(20 + i % 70);
 			monster._my = static_cast<uint8_t>(20 + (i * 7) % 70);
@@ -216,9 +216,9 @@ protected:
 		player.position.tile = { static_cast<WorldTileCoord>(40 + slot), 50 };
 		player.position.future = player.position.tile;
 		player._pdir = Direction::South;
-		PlayerNetPack pack { };
+		PlayerNetPack pack {};
 		PackNetPlayer(pack, player);
-		player = { };
+		player = {};
 		return pack;
 	}
 
@@ -304,7 +304,7 @@ void PrepareGoldPickupArea(uint8_t localPlayerId)
 
 TCmdGItem MakePickupCommand(_cmd_id command, const Item &item, uint8_t master, uint8_t cursorItem)
 {
-	TCmdGItem message { };
+	TCmdGItem message {};
 	message.bCmd = command;
 	message.x = item.position.x;
 	message.y = item.position.y;
@@ -596,7 +596,7 @@ TEST_F(PlayerSynchronizationTest, HellfireHeldRecordsRestoreTheirEditionWithoutC
 TEST_F(PlayerSynchronizationTest, AnInvalidHellfireItemIndexIsRejectedBeforeLookingUpItsDefinition)
 {
 	PrepareGoldPickupArea(0);
-	TCmdPItem item { };
+	TCmdPItem item {};
 	item.bCmd = CMD_SPAWNITEM;
 	item.x = 40;
 	item.y = 48;
@@ -642,7 +642,7 @@ TEST_F(PlayerSynchronizationTest, ExtendedDeltaKeepsPregenHistoryAlongsideAFullF
 		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 	for (uint32_t i = 0; i < MAXITEMS; ++i) {
-		TCmdPItem drop { };
+		TCmdPItem drop {};
 		drop.bCmd = CMD_DROPITEM;
 		drop.x = 40 + i % 15;
 		drop.y = 40 + i / 15;
@@ -676,7 +676,7 @@ TEST_F(PlayerSynchronizationTest, ExtendedDeltaKeepsPregenHistoryAlongsideAFullF
 TEST_F(PlayerSynchronizationTest, DeltaReloadRemovesAllTakenPregenItemsBeforeRestoringDrops)
 {
 	PrepareGoldPickupArea(0);
-	TCmdPItem drop { };
+	TCmdPItem drop {};
 	drop.bCmd = CMD_DROPITEM;
 	drop.item = MakePickupCommand(CMD_GETITEM, Items[5], MyPlayerId, 5).item;
 	drop.def.dwSeed = Swap32LE(84000);
@@ -973,7 +973,7 @@ TEST_F(PlayerSynchronizationTest, FullDeltaStoresPreviousHeldItemBeforeAccepting
 			NewCursor(MyPlayer->HoldItem);
 			if (fullDelta) {
 				for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-					TCmdGItem entry { };
+					TCmdGItem entry {};
 					entry.bCmd = CMD_GETITEM;
 					entry.x = 40;
 					entry.y = 50;
@@ -1028,7 +1028,7 @@ TEST_F(PlayerSynchronizationTest, LocalPutUsesItsMessageInsteadOfTheLastSentItem
 	MyPlayer->position.tile = { 40, 50 };
 	const Item droppedItem = MyPlayer->InvBody[INVLOC_HAND_LEFT];
 	ASSERT_FALSE(droppedItem.isEmpty());
-	TCmdPItem drop { };
+	TCmdPItem drop {};
 	drop.bCmd = CMD_PUTITEM;
 	drop.x = 41;
 	drop.y = 50;
@@ -1062,7 +1062,7 @@ TEST_F(PlayerSynchronizationTest, ReplayedPutMessagesDoNotDuplicateFloorItems)
 		for (uint8_t i = 0; i < MAXITEMS; ++i)
 			ActiveItems[i] = i;
 		Players[7].setLevel(currlevel);
-		TCmdPItem drop { };
+		TCmdPItem drop {};
 		drop.bCmd = command;
 		drop.x = 41;
 		drop.y = 50;
@@ -1085,7 +1085,7 @@ TEST_F(PlayerSynchronizationTest, FullDeltaRejectsPutBeforeCreatingAnUntrackedFl
 	MyPlayer->setLevel(currlevel);
 	Players[7].setLevel(currlevel);
 	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = CMD_GETITEM;
 		pickup.x = 40;
 		pickup.y = 50;
@@ -1098,7 +1098,7 @@ TEST_F(PlayerSynchronizationTest, FullDeltaRejectsPutBeforeCreatingAnUntrackedFl
 		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 	const auto before = Canonical(Export());
-	TCmdPItem drop { };
+	TCmdPItem drop {};
 	drop.bCmd = CMD_PUTITEM;
 	drop.x = 41;
 	drop.y = 50;
@@ -1125,7 +1125,7 @@ TEST_F(PlayerSynchronizationTest, ManualDropPreservesHeldItemWhenDeltaIsFull)
 	MyPlayer->HoldItem._iSeed = 24000;
 	NewCursor(MyPlayer->HoldItem);
 	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = CMD_GETITEM;
 		pickup.x = 40;
 		pickup.y = 50;
@@ -1207,7 +1207,7 @@ TEST_F(PlayerSynchronizationTest, ClosingStashReturnsHeldItemToBeltWhenDropDelta
 	MyPlayer->HoldItem._iSeed = 26000;
 	NewCursor(MyPlayer->HoldItem);
 	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = CMD_GETITEM;
 		pickup.x = 40;
 		pickup.y = 50;
@@ -1302,7 +1302,7 @@ TEST_F(PlayerSynchronizationTest, RemoteDeathEquipmentClearsOnlyAfterDropIsStore
 	StartPlayerKill(player, DeathReason::MonsterOrTrap);
 	ASSERT_FALSE(equippedItem->isEmpty());
 
-	TCmdPItem spawn { };
+	TCmdPItem spawn {};
 	spawn.bCmd = CMD_SPAWNITEM;
 	spawn.x = 48;
 	spawn.y = 50;
@@ -1347,7 +1347,7 @@ TEST_F(PlayerSynchronizationTest, RemoteDeathDropKeepsZeroLifeAfterRemovingItemB
 		StartPlayerKill(player, DeathReason::MonsterOrTrap);
 		ASSERT_EQ(player._pHitPoints.raw(), 0);
 
-		TCmdPItem spawn { };
+		TCmdPItem spawn {};
 		spawn.bCmd = CMD_SPAWNITEM;
 		spawn.x = 48;
 		spawn.y = 50;
@@ -1390,7 +1390,7 @@ TEST_F(PlayerSynchronizationTest, PregenPickupCompletesOnFirstMessage)
 			ActiveItemCount = 1;
 			dItem[position.x][position.y] = 1;
 
-			TCmdGItem pickup { };
+			TCmdGItem pickup {};
 			pickup.bCmd = command;
 			pickup.x = position.x;
 			pickup.y = position.y;
@@ -1419,7 +1419,7 @@ TEST_F(PlayerSynchronizationTest, ItemOwnerPreservesPregenPickupWhenDeltaIsFull)
 	sender.plractive = true;
 	ASSERT_TRUE(sender.isLevelOwnedByLocalClient());
 	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = CMD_GETITEM;
 		pickup.x = 40;
 		pickup.y = 50;
@@ -1444,7 +1444,7 @@ TEST_F(PlayerSynchronizationTest, ItemOwnerPreservesPregenPickupWhenDeltaIsFull)
 		ActiveItemCount = 1;
 		dItem[position.x][position.y] = 1;
 
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = command;
 		pickup.x = position.x;
 		pickup.y = position.y;
@@ -1496,7 +1496,7 @@ TEST_F(PlayerSynchronizationTest, FailedGoldOverflowDropDoesNotDuplicatePartiall
 TEST_F(PlayerSynchronizationTest, PickedUpPregenRecordCannotBeOverwrittenBySpawn)
 {
 	MyPlayer->setLevel(currlevel);
-	TCmdGItem pickup { };
+	TCmdGItem pickup {};
 	pickup.bCmd = CMD_GETITEM;
 	pickup.x = 40;
 	pickup.y = 50;
@@ -1509,7 +1509,7 @@ TEST_F(PlayerSynchronizationTest, PickedUpPregenRecordCannotBeOverwrittenBySpawn
 	ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	const auto before = Canonical(Export());
 
-	TCmdPItem spawn { };
+	TCmdPItem spawn {};
 	spawn.bCmd = CMD_SPAWNITEM;
 	spawn.x = 42;
 	spawn.y = 50;
@@ -1523,7 +1523,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaRejectsAdditionalPregenPickup)
 {
 	MyPlayer->setLevel(1);
 	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = CMD_GETITEM;
 		pickup.x = 40;
 		pickup.y = 50;
@@ -1536,7 +1536,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaRejectsAdditionalPregenPickup)
 		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
 	}
 
-	TCmdGItem pickup { };
+	TCmdGItem pickup {};
 	pickup.bCmd = CMD_GETITEM;
 	pickup.x = 40;
 	pickup.y = 50;
@@ -1562,7 +1562,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaRejectsAdditionalPregenPickup)
 		return !item.isEmpty();
 	});
 	ASSERT_NE(equippedItem, std::end(player.InvBody));
-	TCmdPItem spawn { };
+	TCmdPItem spawn {};
 	spawn.bCmd = CMD_SPAWNITEM;
 	spawn.x = 48;
 	spawn.y = 50;
@@ -1583,7 +1583,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaPreservesPregenItemOnExtraMessage
 	Player &sender = Players[1];
 	sender.setLevel(currlevel);
 	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = CMD_GETITEM;
 		pickup.x = 40;
 		pickup.y = 50;
@@ -1605,7 +1605,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaPreservesPregenItemOnExtraMessage
 	ActiveItemCount = 1;
 	dItem[position.x][position.y] = 1;
 
-	TCmdGItem extra { };
+	TCmdGItem extra {};
 	extra.bCmd = CMD_ITEMEXTRA;
 	extra.x = position.x;
 	extra.y = position.y;
@@ -1630,7 +1630,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaPreservesSourceAndPregenPickupRec
 	InitCursor();
 	MyPlayer->setLevel(currlevel);
 	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
-		TCmdGItem pickup { };
+		TCmdGItem pickup {};
 		pickup.bCmd = CMD_GETITEM;
 		pickup.x = 40;
 		pickup.y = 50;
@@ -1653,7 +1653,7 @@ TEST_F(PlayerSynchronizationTest, FullItemDeltaPreservesSourceAndPregenPickupRec
 	ActiveItemCount = 1;
 	dItem[position.x][position.y] = 1;
 
-	TCmdGItem repick { };
+	TCmdGItem repick {};
 	repick.bCmd = CMD_GETITEM;
 	repick.x = position.x;
 	repick.y = position.y;
@@ -1714,7 +1714,7 @@ TEST_F(MultiplayerSyncTest, VisionTracksEightPlayersAcrossLevelsDeathAndDepartur
 	ActivateVision({ 50, 50 }, 1, PlayerStorageCapacity);
 	ChangeVisionXY(PlayerStorageCapacity, { 51, 50 });
 	DeactivateVision(PlayerStorageCapacity);
-	Missile infravision { };
+	Missile infravision {};
 	infravision._misource = 7;
 	infravision.duration = 2;
 	ProcessInfravision(infravision);
@@ -1793,7 +1793,7 @@ TEST_F(MultiplayerSyncTest, LightingPoolRejectsExhaustionAndReclaimsReleasedEntr
 
 TEST_F(MultiplayerSyncTest, DeltaSenderCanBeEverySlotAndTheSentinelCannotCollide)
 {
-	std::array<uint32_t, PlayerStorageCapacity> turns { };
+	std::array<uint32_t, PlayerStorageCapacity> turns {};
 	for (uint8_t donor = 0; donor < PlayerStorageCapacity; ++donor) {
 		SCOPED_TRACE(donor);
 		MyPlayerId = donor == 0 ? 7 : 0;
@@ -2221,7 +2221,7 @@ TEST_F(MultiplayerSyncTest, RejectsDiscontinuousDuplicateAndTruncatedDeltaFragme
 		Receive(7, invalid);
 		EXPECT_EQ(gbDeltaSender, NoDeltaSender);
 	}
-	for (const auto &payload : { Message { }, Message { std::byte { 0 } }, Message { std::byte { 2 }, std::byte { 0 } }, Message { std::byte { 1 }, std::byte { 0 } } }) {
+	for (const auto &payload : { Message {}, Message { std::byte { 0 } }, Message { std::byte { 2 }, std::byte { 0 } }, Message { std::byte { 1 }, std::byte { 0 } } }) {
 		delta_init();
 		msg_start_resync();
 		gbDeltaSender = 7;
@@ -2272,7 +2272,7 @@ TEST_F(MultiplayerSyncTest, RejectsDeltaEndWithoutACompleteSnapshot)
 {
 	msg_start_resync();
 	gbDeltaSender = 7;
-	const std::array<std::byte, 1> zero { };
+	const std::array<std::byte, 1> zero {};
 	Receive(7, Fragment(CMD_DLEVEL_END, 0, zero));
 	EXPECT_EQ(gbDeltaSender, NoDeltaSender);
 }
@@ -2304,7 +2304,7 @@ TEST_F(MultiplayerSyncTest, MaximumLevelDeltaRoundTripsWithFixedSpawnRecords)
 	ASSERT_TRUE(expected.contains(2));
 	const auto &level = expected.at(2);
 	const size_t expectedSize = 1 + MAXITEMS * sizeof(TCmdPItem) + (ItemDeltaCapacity() - MAXITEMS) + 1 + MAXOBJECTS * 3 + MonsterLimit() * 9 + 2 + MonsterLimit() * 11;
-	const size_t partyBytes = sgGameInitInfo.rules == ExtendedSessionRules ? EncodePartyLevel(PartyLevelState { }).size() : 0;
+	const size_t partyBytes = sgGameInitInfo.rules == ExtendedSessionRules ? EncodePartyLevel(PartyLevelState {}).size() : 0;
 	ASSERT_EQ(level.size(), expectedSize + partyBytes);
 	RecordProperty("raw_level_bytes_with_marker", level.size() + 1);
 	RecordProperty("player_info_bytes", sizeof(PlayerNetPack));
@@ -2398,7 +2398,7 @@ TEST_F(PlayerSynchronizationTest, JoinsAndReusesAllFourAdditionalPlayerSlots)
 		EXPECT_EQ(Players[slot]._pName[0], '\0');
 		EXPECT_EQ(Players[slot]._pNumInv, 0);
 		EXPECT_TRUE(Players[slot].InvBody[INVLOC_HAND_LEFT].isEmpty());
-		EXPECT_EQ(Players[slot].position.tile, (Point { }));
+		EXPECT_EQ(Players[slot].position.tile, (Point {}));
 		EXPECT_EQ(Players[slot].wReflections, 0);
 		EXPECT_EQ(player_state[slot], 0U);
 		EXPECT_EQ(sgwPackPlrOffsetTbl[slot], 0);
@@ -2508,7 +2508,7 @@ TEST_F(PlayerSynchronizationTest, PlayerDamageFromEveryRemoteSlotTargetsTheLocal
 	}
 
 	const int32_t damage = Fixed26_6::fromInt(1).raw();
-	TCmdDamage message { };
+	TCmdDamage message {};
 	message.bCmd = CMD_PLRDAMAGE;
 	message.bPlr = MyPlayerId;
 	message.dwDam = Swap32LE(static_cast<uint32_t>(damage));
@@ -2535,7 +2535,7 @@ TEST_F(PlayerSynchronizationTest, PlayerDamageForRemoteRecipientDoesNotDamageLoc
 
 	const int32_t localHitPoints = MyPlayer->_pHitPoints.raw();
 	const int32_t remoteHitPoints = Players[7]._pHitPoints.raw();
-	TCmdDamage message { };
+	TCmdDamage message {};
 	message.bCmd = CMD_PLRDAMAGE;
 	message.bPlr = 7;
 	message.dwDam = Swap32LE(static_cast<uint32_t>(Fixed26_6::fromInt(1).raw()));
@@ -2556,7 +2556,7 @@ TEST_F(PlayerSynchronizationTest, PlayerDamageRejectsInvalidRecipientAndExcessiv
 	Players[7].setLevel(currlevel);
 
 	const int32_t localHitPoints = MyPlayer->_pHitPoints.raw();
-	TCmdDamage message { };
+	TCmdDamage message {};
 	message.bCmd = CMD_PLRDAMAGE;
 	message.dwDam = Swap32LE(static_cast<uint32_t>(Fixed26_6::fromInt(1).raw()));
 	message.damageType = DamageType::Physical;
@@ -2632,7 +2632,7 @@ TEST_F(PlayerSynchronizationTest, TcpEngineReceivesSevenRemotePlayersAtTheSameTu
 		SCOPED_TRACE(encrypted);
 		SNetDestroy();
 		for (Player &player : Players)
-			player = { };
+			player = {};
 		gbActivePlayers = 1;
 		MyPlayerId = 7;
 		MyPlayer = &Players[7];
@@ -2686,7 +2686,7 @@ TEST_F(PlayerSynchronizationTest, TcpEngineReceivesSevenRemotePlayersAtTheSameTu
 			const auto data = std::as_bytes(std::span(&player, 1));
 			for (size_t offset = 0; offset < data.size(); offset += 479) {
 				const auto message = Fragment(CMD_ACK_PLRINFO, static_cast<uint16_t>(offset), data.subspan(offset, std::min(size_t { 479 }, data.size() - offset)));
-				TPkt packet { };
+				TPkt packet {};
 				packet.hdr.wCheck = Swap16LE(0x6970); // Classic "pi" signature on the wire.
 				const size_t size = sizeof(TPktHdr) + message.size();
 				packet.hdr.wLen = Swap16LE(static_cast<uint16_t>(size));

@@ -792,7 +792,7 @@ void LoadMonsters(LoadHelper &file, ankerl::unordered_dense::set<unsigned> &remo
 		ActiveMonsters[i] = file.NextBE<uint32_t>();
 	for (size_t i = MaxMonsters; i < MonsterStorageCapacity; ++i) {
 		ActiveMonsters[i] = static_cast<unsigned>(i);
-		Monsters[i] = { };
+		Monsters[i] = {};
 	}
 
 	for (size_t i = 0; i < ActiveMonsterCount;) {
@@ -2636,7 +2636,7 @@ std::expected<void, std::string> LoadGame(bool firstflag)
 
 		for (uint8_t &lightId : ActiveLights)
 			lightId = file.NextLE<uint8_t>();
-		std::array<bool, MAXLIGHTS> activeLightIds = { };
+		std::array<bool, MAXLIGHTS> activeLightIds = {};
 		for (int i = 0; i < ActiveLightCount; i++) {
 			const uint8_t lightId = ActiveLights[i];
 			if (!IsValidLightId(lightId) || activeLightIds[lightId])

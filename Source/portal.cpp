@@ -41,7 +41,7 @@ constexpr Point PortalTownPosition[MAXPORTAL] = {
 void InitPortals()
 {
 	for (auto &portal : Portals)
-		portal = { };
+		portal = {};
 	portalindex = 0;
 }
 

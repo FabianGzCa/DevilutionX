@@ -43,7 +43,7 @@ constexpr uint8_t Bit(uint8_t id) { return static_cast<uint8_t>(1U << id); }
 
 LevelEntryMessage Request(uint8_t id, Point position = { 40, 50 }, uint32_t ticket = 1, uint8_t level = 1, bool special = false)
 {
-	LevelEntryMessage request { };
+	LevelEntryMessage request {};
 	request.command = CMD_LEVELENTRY;
 	request.phase = LevelEntryPhase::Request;
 	request.level = level;
@@ -60,8 +60,8 @@ class EntryNetwork {
 public:
 	std::array<LevelEntryCoordinator, 8> nodes;
 	std::array<LevelEntryPeers, 8> views;
-	std::array<std::array<Point, 8>, 8> committed { };
-	std::array<unsigned, 8> searches { };
+	std::array<std::array<Point, 8>, 8> committed {};
+	std::array<unsigned, 8> searches {};
 	unsigned assignments = 0;
 	unsigned commits = 0;
 	unsigned retries = 0;
@@ -586,7 +586,7 @@ protected:
 	}
 	static LevelEntryMessage Batch(Point origin = { 40, 50 })
 	{
-		LevelEntryMessage batch { };
+		LevelEntryMessage batch {};
 		batch.participants = 0xFF;
 		batch.level = setlevel ? static_cast<uint8_t>(setlvlnum) : currlevel;
 		batch.setLevel = setlevel ? 1 : 0;
@@ -677,7 +677,7 @@ TEST_F(LevelEntryPlacementTest, TownPortalAndQuestEntrancesAvoidTriggersAndOther
 
 TEST_F(LevelEntryPlacementTest, TeleportDestinationsDoNotDependOnMissileInsertionOrder)
 {
-	std::array<Point, 8> expected { };
+	std::array<Point, 8> expected {};
 	for (const bool reverse : { false, true }) {
 		Room();
 		Missiles.clear();
@@ -781,7 +781,7 @@ TEST_F(LevelEntryPlacementTest, RealNetworkCommandsCompleteLocalAdmissionOnlyAft
 	EXPECT_TRUE(VisionActive[0]);
 	const Point committed = MyPlayer->position.tile;
 	// A full info packet from another channel may finish after the commit.
-	*MyPlayer = { };
+	*MyPlayer = {};
 	std::strcpy(MyPlayer->_pName, "Late player info");
 	MyPlayer->position.tile = { 10, 10 };
 	MyPlayer->setLevel(5);
@@ -913,9 +913,9 @@ TEST_F(LevelEntryPlacementTest, FragmentedPlayerInfoPreservesPendingAndCommitted
 	Players[7].setLevel(1);
 	Players[7].position.tile = { 40, 50 };
 	Players[7].position.future = Players[7].position.tile;
-	PlayerNetPack packed { };
+	PlayerNetPack packed {};
 	PackNetPlayer(packed, Players[7]);
-	Players[7] = { };
+	Players[7] = {};
 	ASSERT_TRUE(SNetInitializeProvider(SELCONN_LOOPBACK, &sgGameInitInfo));
 	GameData wire = sgGameInitInfo;
 	SwapGameDataLE(wire);
@@ -991,9 +991,9 @@ TEST_F(LevelEntryPlacementTest, ReservedEntrantsCanBeDrawnBeforeTheCommit)
 	Players[7].setLevel(1);
 	Players[7].position.tile = { 40, 50 };
 	Players[7].position.future = Players[7].position.tile;
-	PlayerNetPack packed { };
+	PlayerNetPack packed {};
 	PackNetPlayer(packed, Players[7]);
-	Players[7] = { };
+	Players[7] = {};
 	ASSERT_TRUE(SNetInitializeProvider(SELCONN_LOOPBACK, &sgGameInitInfo));
 	GameData wire = sgGameInitInfo;
 	SwapGameDataLE(wire);
@@ -1076,7 +1076,7 @@ TEST_F(LevelEntryPlacementTest, ReservedEntrantsCanBeDrawnBeforeTheCommit)
 TEST_F(LevelEntryPlacementTest, ObjectsMonstersAndResidentPlayersAreNeverOverwritten)
 {
 	Room();
-	Objects[0] = { };
+	Objects[0] = {};
 	Objects[0].position = { 41, 50 };
 	Objects[0]._oSolidFlag = true;
 	dObject[41][50] = 1;

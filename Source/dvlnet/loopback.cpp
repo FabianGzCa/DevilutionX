@@ -98,7 +98,7 @@ bool loopback::SNetUnregisterEventHandler(event_type /*evtype*/)
 bool loopback::SNetLeaveGame(net::leaveinfo_t /*type*/)
 {
 	IsLoopback = false;
-	message_queue = { };
+	message_queue = {};
 	message_last.clear();
 	return true;
 }

@@ -800,7 +800,7 @@ const std::byte *DeltaImportSpawnedMonsters(const std::byte *src, const std::byt
 			return nullptr;
 		src += sizeof(uint16_t);
 
-		DSpawnedMonster spawnedMonster { };
+		DSpawnedMonster spawnedMonster {};
 		if (sgGameInitInfo.rules == ExtendedSessionRules) {
 			DSpawnedMonsterPack packed;
 			memcpy(&packed, src, sizeof(packed));
@@ -2910,7 +2910,7 @@ bool CommitItemTransfer(const ItemTransferMessage &message)
 	}
 	const bool pickup = message.kind == ItemTransferKind::ManualPickup || message.kind == ItemTransferKind::AutoPickup;
 	if (pickup) {
-		TCmdGItem item { };
+		TCmdGItem item {};
 		item.bCmd = message.kind == ItemTransferKind::AutoPickup ? CMD_AGETITEM : CMD_GETITEM;
 		if (static_cast<_item_indexes>(Swap16LE(message.item.def.wIndx)) == IDI_EAR)
 			item.ear = message.item.ear;
@@ -3623,7 +3623,7 @@ size_t OnPartySpawn(const TCmdPartySpawn &wire, const Player &player)
 	// Sync metadata may arrive first on another connection. Preserve it, but
 	// still initialize the actual monster when its authenticated spawn arrives.
 	auto &state = GetPartyLevelState(GetLevelForMultiplayer(player)).monsters[index];
-	state = { };
+	state = {};
 	state.generation = generation;
 	state.flags = PartyMonsterExpected;
 	OnSpawnMonster(wire.native, player);
@@ -3727,7 +3727,7 @@ void NetSendPartyReward(uint8_t level, PartyMonsterReward reward)
 	SwapPartyRewardLE(reward);
 	static_assert(sizeof(reward) <= sizeof(message.item));
 	std::memcpy(&message.item, &reward, sizeof(reward));
-	LocalItemTransfers.emplace(uint32_t { message.request }, LocalItemTransfer { message, Item { } });
+	LocalItemTransfers.emplace(uint32_t { message.request }, LocalItemTransfer { message, Item {} });
 	SendItemTransfer(message);
 }
 void ClearPartyContributor(uint8_t player)
@@ -3909,7 +3909,7 @@ bool CanDeltaPutItem(const TCmdPItem &message, const Player &player)
 
 bool CanDeltaPutItem(const Item &item, const Player &player)
 {
-	TCmdPItem message { };
+	TCmdPItem message {};
 	PrepareItemForNetwork(item, message);
 	return CanDeltaPutItem(message, player);
 }
@@ -3921,7 +3921,7 @@ bool DeltaPutItem(const TCmdPItem &message, Point position, const Player &player
 
 bool DeltaStoreDroppedItem(const Item &item, Point position, const Player &player)
 {
-	TCmdPItem message { };
+	TCmdPItem message {};
 	message.bCmd = CMD_SPAWNITEM;
 	message.x = position.x;
 	message.y = position.y;
@@ -4081,7 +4081,7 @@ void delta_init()
 {
 	ResetPartyBalance();
 	ItemTransfersEnabled = false;
-	ItemTransfers.Reset(MyPlayerId, { });
+	ItemTransfers.Reset(MyPlayerId, {});
 	LocalItemTransfers.clear();
 	OwnedItemDrops.clear();
 	NextItemRequest = 0;

@@ -155,7 +155,7 @@ TEST(PartyScalingRules, CountsHumanSlotsByLevelRegardlessOfClassLifeOrLoadingSta
 	players[0].setLevel(SL_SKELKING);
 	EXPECT_EQ(CountLevelParticipants(players, GetLevelForMultiplayer(players[0])), 1U);
 	EXPECT_EQ(CountLevelParticipants(players, 255), 0U);
-	EXPECT_EQ(CountLevelParticipants({ }, 1), 0U);
+	EXPECT_EQ(CountLevelParticipants({}, 1), 0U);
 }
 
 TEST(PartyScalingRules, ReinforcementsPreserveFractionalProgressAndDoNotReviveCorpses)

@@ -286,7 +286,7 @@ void PlayerLeftMsg(Player &player, bool left)
 	if (left && player.plractive)
 		LeaveItemTransfers(static_cast<uint8_t>(player.getId()));
 	if (!player.plractive) {
-		player = { };
+		player = {};
 		return;
 	}
 
@@ -317,7 +317,7 @@ void PlayerLeftMsg(Player &player, bool left)
 		}
 		EventPlrMsg(FormatRuntime(pszFmt, player._pName));
 	}
-	player = { };
+	player = {};
 	gbActivePlayers--;
 }
 
@@ -1037,7 +1037,7 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	}
 
 	if (offset == 0)
-		packedPlayer = { };
+		packedPlayer = {};
 	memcpy(reinterpret_cast<uint8_t *>(&packedPlayer) + Swap16LE(header.wOffset), reinterpret_cast<const uint8_t *>(&header) + sizeof(header), Swap16LE(header.wBytes));
 
 	sgwPackPlrOffsetTbl[pnum] += Swap16LE(header.wBytes);

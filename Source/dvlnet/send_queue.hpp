@@ -17,7 +17,7 @@ public:
 			return std::unexpected("Network send queue is full");
 		bytes_ += frame.size();
 		frames_.push_back(std::make_shared<buffer_t>(std::move(frame)));
-		return { };
+		return {};
 	}
 
 	bool Empty() const { return frames_.empty(); }

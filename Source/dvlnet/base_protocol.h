@@ -308,19 +308,19 @@ std::expected<void, PacketError> base_protocol<P>::SendTo(plr_t player, packet &
 
 	// Periodic probes must obey the same single-initiator rule as the handshake.
 	if (player_limit_ > ClassicPlayerLimit && peer.sendQueue && plr_self > player && pkt.Type() == PT_ECHO_REQUEST)
-		return { };
+		return {};
 
 	// The handshake uses echo packets so clients know
 	// when they can safely drain their send queues
 	if (peer.sendQueue && !IsAnyOf(pkt.Type(), PT_ECHO_REQUEST, PT_ECHO_REPLY)) {
 		if (peer.stalled)
-			return { };
+			return {};
 		if (peer.sendQueue->size() >= MaxQueuedPackets || pkt.Data().size() > MaxQueuedBytes - peer.queuedBytes) {
 			// Only this peer is unreachable: drop it rather than end the session for everyone else.
 			peer.sendQueue->clear();
 			peer.queuedBytes = 0;
 			peer.stalled = true;
-			return { };
+			return {};
 		}
 		peer.queuedBytes += pkt.Data().size();
 		peer.sendQueue->push_back(pkt);
@@ -385,7 +385,7 @@ template <class P>
 std::expected<void, PacketError> base_protocol<P>::handle_join_request(packet &inPkt, endpoint_t sender)
 {
 	if (plr_self == PLR_BROADCAST)
-		return { }; // not hosting a game yet
+		return {}; // not hosting a game yet
 	if (auto error = ValidateJoinRequest(game_init_info, inPkt)) {
 		return MakeJoinReject(*pktfty, plr_self, inPkt, *error)
 		    .and_then([&](std::unique_ptr<packet> reply) { return proto.send(sender, reply->Data()); });
@@ -464,7 +464,7 @@ std::expected<void, PacketError> base_protocol<P>::recv_decrypted(packet &pkt, e
 		const size_t capacity = gameData.isExtended() ? gameData.rules.maxPlayers : ClassicPlayerLimit;
 		neededSize += PlayerNameLength * capacity;
 		if (infoBuffer.size() < neededSize)
-			return { };
+			return {};
 		std::vector<std::string> playerNames;
 		for (size_t i = 0; i < capacity; i++) {
 			std::string_view playerNameBuffer {
@@ -481,7 +481,7 @@ std::expected<void, PacketError> base_protocol<P>::recv_decrypted(packet &pkt, e
 		std::string gameName;
 		size_t gameNameSize = infoBuffer.size() - neededSize;
 		if (gameNameSize > MaxGameNameSize || game_list.size() >= MaxDiscoveredGames)
-			return { };
+			return {};
 		gameName.resize(gameNameSize);
 		std::memcpy(&gameName[0], infoBuffer.data() + neededSize, gameNameSize);
 		game_list[gameName] = GameListValue { gameData, std::move(playerNames), sender };
@@ -501,7 +501,7 @@ std::expected<void, PacketError> base_protocol<P>::recv_ingame(packet &pkt, endp
 			}
 		} else if (pkt.Type() == PT_INFO_REQUEST || pkt.Type() == PT_INFO_REQUEST_EXTENDED) {
 			if (IsExtendedSession(game_init_info) != (pkt.Type() == PT_INFO_REQUEST_EXTENDED))
-				return { };
+				return {};
 			if ((plr_self != PLR_BROADCAST) && (get_master() == plr_self)) {
 				buffer_t buf;
 				buf.resize(game_init_info.size() + (PlayerNameLength * player_limit_) + gamename.size());
@@ -588,7 +588,7 @@ std::expected<void, PacketError> base_protocol<P>::recv_ingame(packet &pkt, endp
 
 	if (plr_self != PLR_BROADCAST) {
 		if (wasBroadcast) {
-			firstpeer = { };
+			firstpeer = {};
 			// Send a handshake to everyone just after PT_JOIN_ACCEPT
 			for (plr_t player = 0; player < player_limit_; player++) {
 				if (std::expected<void, PacketError> result = InitiateHandshake(player);
@@ -608,7 +608,7 @@ std::expected<void, PacketError> base_protocol<P>::DrainSendQueue(plr_t player)
 {
 	Peer &srcPeer = peers[player];
 	if (!srcPeer.sendQueue)
-		return { };
+		return {};
 
 	std::deque<packet> &sendQueue = *srcPeer.sendQueue;
 	while (!sendQueue.empty()) {
@@ -621,7 +621,7 @@ std::expected<void, PacketError> base_protocol<P>::DrainSendQueue(plr_t player)
 	}
 
 	srcPeer.sendQueue = nullptr;
-	return { };
+	return {};
 }
 
 template <class P>

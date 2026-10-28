@@ -37,7 +37,7 @@ OptionalOwnedClxSpriteList PartyMemberFrame;
 OptionalOwnedClxSpriteList PlayerTags;
 
 Point PartyPanelPos = { 8, 8 };
-std::array<Rectangle, PlayerStorageCapacity> PortraitFrameRects { };
+std::array<Rectangle, PlayerStorageCapacity> PortraitFrameRects {};
 int RightClickedPortraitIndex = -1;
 constexpr Size PortraitFrameSize = PartyPanelPortraitSize;
 
@@ -133,7 +133,7 @@ std::expected<void, std::string> LoadPartyPanel()
 
 	PartyMemberFrame = SurfaceToClx(out);
 
-	return { };
+	return {};
 }
 
 void FreePartyPanel()
@@ -163,7 +163,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 		RightClickedPortraitIndex = -1;
 		return;
 	}
-	std::array<PartyPanelEntry, PartyPanelMemberCapacity> entries { };
+	std::array<PartyPanelEntry, PartyPanelMemberCapacity> entries {};
 	size_t entryCount = 0;
 	if (partyOption == PartyPortraits::Players || partyOption == PartyPortraits::PlayersAndSummons) {
 		for (Player &player : Players) {

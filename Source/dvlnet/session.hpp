@@ -45,7 +45,7 @@ inline std::expected<void, PacketError> ValidatePacketAddresses(packet &pkt, uin
 		if (*player >= capacity)
 			return std::unexpected("Invalid player ID in control packet");
 	}
-	return { };
+	return {};
 }
 
 inline bool IsExtendedSession(const buffer_t &info)

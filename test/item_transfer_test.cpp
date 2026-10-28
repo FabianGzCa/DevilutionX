@@ -20,13 +20,13 @@ protected:
 	};
 	std::array<ItemTransferCoordinator, 8> peers;
 	std::array<std::deque<Envelope>, 8> inbox;
-	std::array<unsigned, 8> committed { };
-	std::array<unsigned, 8> cancelled { };
-	std::array<unsigned, 8> reservations { };
-	std::array<unsigned, 8> floors { };
-	std::array<unsigned, 8> inventories { };
-	std::array<bool, 8> allowed { };
-	std::array<bool, 8> terminated { };
+	std::array<unsigned, 8> committed {};
+	std::array<unsigned, 8> cancelled {};
+	std::array<unsigned, 8> reservations {};
+	std::array<unsigned, 8> floors {};
+	std::array<unsigned, 8> inventories {};
+	std::array<bool, 8> allowed {};
+	std::array<bool, 8> terminated {};
 	bool duplicate = false;
 	uint8_t active = 255;
 
@@ -266,7 +266,7 @@ TEST_F(ItemTransferTest, SnapshotRejectsGapsAndDuplicateSerialsBeforeReserving)
 	snapshot.issued = 1;
 	EXPECT_FALSE(peers[7].Restore(snapshot, active));
 	EXPECT_EQ(reservations[7], 0U);
-	snapshot.entries[0] = ItemTransferCoordinator::Entry { };
+	snapshot.entries[0] = ItemTransferCoordinator::Entry {};
 	snapshot.entries[0]->message.phase = ItemTransferPhase::Offer;
 	snapshot.entries[0]->message.actor = 1;
 	snapshot.entries[0]->message.serial = 1;

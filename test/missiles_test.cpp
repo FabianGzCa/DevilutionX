@@ -163,7 +163,7 @@ void CheckHeadlessCharge(_monster_id type, MonsterGraphic graphic, MonsterAIID a
 	LoadMonsterData();
 	LoadMissileData();
 	Missiles.clear();
-	LevelMonsterTypes[0] = { };
+	LevelMonsterTypes[0] = {};
 	LevelMonsterTypes[0].type = type;
 	auto &animation = LevelMonsterTypes[0].anims[static_cast<int>(graphic)];
 	animation.frames = MonstersData[type].frames[static_cast<int>(graphic)];
@@ -171,7 +171,7 @@ void CheckHeadlessCharge(_monster_id type, MonsterGraphic graphic, MonsterAIID a
 	animation.width = 128;
 	ASSERT_FALSE(animation.sprites.has_value());
 	Monster &monster = Monsters[4];
-	monster = { };
+	monster = {};
 	monster.levelType = 0;
 	monster.uniqueType = UniqueMonsterType::None;
 	monster.mode = MonsterMode::Charge;
@@ -197,8 +197,8 @@ void CheckHeadlessCharge(_monster_id type, MonsterGraphic graphic, MonsterAIID a
 	EXPECT_NE(missile->position.traveled, before);
 	EXPECT_FALSE(missile->_miDelFlag);
 	Missiles.clear();
-	LevelMonsterTypes[0] = { };
-	monster = { };
+	LevelMonsterTypes[0] = {};
+	monster = {};
 }
 
 } // namespace

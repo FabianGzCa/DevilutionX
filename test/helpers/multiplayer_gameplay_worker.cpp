@@ -137,7 +137,7 @@ void ResetWorld(unsigned count, uint8_t humans = 0)
 	BossId = MonsterStorageCapacity;
 	InitLevelMonsters();
 	for (int i = 0; i < MAXQUESTS; ++i) {
-		Quests[i] = { };
+		Quests[i] = {};
 		Quests[i]._qidx = static_cast<quest_id>(i);
 		Quests[i]._qactive = QUEST_NOTAVAIL;
 	}
@@ -244,7 +244,7 @@ std::string Describe()
 		const Item &item = Items[ActiveItems[i]];
 		if (item._itype == ItemType::Gold)
 			worldGold += item._ivalue;
-		TCmdPItem wire { };
+		TCmdPItem wire {};
 		wire.bCmd = CMD_DROPITEM;
 		wire.x = item.position.x;
 		wire.y = item.position.y;
@@ -289,7 +289,7 @@ std::string Describe()
 				}
 			}
 		}
-		const auto state = index < MonsterStorageCapacity ? level.monsters[index] : PartyMonsterState { };
+		const auto state = index < MonsterStorageCapacity ? level.monsters[index] : PartyMonsterState {};
 		result += "\n" + std::to_string(level.participants) + " " + std::to_string(level.lootRemainder)
 		    + " " + std::to_string(state.nativeMax) + " " + std::to_string(state.damage)
 		    + " " + std::to_string(PartyMonsterHitPoints(state, level.participants).raw())
@@ -301,14 +301,14 @@ std::string Describe()
 /** Native transport turns fence the checkpoint; wall-clock quiet is not its identity. */
 void ConfirmTurn(unsigned stage)
 {
-	std::byte empty { };
+	std::byte empty {};
 	multi_send_msg_packet(PlayerRecipientMask { (1U << PeerCount) - 1 }, &empty, 0);
 	FlushNetMessageBuffers();
 	uint32_t turn = Swap32LE(stage + 1);
 	Require(SNetSendTurn(reinterpret_cast<char *>(&turn), sizeof(turn)), "cannot send checkpoint turn");
-	std::array<char *, PlayerStorageCapacity> data { };
-	std::array<size_t, PlayerStorageCapacity> sizes { };
-	std::array<uint32_t, PlayerStorageCapacity> status { };
+	std::array<char *, PlayerStorageCapacity> data {};
+	std::array<size_t, PlayerStorageCapacity> sizes {};
+	std::array<uint32_t, PlayerStorageCapacity> status {};
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
 	while (!SNetReceiveTurns(Players.size(), data.data(), sizes.data(), status.data())) {
 		Require(std::chrono::steady_clock::now() < deadline, "checkpoint turn did not arrive");
@@ -514,7 +514,7 @@ void Run(unsigned port)
 			ApplyMonsterDamage(DamageType::Physical, Monsters[BossId], Monsters[BossId].hitPoints);
 			M_StartKill(Monsters[BossId], *MyPlayer);
 		} else if (action == "party-buffer" && Role == actor) {
-			GetPartyLevelState(1) = { };
+			GetPartyLevelState(1) = {};
 			msg_start_resync();
 			gbDeltaSender = 0;
 			ResumeSnapshot = true;
@@ -636,7 +636,7 @@ void Run(unsigned port)
 			Require(BossId < MonsterStorageCapacity, "boss spawn did not arrive");
 			Monsters[BossId].maxHitPoints = Monsters[BossId].hitPoints = Fixed26_6::fromInt(50);
 			InitializePartyMonster(Monsters[BossId]);
-			Monsters[BossId].whoHit = { };
+			Monsters[BossId].whoHit = {};
 		} else if (action == "boss-hit") {
 			MyPlayer->_pIMinDam = MyPlayer->_pIMaxDam = 1;
 			MyPlayer->_pDamageMod = MyPlayer->_pIBonusDamMod = MyPlayer->_pIBonusDam = 0;
@@ -668,9 +668,9 @@ void Run(unsigned port)
 			bool lost = false;
 			while (std::chrono::steady_clock::now() < timeout) {
 				ProcessGameMessagePackets();
-				std::array<char *, PlayerStorageCapacity> turns { };
-				std::array<size_t, PlayerStorageCapacity> sizes { };
-				std::array<uint32_t, PlayerStorageCapacity> status { };
+				std::array<char *, PlayerStorageCapacity> turns {};
+				std::array<size_t, PlayerStorageCapacity> sizes {};
+				std::array<uint32_t, PlayerStorageCapacity> status {};
 				SNetReceiveTurns(Players.size(), turns.data(), sizes.data(), status.data());
 				if (actor == 0 || actor == Role) {
 					lost = std::all_of(status.begin(), status.end(), [](uint32_t flags) { return (flags & PS_CONNECTED) == 0; });

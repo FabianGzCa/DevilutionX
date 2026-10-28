@@ -51,7 +51,7 @@ struct ItemTransferMessage {
 	uint32_t epoch = 0;
 	uint32_t request = 0;
 	uint32_t serial = 0;
-	TCmdPItem item { };
+	TCmdPItem item {};
 };
 #pragma pack(pop)
 
@@ -85,7 +85,7 @@ public:
 		bool applied = false;
 		bool committed = false;
 		bool finalizeSent = false;
-		std::optional<bool> deferredDecision { };
+		std::optional<bool> deferredDecision {};
 		bool deferredFinalize = false;
 	};
 	struct Snapshot {
@@ -94,8 +94,8 @@ public:
 		uint32_t applied = 0;
 		uint8_t quiescing = 0;
 		uint8_t coordinator = 0;
-		std::array<uint32_t, PeerCount> epochs { };
-		std::array<uint32_t, PeerCount> requests { };
+		std::array<uint32_t, PeerCount> epochs {};
+		std::array<uint32_t, PeerCount> requests {};
 		std::array<std::optional<Entry>, WindowSize> entries;
 		std::array<std::optional<Entry>, WindowSize> earlyVotes;
 		std::vector<ItemTransferMessage> deferred;

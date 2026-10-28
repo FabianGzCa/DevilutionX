@@ -27,7 +27,7 @@ void ItemTransferCoordinator::Reset(uint8_t local, Hooks hooks)
 	local_ = local;
 	lastActive_ = Bit(local);
 	hooks_ = std::move(hooks);
-	state_ = { };
+	state_ = {};
 	stopped_ = false;
 	leaveApprovals_ = 0;
 	acknowledgedDepartures_ = 0;
@@ -450,7 +450,7 @@ bool ItemTransferCoordinator::Restore(const Snapshot &snapshot, uint8_t active)
 		if (early && (early->message.voters & ~active) != 0)
 			return false;
 	}
-	std::array<bool, WindowSize> serials { };
+	std::array<bool, WindowSize> serials {};
 	for (const auto &entry : snapshot.entries) {
 		if (!entry)
 			continue;
@@ -644,7 +644,7 @@ std::optional<ItemTransferCoordinator::Snapshot> DecodeItemTransfers(std::span<c
 	    || snapshot.issued - snapshot.finished != count
 	    || data.size() < HeaderSize + count * (sizeof(ItemTransferMessage) + 3) + 4)
 		return std::nullopt;
-	std::array<bool, ItemTransferCoordinator::WindowSize> serials { };
+	std::array<bool, ItemTransferCoordinator::WindowSize> serials {};
 	for (size_t i = 0; i < count; ++i) {
 		ItemTransferCoordinator::Entry entry;
 		std::memcpy(&entry.message, data.data() + offset, sizeof(entry.message));

@@ -231,7 +231,7 @@ void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point positio
 	monster.lightId = NO_LIGHT;
 	monster.rndItemSeed = AdvanceRndSeed();
 	monster.aiSeed = AdvanceRndSeed();
-	monster.whoHit = { };
+	monster.whoHit = {};
 	monster.minDamage = monster.data().minDamage;
 	monster.maxDamage = monster.data().maxDamage;
 	monster.minDamageSpecial = monster.data().minDamageSpecial;
@@ -3463,7 +3463,7 @@ void InitLevelMonsters()
 
 	ClrAllMonsters();
 	for (size_t i = MaxMonsters; i < MonsterStorageCapacity; ++i)
-		Monsters[i] = { };
+		Monsters[i] = {};
 	ActiveMonsterCount = 0;
 	totalmonsters = MaxMonsters;
 

@@ -53,12 +53,12 @@ std::expected<buffer_t, PacketError> frame_queue::Read(framesize_t s)
 std::expected<void, PacketError> frame_queue::Write(buffer_t buf)
 {
 	if (buf.empty())
-		return { };
+		return {};
 	if (buf.size() > MaxQueuedBytes - current_size || buffer_deque.size() >= MaxQueuedPackets)
 		return std::unexpected("Network receive queue is full");
 	current_size += static_cast<framesize_t>(buf.size());
 	buffer_deque.push_back(std::move(buf));
-	return { };
+	return {};
 }
 
 std::expected<bool, PacketError> frame_queue::PacketReady()

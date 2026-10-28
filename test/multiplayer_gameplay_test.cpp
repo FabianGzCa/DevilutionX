@@ -44,12 +44,12 @@ struct SessionCase {
 class MultiplayerGameplayTest : public ::testing::Test {
 protected:
 	std::filesystem::path directory;
-	std::array<pid_t, 8> children { };
+	std::array<pid_t, 8> children {};
 	unsigned stage = 0;
 	SessionCase session { 8, false, false, 19001 };
 	bool matrix = false;
 	bool retain = false;
-	std::array<bool, 8> expectedExit { };
+	std::array<bool, 8> expectedExit {};
 	std::array<std::unique_ptr<TcpTestProxy>, 8> proxies;
 	std::array<std::string, 8> results;
 
@@ -144,7 +144,7 @@ protected:
 		std::string result;
 		for (unsigned id = 0; id < session.players; ++id) {
 			std::ifstream log(directory / ("peer-" + std::to_string(id) + ".log"));
-			result += "peer " + std::to_string(id) + ":\n" + std::string(std::istreambuf_iterator<char>(log), { });
+			result += "peer " + std::to_string(id) + ":\n" + std::string(std::istreambuf_iterator<char>(log), {});
 		}
 		return result;
 	}
@@ -190,7 +190,7 @@ protected:
 			ASSERT_TRUE(Wait(result)) << action << '\n'
 			                          << Logs();
 			std::ifstream file(directory / result);
-			results[id] = std::string(std::istreambuf_iterator<char>(file), { });
+			results[id] = std::string(std::istreambuf_iterator<char>(file), {});
 		}
 		++stage;
 	}

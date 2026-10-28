@@ -94,7 +94,7 @@ std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 	if (!cookie.has_value())
 		return std::unexpected(cookie.error());
 	if (*cookie != cookie_self)
-		return { }; // acceptance for a different joining client
+		return {}; // acceptance for a different joining client
 	const auto info = pkt.Info();
 	if (!info.has_value())
 		return std::unexpected(info.error());
@@ -120,7 +120,7 @@ std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 		return result;
 	}
 	if (game_init_info == **info)
-		return { };
+		return {};
 	// Publish game state only after the full identity and assigned ID are validated.
 	game_init_info = **info;
 	_SNETEVENT ev;
@@ -138,7 +138,7 @@ std::expected<void, PacketError> base::HandleReject(packet &pkt)
 	if (!cookie.has_value())
 		return std::unexpected(cookie.error());
 	if (plr_self != PLR_BROADCAST || *cookie != cookie_self)
-		return { };
+		return {};
 	const auto info = pkt.Info();
 	if (!info.has_value())
 		return std::unexpected(info.error());
@@ -211,7 +211,7 @@ std::expected<void, PacketError> base::HandleEchoReply(packet &pkt)
 {
 	const uint32_t now = SDL_GetTicks();
 	plr_t src = pkt.Source();
-	if (src >= player_limit_) return { };
+	if (src >= player_limit_) return {};
 	return pkt.Time().transform([&](cookie_t &&pktTime) {
 		PlayerState &playerState = playerStateTable_[src];
 		playerState.roundTripLatency = now - pktTime;
@@ -233,7 +233,7 @@ void base::ResetPlayerState(plr_t player)
 	if (player >= player_limit_)
 		return;
 	ClearMsg(player);
-	playerStateTable_[player] = { };
+	playerStateTable_[player] = {};
 }
 
 std::expected<void, PacketError> base::EnqueueMessage(plr_t sender, const buffer_t &message)
@@ -242,7 +242,7 @@ std::expected<void, PacketError> base::EnqueueMessage(plr_t sender, const buffer
 		return std::unexpected("Network message queue is full or message is too large");
 	message_queue.emplace_back(sender, message);
 	messageQueueBytes_ += message.size();
-	return { };
+	return {};
 }
 
 std::expected<void, PacketError> base::Connect(plr_t player)

@@ -15,7 +15,7 @@ namespace {
 
 GameData Game(bool extended = false)
 {
-	GameData data { };
+	GameData data {};
 	data.size = sizeof(data);
 	data.versionMajor = 1;
 	data.versionMinor = 6;
@@ -46,9 +46,9 @@ class session_net : public base {
 public:
 	int create(std::string_view) override { return -1; }
 	int join(std::string_view) override { return -1; }
-	std::string make_default_gamename() override { return { }; }
-	std::expected<void, PacketError> poll() override { return { }; }
-	std::expected<void, PacketError> send(packet &) override { return { }; }
+	std::string make_default_gamename() override { return {}; }
+	std::expected<void, PacketError> poll() override { return {}; }
+	std::expected<void, PacketError> send(packet &) override { return {}; }
 	std::expected<void, PacketError> Receive(packet &pkt) { return RecvLocal(pkt); }
 	plr_t PlayerId() const { return plr_self; }
 	void Prepare(const GameData &data)
@@ -73,7 +73,7 @@ struct memory_protocol {
 	std::expected<void, PacketError> send(const endpoint &, const buffer_t &data)
 	{
 		outgoing.push_back(data);
-		return { };
+		return {};
 	}
 	bool send_oob(const endpoint &, const buffer_t &data)
 	{
@@ -130,7 +130,7 @@ protected:
 
 TEST_F(PeerSessionCompatibility, RejectionDoesNotConsumePlayerSlot)
 {
-	auto request = factory_.make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t { });
+	auto request = factory_.make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t {});
 	ASSERT_TRUE(request.has_value());
 	Receive(**request);
 	ASSERT_EQ(memory_protocol::outgoing.size(), 1);
@@ -189,7 +189,7 @@ TEST_F(PeerSessionCompatibility, InvalidDiscoveryDataIsNotListed)
 TEST_F(PeerSessionCompatibility, ClassicHostAcceptsLegacyRequest)
 {
 	host_.setup_gameinfo(Encode(Game()));
-	auto request = factory_.make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t { });
+	auto request = factory_.make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t {});
 	ASSERT_TRUE(request.has_value());
 	Receive(**request);
 	ASSERT_EQ(memory_protocol::outgoing.size(), 1);
@@ -417,11 +417,11 @@ TEST(SessionCompatibility, NewGameSettingsAreValidatedBeforeHosting)
 TEST(SessionCompatibility, LegacyEmptyJoinIsClassicOnly)
 {
 	packet_factory factory;
-	auto request = factory.make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t { });
+	auto request = factory.make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t {});
 	ASSERT_TRUE(request.has_value());
 	EXPECT_FALSE(ValidateJoinRequest(Encode(Game()), **request));
 	EXPECT_EQ(ValidateJoinRequest(Encode(Game(true)), **request), GameDataError::SessionMismatch);
-	auto extendedRequest = factory.make_packet<PT_JOIN_REQUEST_EXTENDED>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t { });
+	auto extendedRequest = factory.make_packet<PT_JOIN_REQUEST_EXTENDED>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, buffer_t {});
 	ASSERT_TRUE(extendedRequest.has_value());
 	EXPECT_EQ(ValidateJoinRequest(Encode(Game(true)), **extendedRequest), GameDataError::InvalidSize);
 }
@@ -553,7 +553,7 @@ TEST(SessionCompatibility, RejectionIsCorrelatedAndReportsReason)
 	EXPECT_EQ(result.error().what(), GameDataErrorMessage(GameDataError::UnsupportedRules));
 	EXPECT_EQ(client.get_join_rejection(), GameDataError::UnsupportedRules);
 	EXPECT_EQ(client.PlayerId(), PLR_BROADCAST);
-	for (buffer_t invalid : { buffer_t { }, buffer_t { 255 }, buffer_t { reason, reason } }) {
+	for (buffer_t invalid : { buffer_t {}, buffer_t { 255 }, buffer_t { reason, reason } }) {
 		auto invalidReject = factory.make_packet<PT_JOIN_REJECT>(PLR_MASTER, PLR_BROADCAST, cookie_t { 42 }, invalid);
 		ASSERT_TRUE(invalidReject.has_value());
 		EXPECT_FALSE(client.Receive(**invalidReject));

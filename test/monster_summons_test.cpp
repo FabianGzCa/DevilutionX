@@ -499,7 +499,7 @@ TEST_F(MonsterSummonsTest, NativeLootRollsDoNotIncreaseWithMultiplayerParticipan
 				SpawnItem(*monster, { 40, 40 }, false);
 				ASSERT_LE(ActiveItemCount, 1);
 				drops += ActiveItemCount;
-				const Item item = ActiveItemCount == 0 ? Item { } : Items[ActiveItems[0]];
+				const Item item = ActiveItemCount == 0 ? Item {} : Items[ActiveItems[0]];
 				const Drop result { ActiveItemCount, static_cast<int>(item.IDidx), item._iSeed, item._iCreateInfo, item._ivalue, GetLCGEngineState() };
 				if (count == 1)
 					expected.push_back(result);
@@ -585,7 +585,7 @@ TEST_F(MonsterSummonsTest, PartyDamageAndEntryCommitsCommuteAtFractionalBoundari
 	monster->hitPoints = monster->maxHitPoints = Fixed26_6::fromInt(100);
 	monster->partyLastHitPoints = monster->hitPoints;
 	monster->partyParticipants = 4;
-	monster->whoHit = { };
+	monster->whoHit = {};
 	CommitPartyLevel(1, 5, 0, 0, 16);
 	damage(2, 3);
 	damage(1, 1);
@@ -792,7 +792,7 @@ TEST_F(MonsterSummonsTest, PartyEarlySyncDoesNotSuppressSpawnOrReviveItsReplayed
 	incoming.type = MT_NZOMBIE;
 	incoming.flags = PartyMonsterKnown;
 	incoming.x = incoming.y = 40;
-	std::array<std::byte, sizeof(TSyncPartyHeader) + sizeof(TSyncPartyMonster)> bytes { };
+	std::array<std::byte, sizeof(TSyncPartyHeader) + sizeof(TSyncPartyMonster)> bytes {};
 	auto &header = *reinterpret_cast<TSyncPartyHeader *>(bytes.data());
 	header.native.bCmd = CMD_PARTYSYNCDATA;
 	header.native.bLevel = 1;
@@ -807,7 +807,7 @@ TEST_F(MonsterSummonsTest, PartyEarlySyncDoesNotSuppressSpawnOrReviveItsReplayed
 	EXPECT_EQ(OnPartySyncData(header, bytes.size(), Players[0]), bytes.size());
 	EXPECT_EQ(GetPartyLevelState(1).monsters[4].generation, 8U);
 	EXPECT_EQ(GetPartyLevelState(1).spawns[0], 0U);
-	TCmdPartySpawn spawn { };
+	TCmdPartySpawn spawn {};
 	spawn.native.bCmd = CMD_PARTYSPAWN;
 	spawn.native.monsterId = Swap16LE(4);
 	spawn.native.typeIndex = Swap16LE(1);
@@ -894,7 +894,7 @@ TEST_F(MonsterSummonsTest, RemoteExtendedDamageKeepsNativeRegenerationWithFourPl
 	// Another player's hit, as received from the network. A classic engine subtracts it from the
 	// local, regenerated health; extended sessions with four players must do the same.
 	const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
-	PartyDamageMessage remote { };
+	PartyDamageMessage remote {};
 	remote.command = CMD_PARTYMONSTDAMAGE;
 	remote.level = 1;
 	remote.participants = 4;
@@ -918,7 +918,7 @@ TEST_F(MonsterSummonsTest, LethalRemoteHitWaitsForTheKillerInClassicButKillsInEx
 	sgGameInitInfo.rules = ClassicSessionRules;
 	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
 	ASSERT_NE(monster, nullptr);
-	TCmdMonDamage hit { };
+	TCmdMonDamage hit {};
 	hit.bCmd = CMD_MONSTDAMAGE;
 	hit.wMon = Swap16LE(static_cast<uint16_t>(monster->getId()));
 	hit.dwDam = Swap32LE(static_cast<uint32_t>((monster->hitPoints + Fixed26_6::fromInt(5)).raw()));
@@ -934,7 +934,7 @@ TEST_F(MonsterSummonsTest, LethalRemoteHitWaitsForTheKillerInClassicButKillsInEx
 	ASSERT_NE(partyMonster, nullptr);
 	CapturePartyMonsters();
 	const auto &state = GetPartyLevelState(1).monsters[partyMonster->getId()];
-	PartyDamageMessage remote { };
+	PartyDamageMessage remote {};
 	remote.command = CMD_PARTYMONSTDAMAGE;
 	remote.level = 1;
 	remote.participants = 4;
@@ -1039,7 +1039,7 @@ TEST_F(MonsterSummonsTest, SyncPacketsCarryAndApplyTheHighestSummonIndex)
 	sync_init();
 	std::set<uint8_t> indices;
 	for (int round = 0; round < 3; ++round) {
-		std::array<std::byte, 512> buffer { };
+		std::array<std::byte, 512> buffer {};
 		const size_t remaining = sync_all_monsters(buffer.data(), buffer.size());
 		if (remaining == buffer.size())
 			continue;
@@ -1051,7 +1051,7 @@ TEST_F(MonsterSummonsTest, SyncPacketsCarryAndApplyTheHighestSummonIndex)
 		}
 	}
 	EXPECT_TRUE(indices.contains(MonsterStorageCapacity - 1));
-	std::array<std::byte, sizeof(TSyncHeader) + sizeof(TSyncMonster)> bytes { };
+	std::array<std::byte, sizeof(TSyncHeader) + sizeof(TSyncMonster)> bytes {};
 	auto &header = *reinterpret_cast<TSyncHeader *>(bytes.data());
 	header.bCmd = CMD_SYNCDATA;
 	header.bLevel = 1;

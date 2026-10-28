@@ -30,7 +30,9 @@ public:
 	static inline uint8_t nextId = 1;
 	memory_wire()
 	    : id_(nextId++)
-	{ instances[id_] = this; }
+	{
+		instances[id_] = this;
+	}
 	~memory_wire()
 	{
 		instances.erase(id_);
@@ -48,9 +50,9 @@ public:
 		const auto it = instances.find(destination.addr[0]);
 		if (it == instances.end()) return std::unexpected("Disconnected memory peer");
 		if (observe) observe(data);
-		if (intercept && !intercept(destination, data)) return { };
+		if (intercept && !intercept(destination, data)) return {};
 		it->second->incoming_.emplace_back(Address(), data);
-		return { };
+		return {};
 	}
 	bool send_oob(const endpoint &peer, const buffer_t &data)
 	{
@@ -123,16 +125,16 @@ protected:
 	}
 	void TearDown() override
 	{
-		memory_wire::pump = { };
-		memory_wire::observe = { };
-		memory_wire::intercept = { };
+		memory_wire::pump = {};
+		memory_wire::observe = {};
+		memory_wire::intercept = {};
 		memory_wire::streamsConnected = true;
 		nets_.clear();
 		Players.clear();
 	}
 	void Start(bool extended)
 	{
-		GameData data { };
+		GameData data {};
 		data.size = sizeof(data);
 		data.nTickRate = 20;
 		data.rules = extended ? ExtendedSessionRules : ClassicSessionRules;
@@ -206,9 +208,9 @@ TEST_P(PeerTransport, EightPeersRouteMessagesTurnsAndEightNames)
 		}
 		Pump();
 		for (size_t player = 0; player < 8; ++player) {
-			std::array<char *, 8> data { };
-			std::array<size_t, 8> size { };
-			std::array<uint32_t, 8> status { };
+			std::array<char *, 8> data {};
+			std::array<size_t, 8> size {};
+			std::array<uint32_t, 8> status {};
 			ASSERT_TRUE(nets_[player]->SNetReceiveTurns(data.data(), size.data(), status.data()));
 			for (int source = 0; source < 8; ++source) {
 				EXPECT_NE(status[source] & PS_TURN_ARRIVED, 0);
@@ -243,7 +245,7 @@ TEST_P(PeerTransport, HigherSlotsReplyBeforeProbingTheLowerPeersDuringAdmission)
 	Pump();
 	auto factory = GetParam() ? std::make_unique<packet_factory>("peer-test") : std::make_unique<packet_factory>();
 	std::array<std::optional<packet_type>, 8> first;
-	std::array<unsigned, 8> probes { };
+	std::array<unsigned, 8> probes {};
 	std::vector<std::pair<plr_t, buffer_t>> delayed;
 	memory_wire::streamsConnected = false;
 	memory_wire::intercept = [&](const auto &, const buffer_t &bytes) {
@@ -279,7 +281,7 @@ TEST_P(PeerTransport, HigherSlotsReplyBeforeProbingTheLowerPeersDuringAdmission)
 	nets_[7]->SNetReceiveMessage(&sender, &data, &size);
 	for (size_t peer = 1; peer < 7; ++peer)
 		EXPECT_FALSE(first[peer]) << "higher slot opened a competing stream to " << peer;
-	memory_wire::intercept = { };
+	memory_wire::intercept = {};
 	memory_wire::streamsConnected = true;
 	for (const auto &[source, bytes] : delayed)
 		ASSERT_TRUE(memory_wire::instances.at(source + 1)->send(memory_wire::instances.at(8)->Address(), bytes));
@@ -321,7 +323,7 @@ TEST_P(PeerTransport, StalledHandshakeDropsOnlyThatPeer)
 	}
 	Pump();
 	EXPECT_EQ(left, std::vector<uint8_t> { 2 });
-	memory_wire::intercept = { };
+	memory_wire::intercept = {};
 	uint8_t value = 42;
 	ASSERT_TRUE(nets_[1]->SNetSendMessage(0, &value, 1));
 	EXPECT_TRUE(Receive(0, 1, value));

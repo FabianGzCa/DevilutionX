@@ -28,7 +28,7 @@ struct PartyMonsterState {
 	uint64_t generation = 0;
 	int32_t nativeMax = 0;
 	int64_t damage = 0;
-	std::array<uint32_t, 8> receipts { };
+	std::array<uint32_t, 8> receipts {};
 	uint16_t type = 0;
 	uint8_t unique = static_cast<uint8_t>(UniqueMonsterType::None);
 	uint8_t contributors = 0;
@@ -90,9 +90,9 @@ struct PendingPartyDamage {
 struct PartyLevelState {
 	uint8_t participants = 0;
 	uint8_t lootRemainder = 0;
-	std::array<uint32_t, 8> entryEpochs { };
-	std::array<uint32_t, 8> entrySerials { };
-	std::array<uint64_t, 8> spawns { };
+	std::array<uint32_t, 8> entryEpochs {};
+	std::array<uint32_t, 8> entrySerials {};
+	std::array<uint64_t, 8> spawns {};
 	std::array<PartyMonsterState, MonsterStorageCapacity> monsters;
 	std::vector<PendingPartyDamage> pending;
 };

@@ -25,10 +25,9 @@ constexpr int PartyPanelColumnMargin = 8;
 constexpr int PartyPanelColumnWidthLimit = 160;
 constexpr int PartyPanelRowAdvance = 82;
 constexpr Size PartyPanelFrameSections = { 4, 4 };
-constexpr Size PartyPanelPortraitSize = {
-	PartyPanelFrameSections.width * PartyPanelFrameSpriteSize,
-	PartyPanelFrameSections.height * PartyPanelFrameSpriteSize
-};
+constexpr int PartyPanelPortraitWidth = PartyPanelFrameSections.width * PartyPanelFrameSpriteSize;
+constexpr int PartyPanelPortraitHeight = PartyPanelFrameSections.height * PartyPanelFrameSpriteSize;
+constexpr Size PartyPanelPortraitSize = { PartyPanelPortraitWidth, PartyPanelPortraitHeight };
 constexpr size_t PartyPanelMemberCapacity = PlayerStorageCapacity + 1; // Includes the local player's golem.
 
 struct PartyPanelCardLayout {
@@ -39,7 +38,7 @@ struct PartyPanelCardLayout {
 };
 
 struct PartyPanelLayout {
-	std::array<PartyPanelCardLayout, PartyPanelMemberCapacity> cards { };
+	std::array<PartyPanelCardLayout, PartyPanelMemberCapacity> cards {};
 	size_t count = 0;
 };
 
@@ -103,7 +102,7 @@ struct PartyPanelLayout {
 [[nodiscard]] inline std::string TruncatePartyPanelName(std::string_view name, int maxWidth)
 {
 	if (maxWidth <= 0)
-		return { };
+		return {};
 	size_t validBytes = 0;
 	const Utf8CodePoints codePoints(name);
 	for (auto codePoint = codePoints.begin(); codePoint != codePoints.end(); ++codePoint) {

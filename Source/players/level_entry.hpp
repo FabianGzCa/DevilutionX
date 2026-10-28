@@ -64,9 +64,9 @@ static_assert(sizeof(LevelEntryMessage) == 65);
 struct LevelEntryPeers {
 	uint8_t active = 0;
 	uint8_t ready = 0;
-	std::array<uint32_t, LevelEntryCapacity> epochs { };
-	std::array<uint8_t, LevelEntryCapacity> level { };
-	std::array<bool, LevelEntryCapacity> setLevel { };
+	std::array<uint32_t, LevelEntryCapacity> epochs {};
+	std::array<uint8_t, LevelEntryCapacity> level {};
+	std::array<bool, LevelEntryCapacity> setLevel {};
 };
 
 /** State is independent of local map occupancy; only the designated authority searches. */
@@ -86,21 +86,21 @@ public:
 private:
 	struct Request {
 		uint32_t ticket = 0;
-		Point position { };
+		Point position {};
 		uint32_t retryAt = 0;
 		uint8_t level = 0;
 		bool setLevel = false;
 		bool pending = false;
 		bool blocked = false;
 	};
-	std::array<Request, LevelEntryCapacity> requests_ { };
+	std::array<Request, LevelEntryCapacity> requests_ {};
 	std::optional<LevelEntryMessage> transaction_;
 	std::optional<LevelEntryMessage> issuedAssignment_;
 	std::optional<LevelEntryMessage> deferredCommit_;
-	std::array<std::optional<LevelEntryMessage>, LevelEntryCapacity> earlyProposals_ { };
-	std::array<std::optional<LevelEntryMessage>, LevelEntryCapacity> earlyVotes_ { };
+	std::array<std::optional<LevelEntryMessage>, LevelEntryCapacity> earlyProposals_ {};
+	std::array<std::optional<LevelEntryMessage>, LevelEntryCapacity> earlyVotes_ {};
 	std::array<std::vector<Point>, NUMLEVELS + SL_LAST> rejectedTiles_;
-	std::array<uint32_t, LevelEntryCapacity> seenSerials_ { };
+	std::array<uint32_t, LevelEntryCapacity> seenSerials_ {};
 	uint32_t outgoingSerial_ = 0;
 	uint32_t ticks_ = 0;
 	uint32_t transactionStart_ = 0;
@@ -124,7 +124,7 @@ bool IsLevelEntryPending(uint8_t player);
 bool IsLevelEntryBlocked(uint8_t player);
 bool IsLevelEntryResolving();
 bool ShouldWaitForLevelEntry();
-bool FindLevelEntryPositions(LevelEntryMessage &message, std::span<const Point> rejected = { });
+bool FindLevelEntryPositions(LevelEntryMessage &message, std::span<const Point> rejected = {});
 void SwapLevelEntryMessageLE(LevelEntryMessage &message);
 
 } // namespace devilution

@@ -26,7 +26,7 @@ namespace {
 
 GameData LocalGame(bool extended)
 {
-	GameData data { };
+	GameData data {};
 	data.size = sizeof(data);
 	data.nTickRate = 20;
 	data.rules = extended ? ExtendedSessionRules : ClassicSessionRules;
@@ -75,7 +75,7 @@ TEST(NetworkFrames, RejectsCorruptHeadersAndBoundsQueues)
 		ASSERT_TRUE(queue.Write(header));
 		EXPECT_FALSE(queue.PacketReady().has_value());
 	}
-	EXPECT_FALSE(frame_queue::MakeFrame({ }).has_value());
+	EXPECT_FALSE(frame_queue::MakeFrame({}).has_value());
 	EXPECT_FALSE(frame_queue::MakeFrame(buffer_t(frame_queue::max_frame_size + 1)).has_value());
 	EXPECT_FALSE(frame_queue::MakeFrame({ 1 }, 1).has_value());
 	EXPECT_TRUE(frame_queue::MakeFrame(buffer_t(frame_queue::max_frame_size)).has_value());
@@ -83,7 +83,7 @@ TEST(NetworkFrames, RejectsCorruptHeadersAndBoundsQueues)
 	ASSERT_TRUE(byteLimited.Write(buffer_t(MaxQueuedBytes)));
 	EXPECT_FALSE(byteLimited.Write({ 1 }));
 	frame_queue countLimited;
-	ASSERT_TRUE(countLimited.Write({ }));
+	ASSERT_TRUE(countLimited.Write({}));
 	for (size_t i = 0; i < MaxQueuedPackets; ++i)
 		ASSERT_TRUE(countLimited.Write({ 1 }));
 	EXPECT_FALSE(countLimited.Write({ 1 }));
@@ -125,9 +125,9 @@ class local_net : public base {
 public:
 	int create(std::string_view) override { return -1; }
 	int join(std::string_view) override { return -1; }
-	std::string make_default_gamename() override { return { }; }
-	std::expected<void, PacketError> poll() override { return { }; }
-	std::expected<void, PacketError> send(packet &) override { return { }; }
+	std::string make_default_gamename() override { return {}; }
+	std::expected<void, PacketError> poll() override { return {}; }
+	std::expected<void, PacketError> send(packet &) override { return {}; }
 	bool IsGameHost() override { return true; }
 	void Prepare(bool extended)
 	{
@@ -148,12 +148,12 @@ TEST(NetworkBase, CapacityAndArrayBoundsDoNotDependOnPlayers)
 		local_net net;
 		net.Prepare(extended);
 		const unsigned capacity = extended ? 8 : 4;
-		_SNETCAPS caps { };
+		_SNETCAPS caps {};
 		net.SNetGetProviderCaps(&caps);
 		EXPECT_EQ(caps.maxplayers, capacity);
 		for (unsigned player = 0; player <= 255; ++player)
 			EXPECT_EQ(net.Add(static_cast<plr_t>(player)).has_value(), player < capacity);
-		std::array<char *, 9> messages { };
+		std::array<char *, 9> messages {};
 		std::array<size_t, 9> sizes;
 		std::array<uint32_t, 9> status;
 		sizes.fill(123);
@@ -226,7 +226,7 @@ TEST(NetworkLoopback, ExtendedBufferCapacityKeepsSingleParticipantSemantics)
 	loopback net;
 	net.setup_gameinfo(GameInfo(true));
 	ASSERT_EQ(net.create(""), 0);
-	_SNETCAPS caps { };
+	_SNETCAPS caps {};
 	net.SNetGetProviderCaps(&caps);
 	EXPECT_EQ(caps.maxplayers, 8);
 	char value = 42;
@@ -251,9 +251,9 @@ TEST(NetworkLoopback, EightTurnSlotsKeepTheArraySentinel)
 	loopback net;
 	net.setup_gameinfo(GameInfo(true));
 	Players.resize(8);
-	std::array<char *, 9> data { };
+	std::array<char *, 9> data {};
 	std::array<size_t, 9> sizes;
-	std::array<uint32_t, 9> status { };
+	std::array<uint32_t, 9> status {};
 	sizes.fill(99);
 	ASSERT_TRUE(net.SNetReceiveTurns(data.data(), sizes.data(), status.data()));
 	for (size_t player = 0; player < 8; ++player)
@@ -292,7 +292,7 @@ protected:
 	{
 		if (storm_) {
 			SNetDestroy();
-			sgGameInitInfo = { };
+			sgGameInitInfo = {};
 		}
 		clients_.clear();
 		if (thread_.joinable()) {
@@ -382,8 +382,8 @@ TEST_P(TcpTransport, EightPeersExchangeOrderedDirectedBroadcastAndTurns)
 			ASSERT_TRUE(clients_[source]->SNetSendMessage(SNPLAYER_OTHERS, message.data(), message.size()));
 		}
 	}
-	std::array<size_t, 8> received { };
-	std::array<std::array<std::array<uint8_t, 8>, 2>, 8> next { };
+	std::array<size_t, 8> received {};
+	std::array<std::array<std::array<uint8_t, 8>, 2>, 8> next {};
 	ASSERT_TRUE(Until([&] {
 		for (uint8_t destination = 0; destination < 8; ++destination) {
 			uint8_t sender;
@@ -408,13 +408,13 @@ TEST_P(TcpTransport, EightPeersExchangeOrderedDirectedBroadcastAndTurns)
 			int32_t value = 100 * player + tick;
 			ASSERT_TRUE(clients_[player]->SNetSendTurn(reinterpret_cast<char *>(&value), sizeof(value)));
 		}
-		std::array<bool, 8> arrived { };
+		std::array<bool, 8> arrived {};
 		ASSERT_TRUE(Until([&] {
 			for (size_t player = 0; player < 8; ++player) {
 				if (arrived[player]) continue;
-				std::array<char *, 9> data { };
-				std::array<size_t, 9> size { };
-				std::array<uint32_t, 9> status { };
+				std::array<char *, 9> data {};
+				std::array<size_t, 9> size {};
+				std::array<uint32_t, 9> status {};
 				status[8] = 123;
 				if (!clients_[player]->SNetReceiveTurns(data.data(), size.data(), status.data())) continue;
 				for (int sender = 0; sender < 8; ++sender) {

@@ -126,7 +126,7 @@ protected:
 
 TEST_F(ClassicMultiplayerTest, AdvertisesFourPlayerSlots)
 {
-	_SNETCAPS caps { };
+	_SNETCAPS caps {};
 	SNetGetProviderCaps(&caps);
 	EXPECT_EQ(caps.maxplayers, 4U);
 }
@@ -263,11 +263,11 @@ TEST_F(ClassicMultiplayerTest, TurnBuffersRespectTheSessionPlayerCount)
 		Players.resize(count);
 		MyPlayer = &Players[0];
 		char sentinel = 0;
-		std::array<char *, ClassicPlayerLimit + 1> messages { };
+		std::array<char *, ClassicPlayerLimit + 1> messages {};
 		messages.fill(&sentinel);
-		std::array<size_t, ClassicPlayerLimit + 1> sizes { };
+		std::array<size_t, ClassicPlayerLimit + 1> sizes {};
 		sizes.fill(99);
-		std::array<uint32_t, ClassicPlayerLimit + 1> status { };
+		std::array<uint32_t, ClassicPlayerLimit + 1> status {};
 
 		ASSERT_TRUE(SNetReceiveTurns(ClassicPlayerLimit, messages.data(), sizes.data(), status.data()));
 
@@ -366,7 +366,7 @@ TEST_F(ClassicMultiplayerTest, ExperienceUsesCurrentParticipantCountNotStorageCa
 TEST_F(ClassicMultiplayerTest, MonsterDamageMaskTracksAllEightPlayers)
 {
 	Players.resize(PlayerStorageCapacity);
-	Monster monster { };
+	Monster monster {};
 	for (size_t playerId = 0; playerId < Players.size(); playerId++) {
 		monster.tag(Players[playerId]);
 		EXPECT_EQ(PlayerExperienceMaskToByte(monster.whoHit), (1U << (playerId + 1)) - 1);
@@ -383,13 +383,13 @@ TEST_F(ClassicMultiplayerTest, ExperienceMaskByteAndSyncPacketRoundTripAllValues
 		const PlayerExperienceMask complement = PlayerExperienceMaskFromByte(static_cast<uint8_t>(0xFFU ^ rawMask));
 		EXPECT_EQ(PlayerExperienceMaskToByte(MergePlayerExperienceMasks(mask, complement)), 0xFFU);
 
-		TSyncMonster sent { };
+		TSyncMonster sent {};
 		sent.mWhoHit = mask;
-		std::array<std::byte, sizeof(TSyncMonster)> packet { };
+		std::array<std::byte, sizeof(TSyncMonster)> packet {};
 		std::memcpy(packet.data(), &sent, sizeof(sent));
 		EXPECT_EQ(packet[offsetof(TSyncMonster, mWhoHit)], std::byte { rawByte });
 
-		TSyncMonster received { };
+		TSyncMonster received {};
 		std::memcpy(&received, packet.data(), sizeof(received));
 		EXPECT_EQ(PlayerExperienceMaskToByte(received.mWhoHit), rawByte);
 	}

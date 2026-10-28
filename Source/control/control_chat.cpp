@@ -426,7 +426,7 @@ void ResetChat()
 	ChatFlag = false;
 	ResetPressedChatRecipientButton();
 	SDLC_StopTextInput(ghMainWnd);
-	ChatCursor = { };
+	ChatCursor = {};
 	ChatInputState = std::nullopt;
 	sgbPlrTalkTbl = 0;
 	RedrawEverything();

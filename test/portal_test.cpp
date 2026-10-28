@@ -365,7 +365,7 @@ protected:
 
 	static std::array<bool, MAXDUNX * MAXDUNY> Reachable(Point start, bool avoidPortals)
 	{
-		std::array<bool, MAXDUNX * MAXDUNY> reached { };
+		std::array<bool, MAXDUNX * MAXDUNY> reached {};
 		std::vector<Point> queue = { start };
 		reached[start.y * MAXDUNX + start.x] = true;
 		for (size_t i = 0; i < queue.size(); ++i) {

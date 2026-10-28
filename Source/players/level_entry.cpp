@@ -227,7 +227,7 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::StateFor(uint8_t player)
 	if (player >= requests_.size() || requests_[player].ticket == 0)
 		return std::nullopt;
 	const Request &request = requests_[player];
-	LevelEntryMessage message { };
+	LevelEntryMessage message {};
 	message.phase = request.pending ? LevelEntryPhase::Request : LevelEntryPhase::Commit;
 	message.participants = Bit(player);
 	message.level = request.level;
@@ -268,7 +268,7 @@ void LevelEntryCoordinator::Cancel(uint8_t player, Update update, bool disconnec
 {
 	if (player >= requests_.size())
 		return;
-	requests_[player] = { };
+	requests_[player] = {};
 	if (disconnected)
 		seenSerials_[player] = 0;
 	if (issuedAssignment_ && ((issuedAssignment_->voters & Bit(player)) != 0 || (issuedAssignment_->serial & 7U) == player)) {
@@ -303,7 +303,7 @@ std::optional<LevelEntryMessage> LevelEntryCoordinator::Poll(uint8_t local, cons
 			const Request &request = requests_[first];
 			if (!request.pending || static_cast<int32_t>(ticks_ - request.retryAt) < 0 || (peers.active & Bit(first)) == 0)
 				continue;
-			LevelEntryMessage assignment { };
+			LevelEntryMessage assignment {};
 			assignment.phase = LevelEntryPhase::Assign;
 			// Low bits identify the coordinator; elections cannot reuse another
 			// coordinator's transaction even if its last assignment was delayed.
@@ -538,8 +538,8 @@ bool FindLevelEntryPositions(LevelEntryMessage &message, std::span<const Point> 
 {
 	if (!OnLevel(message))
 		return false;
-	std::array<bool, MAXDUNX * MAXDUNY> reserved { };
-	std::array<bool, MAXDUNX * MAXDUNY> forbidden { };
+	std::array<bool, MAXDUNX * MAXDUNY> reserved {};
+	std::array<bool, MAXDUNX * MAXDUNY> forbidden {};
 	for (const Point position : rejected) {
 		if (InDungeonBounds(position)) {
 			reserved[position.y * MAXDUNX + position.x] = true;
@@ -564,7 +564,7 @@ bool FindLevelEntryPositions(LevelEntryMessage &message, std::span<const Point> 
 		const Point origin { message.x[i], message.y[i] };
 		if (!InDungeonBounds(origin))
 			return false;
-		std::array<bool, MAXDUNX * MAXDUNY> visited { };
+		std::array<bool, MAXDUNX * MAXDUNY> visited {};
 		std::vector<Point> queue { origin };
 		visited[origin.y * MAXDUNX + origin.x] = true;
 		std::optional<Point> chosen;
@@ -610,7 +610,7 @@ void SwapLevelEntryMessageLE(LevelEntryMessage &message)
 }
 void ResetLevelEntries()
 {
-	Entries = { };
+	Entries = {};
 	LocalTicket = 0;
 }
 void CancelLevelEntry(uint8_t player, bool disconnected) { Entries.Cancel(player, UpdateWorld, disconnected); }
@@ -660,7 +660,7 @@ bool RestoreLevelEntryPlayerInfo(Player &player)
 
 void BeginLevelEntry()
 {
-	LevelEntryMessage request { };
+	LevelEntryMessage request {};
 	request.phase = LevelEntryPhase::Request;
 	request.participants = Bit(MyPlayerId);
 	request.epoch = MultiplayerSlotEpoch(MyPlayerId);

@@ -26,6 +26,8 @@ public:
 	static inline std::function<void(uint8_t)> pump;
 	static inline std::function<void(const buffer_t &)> observe;
 	static inline std::function<bool(const endpoint &, const buffer_t &)> intercept;
+	// Fails a stream send from one wire to another, as a full or broken stream does.
+	static inline std::function<bool(uint8_t, const endpoint &)> fail;
 	static inline bool streamsConnected = true;
 	static inline uint8_t nextId = 1;
 	memory_wire()
@@ -49,6 +51,7 @@ public:
 	{
 		const auto it = instances.find(destination.addr[0]);
 		if (it == instances.end()) return std::unexpected("Disconnected memory peer");
+		if (fail && fail(id_, destination)) return std::unexpected("Injected stream failure");
 		if (observe) observe(data);
 		if (intercept && !intercept(destination, data)) return {};
 		it->second->incoming_.emplace_back(Address(), data);
@@ -128,6 +131,7 @@ protected:
 		memory_wire::pump = {};
 		memory_wire::observe = {};
 		memory_wire::intercept = {};
+		memory_wire::fail = {};
 		memory_wire::streamsConnected = true;
 		nets_.clear();
 		Players.clear();
@@ -327,6 +331,30 @@ TEST_P(PeerTransport, StalledHandshakeDropsOnlyThatPeer)
 	uint8_t value = 42;
 	ASSERT_TRUE(nets_[1]->SNetSendMessage(0, &value, 1));
 	EXPECT_TRUE(Receive(0, 1, value));
+	leaves = nullptr;
+}
+
+TEST_P(PeerTransport, FailedStreamDropsOnlyThatPeerAndBroadcastsReachTheRest)
+{
+	Start(true);
+	for (int id = 1; id < 4; ++id)
+		ASSERT_EQ(Add(), id);
+	Pump();
+	std::vector<uint8_t> left;
+	static std::vector<uint8_t> *leaves;
+	leaves = &left;
+	ASSERT_TRUE(nets_[1]->SNetRegisterEventHandler(EVENT_TYPE_PLAYER_LEAVE_GAME, [](_SNETEVENT *event) { leaves->push_back(static_cast<uint8_t>(event->playerid)); }));
+	// Player 1's stream to player 2 fails; wires are numbered from 1 in join order.
+	memory_wire::fail = [](uint8_t source, const auto &destination) { return source == 2 && destination.addr[0] == 3; };
+	uint8_t value = 9;
+	ASSERT_TRUE(nets_[1]->SNetSendMessage(SNPLAYER_OTHERS, &value, 1)) << "one failed stream ended the session";
+	EXPECT_TRUE(Receive(0, 1, value));
+	EXPECT_TRUE(Receive(3, 1, value)) << "a player after the failed one missed the broadcast";
+	ASSERT_TRUE(nets_[1]->SNetSendMessage(2, &value, 1));
+	int32_t turn = 5;
+	ASSERT_TRUE(nets_[1]->SNetSendTurn(reinterpret_cast<char *>(&turn), sizeof(turn)));
+	Pump();
+	EXPECT_EQ(left, std::vector<uint8_t> { 2 });
 	leaves = nullptr;
 }
 

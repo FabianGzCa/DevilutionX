@@ -54,7 +54,8 @@ private:
 		endpoint_t endpoint;
 		std::unique_ptr<std::deque<packet>> sendQueue;
 		size_t queuedBytes = 0;
-		// The handshake never completed and the queue overflowed; recv() drops the peer.
+		// The peer cannot take more data: its handshake queue overflowed or its stream failed.
+		// recv() drops it.
 		bool stalled = false;
 	};
 
@@ -72,7 +73,8 @@ private:
 
 	plr_t get_master();
 	std::expected<void, PacketError> InitiateHandshake(plr_t player);
-	std::expected<void, PacketError> SendTo(plr_t player, packet &pkt);
+	/** A peer that cannot take the packet is marked stalled and dropped; the session continues. */
+	void SendTo(plr_t player, packet &pkt);
 	std::expected<void, PacketError> DrainSendQueue(plr_t player);
 	void recv();
 	std::expected<void, PacketError> handle_join_request(packet &pkt, endpoint_t sender);
@@ -285,49 +287,53 @@ std::expected<void, PacketError> base_protocol<P>::send(packet &pkt)
 {
 	plr_t destination = pkt.Destination();
 	if (destination == PLR_BROADCAST) {
-		for (plr_t player = 0; player < player_limit_; player++) {
-			std::expected<void, PacketError> result = SendTo(player, pkt);
-			if (!result.has_value())
-				return result;
-		}
+		for (plr_t player = 0; player < player_limit_; player++)
+			SendTo(player, pkt);
 		return {};
 	}
 	if (destination >= player_limit_)
 		return std::unexpected("Invalid player ID");
 	if (destination == plr_self)
 		return {};
-	return SendTo(destination, pkt);
+	SendTo(destination, pkt);
+	return {};
 }
 
 template <class P>
-std::expected<void, PacketError> base_protocol<P>::SendTo(plr_t player, packet &pkt)
+void base_protocol<P>::SendTo(plr_t player, packet &pkt)
 {
 	Peer &peer = peers[player];
 	if (!peer.endpoint)
-		return {};
+		return;
 
 	// Periodic probes must obey the same single-initiator rule as the handshake.
 	if (player_limit_ > ClassicPlayerLimit && peer.sendQueue && plr_self > player && pkt.Type() == PT_ECHO_REQUEST)
-		return {};
+		return;
 
 	// The handshake uses echo packets so clients know
 	// when they can safely drain their send queues
 	if (peer.sendQueue && !IsAnyOf(pkt.Type(), PT_ECHO_REQUEST, PT_ECHO_REPLY)) {
 		if (peer.stalled)
-			return {};
+			return;
 		if (peer.sendQueue->size() >= MaxQueuedPackets || pkt.Data().size() > MaxQueuedBytes - peer.queuedBytes) {
 			// Only this peer is unreachable: drop it rather than end the session for everyone else.
 			peer.sendQueue->clear();
 			peer.queuedBytes = 0;
 			peer.stalled = true;
-			return {};
+			return;
 		}
 		peer.queuedBytes += pkt.Data().size();
 		peer.sendQueue->push_back(pkt);
-		return {};
+		return;
 	}
 
-	return proto.send(peer.endpoint, pkt.Data());
+	if (peer.stalled)
+		return;
+	if (std::expected<void, PacketError> result = proto.send(peer.endpoint, pkt.Data()); !result.has_value()) {
+		// Only this peer is unreachable: drop it rather than end the session for everyone else.
+		Log("Dropping player {}: {}", player, result.error().what());
+		peer.stalled = true;
+	}
 }
 
 template <class P>

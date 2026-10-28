@@ -3,6 +3,19 @@
 Extended protocol revision 3 admits item transfers before changing private
 ownership. Classic sessions retain their existing item commands and wire layout.
 
+## Classic cursor drops
+
+Classic multiplayer keeps a cursor item until its own drop command is applied.
+If floor or delta capacity has filled in the meantime, the item stays in hand
+and the player can retry. Another drop, inventory operation or level transition
+waits while that ownership change is pending; changing the cursor cannot discard
+it. A clean exit processes pending local drops before saving the hand.
+
+These are local ownership protections using the existing classic commands, not
+the distributed admission protocol below. They do not resolve every historical
+classic replica disagreement or provide durable multiplayer world storage.
+Single-player drops keep their immediate behavior.
+
 ## Admission and ordering
 
 `CMD_ITEMTRANSFER` is appended to the command enum. Each request identifies the

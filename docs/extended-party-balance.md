@@ -152,6 +152,11 @@ The lifecycle and engine tests cover synchronization and scoped extra rolls.
 | Reward | Killer publishes one request at a time; item-transfer coordinator orders it and all receivers wait for every voter fence before XP/loot/quest commit. |
 | Snapshot/reload | Import high-water, credits, generations, receipts, pending damage and paid flags together with world/item state; replay cannot apply damage/rewards twice. |
 
+Each engine still applies native monster regeneration locally. Before a received
+hit replaces the local health with the agreed one, the regenerated amount is
+folded into the agreed damage, just as a classic engine subtracts a remote hit
+from its regenerated health.
+
 Each sender flushes earlier damage before its entry or reward vote. A voting
 replica waits for all entry votes before raising health or releasing entrants,
 so old-scale damage settles first on every loaded participant. Non-voting

@@ -878,6 +878,40 @@ TEST_F(MonsterSummonsTest, PartyRestoredRewardReceiptsDoNotReplayExperienceLootO
 	EXPECT_EQ(GetLCGEngineState(), seed);
 }
 
+TEST_F(MonsterSummonsTest, RemoteExtendedDamageKeepsNativeRegenerationWithFourPlayers)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 4, 0, 0, 4);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	ApplyMonsterDamage(DamageType::Physical, *monster, Fixed26_6::fromInt(2));
+	const auto wounded = monster->hitPoints;
+	ASSERT_LT(wounded, monster->maxHitPoints);
+	for (int tick = 0; tick < 32; ++tick)
+		ProcessMonsters();
+	const auto regenerated = monster->hitPoints;
+	ASSERT_GT(regenerated, wounded);
+	// Another player's hit, as received from the network. A classic engine subtracts it from the
+	// local, regenerated health; extended sessions with four players must do the same.
+	const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	PartyDamageMessage remote { };
+	remote.command = CMD_PARTYMONSTDAMAGE;
+	remote.level = 1;
+	remote.participants = 4;
+	remote.epoch = MultiplayerSlotEpoch(1);
+	remote.receipt = 1;
+	remote.monster = static_cast<uint16_t>(monster->getId());
+	remote.damage = static_cast<uint32_t>(Fixed26_6::fromInt(1).raw());
+	remote.generation = state.generation;
+	remote.nativeMax = state.nativeMax;
+	remote.type = state.type;
+	remote.unique = state.unique;
+	remote.x = state.x;
+	remote.y = state.y;
+	ReceivePartyMonsterDamage(1, remote);
+	EXPECT_EQ(monster->hitPoints, regenerated - Fixed26_6::fromInt(1)) << "native regeneration was discarded by a remote hit";
+}
+
 TEST_F(MonsterSummonsTest, PartySharedDamageHasOnePublisherAndPreservesEnvironmentalContributions)
 {
 	InitItemTransfers();

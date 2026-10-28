@@ -31,6 +31,15 @@ void PublishHealth(Monster &monster, PartyMonsterState &state, uint8_t participa
 	monster.partyParticipants = (state.flags & PartyMonsterGolem) != 0 ? 4 : std::max<uint8_t>(4, participants);
 	monster.whoHit = PlayerExperienceMaskFromByte(state.contributors);
 }
+// Native regeneration changes local health between published values. Keep that change
+// before the agreed health replaces it, as a classic engine keeps it before a remote hit.
+void FoldLocalHealth(const Monster &monster, PartyMonsterState &state)
+{
+	if ((state.flags & PartyMonsterDead) != 0 || monster.hitPoints == monster.partyLastHitPoints)
+		return;
+	const int64_t delta = static_cast<int64_t>(monster.partyLastHitPoints.raw()) - monster.hitPoints.raw();
+	state.damage = std::clamp<int64_t>(state.damage + delta * (4 * PartyDamageUnits / monster.partyParticipants), 0, static_cast<int64_t>(state.nativeMax) * PartyDamageUnits);
+}
 void ApplyReceipt(uint8_t sender, const PartyDamageMessage &message)
 {
 	auto &level = GetPartyLevelState(message.level);
@@ -48,6 +57,9 @@ void ApplyReceipt(uint8_t sender, const PartyDamageMessage &message)
 	}
 	if (message.receipt <= state.receipts[sender] || (state.flags & PartyMonsterRewarded) != 0)
 		return;
+	const bool local = CurrentPartyLevel() == message.level && MyPlayer != nullptr && Monsters[message.monster].partyGeneration == message.generation;
+	if (local)
+		FoldLocalHealth(Monsters[message.monster], state);
 	state.receipts[sender] = message.receipt;
 	if (message.playerDamage != 0)
 		state.contributors |= static_cast<uint8_t>(1U << sender);
@@ -329,10 +341,7 @@ void ReconcilePartyMonster(Monster &monster)
 		state.x = monster.position.tile.x;
 		state.y = monster.position.tile.y;
 	}
-	if ((state.flags & PartyMonsterDead) == 0 && monster.hitPoints != monster.partyLastHitPoints) {
-		const int64_t delta = static_cast<int64_t>(monster.partyLastHitPoints.raw()) - monster.hitPoints.raw();
-		state.damage = std::clamp<int64_t>(state.damage + delta * (4 * PartyDamageUnits / monster.partyParticipants), 0, static_cast<int64_t>(state.nativeMax) * PartyDamageUnits);
-	}
+	FoldLocalHealth(monster, state);
 	if ((state.flags & PartyMonsterDead) == 0 && monster.hasNoLife()) {
 		state.flags |= PartyMonsterDead;
 		state.killer = MyPlayerId;

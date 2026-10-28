@@ -84,7 +84,7 @@ extern bool cineflag;
 extern void FontsCleanup();
 extern DVL_API_FOR_TEST int PauseMode;
 extern clicktype sgbMouseDown;
-extern uint16_t gnTickDelay;
+extern DVL_API_FOR_TEST uint16_t gnTickDelay;
 extern char gszProductName[64];
 
 extern PlayerActionType LastPlayerAction;

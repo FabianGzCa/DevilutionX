@@ -416,6 +416,9 @@ std::vector<SessionCase> SessionCases()
 		cases.push_back({ players, true, players == 4, 19400 + players, players == 4 });
 	cases.push_back({ 8, false, true, 19081, true });
 	cases.push_back({ 8, false, true, 19082 });
+	// Delayed classic rooms also run with three seeds, like the delayed eight-player room.
+	cases.push_back({ 4, true, true, 19405 });
+	cases.push_back({ 4, true, true, 19406 });
 	return cases;
 }
 INSTANTIATE_TEST_SUITE_P(SessionMatrix, MultiplayerSessionTest, ::testing::ValuesIn(SessionCases()), [](const ::testing::TestParamInfo<SessionCase> &info) {

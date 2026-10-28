@@ -727,12 +727,12 @@ void selgame_Password_Select(size_t /*value*/)
 	if (selgame_selectedGame > 1) {
 		bool allowJoin = true;
 		// A direct join starts with the classic request, which original hosts understand.
-		m_game_data->rules = ClassicSessionRules;
+		SetSessionRules(*m_game_data, ClassicSessionRules);
 		if (selgame_selectedGame > 2) {
 			const GameData &advertised = Gamelist[selgame_selectedGame - 3].gameData;
 			allowJoin = IsGameCompatible(advertised);
 			if (allowJoin)
-				m_game_data->rules = advertised.rules;
+				SetSessionRules(*m_game_data, advertised.rules);
 		}
 		if (provider == SELCONN_ZT) {
 			for (unsigned int i = 0; i < (sizeof(selgame_Ip) / sizeof(selgame_Ip[0])); i++) {
@@ -776,7 +776,7 @@ void selgame_Password_Select(size_t /*value*/)
 	m_game_data->bRunInTown = *GetOptions().Gameplay.runInTown ? 1 : 0;
 	m_game_data->bTheoQuest = *GetOptions().Gameplay.theoQuest ? 1 : 0;
 	m_game_data->bCowQuest = *GetOptions().Gameplay.cowQuest ? 1 : 0;
-	m_game_data->rules = SelectedRules;
+	SetSessionRules(*m_game_data, SelectedRules);
 
 	const std::optional<GameDataError> settingsError = ValidateNewGame(*m_game_data, provider == SELCONN_LOOPBACK);
 	GameData gameInitInfo = *m_game_data;
@@ -786,7 +786,7 @@ void selgame_Password_Select(size_t /*value*/)
 		selgame_endMenu = true;
 	} else {
 		// Do not carry a rejected mode into another menu path.
-		m_game_data->rules = ClassicSessionRules;
+		SetSessionRules(*m_game_data, ClassicSessionRules);
 		selgame_Free();
 		std::string error = settingsError ? std::string(GameDataErrorMessage(*settingsError)) : SDL_GetError();
 		if (error.empty())
@@ -842,7 +842,7 @@ bool UiSelectGame(GameData *gameData, int *playerId)
 	m_game_data = gameData;
 	// Returning from an earlier menu or failed attempt must not keep its capacity.
 	SelectedRules = ClassicSessionRules;
-	m_game_data->rules = ClassicSessionRules;
+	SetSessionRules(*m_game_data, ClassicSessionRules);
 	selgame_Init();
 	HighlightedItem = 0;
 	selgame_GameSelection_Init();

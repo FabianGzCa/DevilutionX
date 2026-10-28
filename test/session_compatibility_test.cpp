@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <string_view>
@@ -572,6 +573,25 @@ TEST(SessionCompatibility, GamePayloadBeforeAdmissionIsRejected)
 	ASSERT_TRUE(turn.has_value());
 	EXPECT_FALSE(client.Receive(**turn));
 	EXPECT_EQ(client.PlayerId(), PLR_BROADCAST);
+}
+
+TEST(SessionCompatibility, ClassicDescriptorKeepsOriginalPaddingInHellfire)
+{
+	const bool hellfire = gbIsHellfire;
+	gbIsHellfire = true;
+	InitGameInfo();
+	EXPECT_EQ(sgGameInitInfo.rules, ClassicSessionRules);
+	EXPECT_EQ(sgGameInitInfo.isHellfire, 0);
+	EXPECT_EQ(Encode(sgGameInitInfo)[offsetof(GameData, isHellfire)], 0);
+	SetSessionRules(sgGameInitInfo, ExtendedSessionRules);
+	EXPECT_EQ(sgGameInitInfo.isHellfire, 1);
+	SetSessionRules(sgGameInitInfo, ClassicSessionRules);
+	EXPECT_EQ(sgGameInitInfo.isHellfire, 0);
+	gbIsHellfire = false;
+	SetSessionRules(sgGameInitInfo, ExtendedSessionRules);
+	EXPECT_EQ(sgGameInitInfo.isHellfire, 0);
+	gbIsHellfire = hellfire;
+	InitGameInfo();
 }
 
 } // namespace

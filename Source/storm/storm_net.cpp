@@ -213,14 +213,14 @@ bool SNetJoinGame(char *pszGameName, char *pszGamePassword, int *playerID)
 	if (joinedPlayerId == -1 && dvlnet_inst->get_join_rejection() == GameDataError::SessionMismatch) {
 		if (const auto alternate = AlternateSessionRules(requested.rules)) {
 			LogVerbose("Host uses the other multiplayer mode; retrying the join");
-			requested.rules = *alternate;
+			SetSessionRules(requested, *alternate);
 			joinedPlayerId = join(requested);
 		}
 	}
 	if (joinedPlayerId == -1)
 		return false;
 	// Acceptance normally publishes the host descriptor; keep the admitted mode if it was identical.
-	sgGameInitInfo.rules = requested.rules;
+	SetSessionRules(sgGameInitInfo, requested.rules);
 	*playerID = joinedPlayerId;
 	// Join message with seed will be logged in NetInit after game data is synchronized
 	return true;

@@ -37,6 +37,12 @@ std::optional<SessionRules> AlternateSessionRules(SessionRules rules)
 	return std::nullopt;
 }
 
+void SetSessionRules(GameData &data, SessionRules rules)
+{
+	data.rules = rules;
+	data.isHellfire = data.isExtended() && gbIsHellfire ? 1 : 0;
+}
+
 std::optional<GameDataError> ValidateGameData(const GameData &data)
 {
 	if (data.size != sizeof(GameData))

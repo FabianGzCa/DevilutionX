@@ -60,7 +60,7 @@ void SwapGameDataLE(GameData &gameData);
 DVL_API_FOR_TEST std::string DescribeLeaveReason(leaveinfo_t leaveReason);
 std::string FormatGameSeed(const uint32_t gameSeed[4]);
 
-void InitGameInfo();
+DVL_API_FOR_TEST void InitGameInfo();
 void NetSendLoPri(uint8_t playerId, const std::byte *data, size_t size);
 void NetSendHiPri(uint8_t playerId, const std::byte *data, size_t size);
 /** Send earlier buffered commands before a causally dependent item message. */

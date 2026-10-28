@@ -72,6 +72,8 @@ DVL_API_FOR_TEST bool IsSupportedSessionRules(SessionRules rules);
 DVL_API_FOR_TEST uint8_t SessionPlayerCapacity(SessionRules rules);
 /** The other supported mode, tried once when a host rejects a join as a mode mismatch. */
 DVL_API_FOR_TEST std::optional<SessionRules> AlternateSessionRules(SessionRules rules);
+/** Select the session rules; only extended descriptors carry the edition, classic ones keep zero padding. */
+DVL_API_FOR_TEST void SetSessionRules(GameData &data, SessionRules rules);
 DVL_API_FOR_TEST std::optional<GameDataError> ValidateGameData(const GameData &data);
 /** Validate settings chosen locally before hosting. The offline provider has a single participant. */
 DVL_API_FOR_TEST std::optional<GameDataError> ValidateNewGame(const GameData &data, bool offline);

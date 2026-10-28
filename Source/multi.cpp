@@ -650,8 +650,7 @@ void InitGameInfo()
 
 	sgGameInitInfo.size = sizeof(sgGameInitInfo);
 	sgGameInitInfo.isSpawn = gbIsSpawn ? 1 : 0;
-	sgGameInitInfo.rules = ClassicSessionRules;
-	sgGameInitInfo.isHellfire = gbIsHellfire ? 1 : 0;
+	SetSessionRules(sgGameInitInfo, ClassicSessionRules);
 	sgGameInitInfo.reserved = 0;
 	sgGameInitInfo.programid = GetGameId();
 	sgGameInitInfo.versionMajor = PROJECT_VERSION_MAJOR;

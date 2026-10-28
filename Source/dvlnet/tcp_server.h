@@ -36,6 +36,9 @@ public:
 	virtual ~tcp_server();
 
 private:
+#ifdef BUILD_TESTING
+	friend class TcpServerTestAccess;
+#endif
 	static constexpr int timeout_connect = 30;
 	static constexpr int timeout_active = 60;
 

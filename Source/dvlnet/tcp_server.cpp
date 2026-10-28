@@ -145,8 +145,14 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 		    .and_then([&](std::unique_ptr<packet> pkt) { return StartSend(con, pkt->Data(), 0, true); });
 	}
 
+	// Own the slot before announcing it: a later failure must notify every peer
+	// that may already have received PT_CONNECT when DropConnection rolls it back.
+	pending_.erase(con);
+	con->plr = newplr;
+	connections[newplr] = con;
+	con->timeout = timeout_active;
 	for (plr_t player = 0; player < playerLimit_; player++) {
-		if (connections[player]) {
+		if (player != newplr && connections[player]) {
 			std::expected<void, PacketError> result
 			    = pktfty.make_packet<PT_CONNECT>(PLR_MASTER, PLR_BROADCAST, newplr)
 			          .and_then([&](std::unique_ptr<packet> &&pkt) { return StartSend(connections[player], *pkt); })
@@ -161,13 +167,7 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 	    = inPkt.Cookie()
 	          .and_then([&](cookie_t &&cookie) { return MakeJoinAccept(pktfty, PLR_MASTER, cookie, newplr, game_init_info); })
 	          .and_then([&](std::unique_ptr<packet> &&pkt) { return StartSend(con, *pkt); });
-	if (!result.has_value())
-		return result;
-	pending_.erase(con);
-	con->plr = newplr;
-	connections[newplr] = con;
-	con->timeout = timeout_active;
-	return {};
+	return result;
 }
 
 std::expected<void, PacketError> tcp_server::HandleReceivePacket(const scc &con, packet &pkt)

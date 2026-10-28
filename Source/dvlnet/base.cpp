@@ -119,7 +119,9 @@ std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 		plr_self = PLR_BROADCAST;
 		return result;
 	}
-	if (game_init_info == **info)
+	// A joining client always publishes the game, which starts its world resync, even when its own
+	// descriptor already matches the host's. Only the host's local connection already has the game.
+	if (game_init_info == **info && IsGameHost())
 		return {};
 	// Publish game state only after the full identity and assigned ID are validated.
 	game_init_info = **info;

@@ -670,6 +670,24 @@ TEST_P(TcpTransport, StormJoinDetectsExtendedHostFromClassicRequest)
 	ASSERT_EQ(Add(), 2);
 }
 
+TEST_P(TcpTransport, JoiningClientsPublishTheGameEvenWithTheHostsOwnData)
+{
+	Start(true);
+	ASSERT_EQ(Add(), 0);
+	static unsigned created;
+	created = 0;
+	transport_client client(false);
+	if (GetParam())
+		client.setup_password("transport-test");
+	else
+		client.clear_password();
+	client.setup_gameinfo(info_); // Identical to the host's descriptor, seeds included.
+	ASSERT_TRUE(client.SNetRegisterEventHandler(EVENT_TYPE_PLAYER_CREATE_GAME, [](_SNETEVENT *) { ++created; }));
+	ASSERT_EQ(client.join(address_), 1);
+	// The event starts the world resync of a joining client; without it the client never loads the world.
+	EXPECT_EQ(created, 1U);
+}
+
 TEST_P(TcpTransport, StormJoinKeepsClassicHostsClassic)
 {
 	Start(false);

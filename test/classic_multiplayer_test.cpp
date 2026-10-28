@@ -232,6 +232,11 @@ TEST_F(ClassicMultiplayerTest, PlayerIdentifiersAreDisabledByDefaultAndCanChange
 	EXPECT_NE(std::find(entries.begin(), entries.end(), &defaults.showPlayerIdentifiers), entries.end());
 	EXPECT_EQ(defaults.showPlayerIdentifiers.GetFlags(), OptionEntryFlags::None);
 
+	// Compare contents: on Windows the test executable and the engine DLL each hold
+	// their own copy of the inline identity table.
+	const auto sameIdentity = [](const PlayerVisualIdentity &a, const PlayerVisualIdentity &b) {
+		return a.number == b.number && a.automapColor == b.automapColor && a.outlineColor == b.outlineColor;
+	};
 	OwnedSurface marker(5, 7);
 	for (const bool enabled : { false, true, false }) {
 		GetOptions().Gameplay.showPlayerIdentifiers.SetValue(enabled);
@@ -241,11 +246,11 @@ TEST_F(ClassicMultiplayerTest, PlayerIdentifiersAreDisabledByDefaultAndCanChange
 			DrawAutomapPlayerIdentifier(marker, { 2, 3 }, playerId);
 			if (enabled) {
 				EXPECT_FALSE(GetPlayerNameLabel(playerId).empty());
-				EXPECT_EQ(&GetConfiguredPlayerVisualIdentity(playerId), &GetPlayerVisualIdentity(playerId));
+				EXPECT_TRUE(sameIdentity(GetConfiguredPlayerVisualIdentity(playerId), GetPlayerVisualIdentity(playerId)));
 				EXPECT_EQ(marker[Point(0, 0)], 239);
 			} else {
 				EXPECT_TRUE(GetPlayerNameLabel(playerId).empty());
-				EXPECT_EQ(&GetConfiguredPlayerVisualIdentity(playerId), &GetPlayerVisualIdentity(playerId % ClassicPlayerLimit));
+				EXPECT_TRUE(sameIdentity(GetConfiguredPlayerVisualIdentity(playerId), GetPlayerVisualIdentity(playerId % ClassicPlayerLimit)));
 				for (int y = 0; y < marker.h(); ++y) {
 					for (int x = 0; x < marker.w(); ++x)
 						EXPECT_EQ(marker[Point(x, y)], 1);

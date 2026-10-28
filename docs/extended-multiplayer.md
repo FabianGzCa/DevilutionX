@@ -57,6 +57,9 @@ four players.
 - If a player disconnects in the middle of an item transfer, the game ends
   instead of guessing whether the item moved. See
   [Extended item transfers](extended-item-transfers.md).
+- When someone enters a level, the game on that level pauses until every player
+  there has agreed on where the newcomer stands. With eight players on one
+  computer this took about half a second; slower connections take longer.
 - The balance was measured with automated players, not with groups of people.
 
 ## Saves and settings

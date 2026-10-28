@@ -480,10 +480,12 @@ std::expected<void, PacketError> base_protocol<P>::recv_decrypted(packet &pkt, e
 		}
 		std::string gameName;
 		size_t gameNameSize = infoBuffer.size() - neededSize;
-		if (gameNameSize > MaxGameNameSize || game_list.size() >= MaxDiscoveredGames)
+		if (gameNameSize > MaxGameNameSize)
 			return {};
 		gameName.resize(gameNameSize);
 		std::memcpy(&gameName[0], infoBuffer.data() + neededSize, gameNameSize);
+		if (game_list.size() >= MaxDiscoveredGames && !game_list.contains(gameName))
+			return {};
 		game_list[gameName] = GameListValue { gameData, std::move(playerNames), sender };
 		return {};
 	}

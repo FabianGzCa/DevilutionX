@@ -2,12 +2,14 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <string_view>
 
 #include <gtest/gtest.h>
 
 #include "dvlnet/base.h"
 #include "dvlnet/base_protocol.h"
+#include "dvlnet/limits.hpp"
 #include "dvlnet/protocol_zt.h"
 #include "dvlnet/session.hpp"
 
@@ -272,6 +274,43 @@ TEST_F(PeerSessionCompatibility, BrowserListsBothModesAndReportsDirectJoinMismat
 	EXPECT_EQ(client.join("extended"), -1);
 	EXPECT_EQ(client.get_join_rejection(), GameDataError::SessionMismatch);
 	EXPECT_TRUE(memory_protocol::outgoing.empty());
+}
+
+TEST_F(PeerSessionCompatibility, FullDiscoveryCacheRefreshesExistingGamesWithoutGrowing)
+{
+	for (const bool extended : { false, true }) {
+		SCOPED_TRACE(extended);
+		host_.clear_gamelist();
+		const auto advertise = [&](std::string_view name, const GameData &data, size_t players) {
+			auto reply = data.isExtended()
+			    ? factory_.make_packet<PT_INFO_REPLY_EXTENDED>(PLR_BROADCAST, PLR_MASTER, Advertisement(data, name, players))
+			    : factory_.make_packet<PT_INFO_REPLY>(PLR_BROADCAST, PLR_MASTER, Advertisement(data, name, players));
+			ASSERT_TRUE(reply.has_value());
+			Receive(**reply);
+		};
+		for (size_t index = 0; index < MaxDiscoveredGames; ++index)
+			advertise("room" + std::to_string(index), Game(extended), 1);
+		ASSERT_EQ(host_.get_gamelist().size(), MaxDiscoveredGames);
+
+		GameData updated = Game(!extended);
+		updated.nTickRate = 30;
+		++updated.gameSeed[0];
+		advertise("room0", updated, 3);
+		advertise("overflow", Game(extended), 1);
+		const auto games = host_.get_gamelist();
+		ASSERT_EQ(games.size(), MaxDiscoveredGames);
+		const auto refreshed = std::find_if(games.begin(), games.end(), [](const GameInfo &game) { return game.name == "room0"; });
+		ASSERT_NE(refreshed, games.end());
+		EXPECT_EQ(refreshed->players.size(), 3U);
+		EXPECT_EQ(refreshed->gameData.rules, updated.rules);
+		EXPECT_EQ(refreshed->gameData.gameSeed[0], updated.gameSeed[0]);
+		EXPECT_EQ(refreshed->gameData.nTickRate, updated.nTickRate);
+		EXPECT_EQ(std::find_if(games.begin(), games.end(), [](const GameInfo &game) { return game.name == "overflow"; }), games.end());
+		host_.clear_gamelist();
+		advertise("overflow", Game(extended), 1);
+		ASSERT_EQ(host_.get_gamelist().size(), 1U);
+		EXPECT_EQ(host_.get_gamelist().front().name, "overflow");
+	}
 }
 
 TEST(SessionCompatibility, TruncatedPacketHeadersAreRejected)

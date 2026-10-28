@@ -125,6 +125,26 @@ between ticks. Durations are logic ticks; divide by 20 for seconds at native gam
 speed. `--tick-rate` runs the game faster than native speed for balance batches;
 measure performance at 20. Wall-clock time is never a rendering frame rate.
 
+For endurance runs, `--soak-seconds` keeps the party cycling from town down the
+stairs through `--level` and the five levels below it, and back through each
+bot's own town portal. It appends a sample per minute and per event to
+`samples-N.jsonl` (memory, logic and tick timing, queues and active items,
+monsters and lights). With `--leave-every`, one
+of the last three slots leaves cleanly in town at that interval and a new process
+takes the slot and rejoins wherever the party is; `--join-spacing` spaces the
+initial joins as people joining one after another would. For example, two hours
+with eight players, a departure every 15 minutes and native speed:
+
+```sh
+python3 tools/measure_multiplayer_balance.py --build-dir build/classic-tests \
+  --output /absolute/private/evidence/soak8 --players 8 --level 1 \
+  --composition WRS --character-level 14 --tick-rate 20 --soak-seconds 7200 \
+  --leave-every 900 --join-spacing 3 --timeout 9000
+```
+
+The command exits with a non-zero status whenever `summary.json` records a
+failure.
+
 Bots do not dodge, retreat, trade or judge risk the way people do. Their results
 measure the engine's workload and rewards under controlled play, not how clear,
 crowded or enjoyable a session feels; that still needs human playtests.

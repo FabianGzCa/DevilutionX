@@ -41,7 +41,8 @@ def kernel_queues(port):
 def run_case(build, output, *, players, seed, difficulty, level, composition,
              character_level, max_ticks=18000, tick_rate=255, classic=False,
              targets=32, targets_file=None, leave_after_kills=0, leavers=0,
-             friendly_fire=False, soak_seconds=0, timeout=300):
+             friendly_fire=False, soak_seconds=0, leave_every=0, join_spacing=0,
+             timeout=300):
     build, output = Path(build).resolve(), Path(output).resolve()
     worker = build / 'balance_measurement_worker'
     if not worker.is_file():
@@ -54,31 +55,67 @@ def run_case(build, output, *, players, seed, difficulty, level, composition,
     env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy',
                XDG_DATA_HOME=str(output / 'xdg-data'),
                XDG_CONFIG_HOME=str(output / 'xdg-config'))
-    processes, logs, commands, samples = [], [], [], []
+    processes, logs, commands, samples, history, leaves = [], [], [], [], [], []
     started = time.monotonic()
     failure = None
+
+    def spawn(role, incarnation):
+        command = [str(worker), str(output), str(role), str(port), str(players),
+                   str(seed), str(difficulty), str(level), composition,
+                   str(character_level), str(max_ticks), str(tick_rate),
+                   'classic' if classic else 'extended', str(leave_after_kills),
+                   str(leavers), str(targets), str(int(friendly_fire)), str(soak_seconds)]
+        if leave_every:
+            command += [str(leave_every), str(incarnation)]
+        commands.append(command)
+        log = (output / (f'peer-{role}.log' if incarnation == 0 else f'peer-{role}-{incarnation}.log')).open('w')
+        logs.append(log)
+        process = subprocess.Popen(command, cwd=build, env=env, stdout=log,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        if role < len(processes):
+            processes[role] = process
+        else:
+            processes.append(process)
+        history.append({'role': role, 'incarnation': incarnation, 'started': time.monotonic() - started})
+
+    def await_marker(role, marker):
+        deadline = min(started + timeout, time.monotonic() + 65)
+        while not marker.exists():
+            if any(p.poll() is not None and p.returncode != 0 for p in processes):
+                raise RuntimeError('An engine failed before admitting the next participant')
+            if processes[role].poll() is not None:
+                raise RuntimeError(f'Engine {role} exited before it was admitted')
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Admission did not complete within its deadline')
+            time.sleep(.02)
+
     try:
         for role in range(players):
-            command = [str(worker), str(output), str(role), str(port), str(players),
-                       str(seed), str(difficulty), str(level), composition,
-                       str(character_level), str(max_ticks), str(tick_rate),
-                       'classic' if classic else 'extended', str(leave_after_kills),
-                       str(leavers), str(targets), str(int(friendly_fire)), str(soak_seconds)]
-            commands.append(command)
-            log = (output / f'peer-{role}.log').open('w')
-            logs.append(log)
-            process = subprocess.Popen(command, cwd=build, env=env, stdout=log,
-                                       stderr=subprocess.STDOUT, start_new_session=True)
-            processes.append(process)
-            deadline = min(started + timeout, time.monotonic() + 65)
-            marker = output / ('created' if role == 0 else f'joined-{role}')
-            while not marker.exists():
-                if any(p.poll() is not None and p.returncode != 0 for p in processes):
-                    raise RuntimeError('An engine failed before admitting the next participant')
-                if time.monotonic() >= deadline:
-                    raise TimeoutError('Admission did not complete within its deadline')
-                time.sleep(.02)
+            if role != 0:
+                time.sleep(join_spacing)
+            spawn(role, 0)
+            await_marker(role, output / ('created' if role == 0 else f'joined-{role}'))
+        incarnations = [0] * players
         while any(p.poll() is None for p in processes):
+            # Endurance departures: the worker marks left-K with its slot and exits cleanly in town,
+            # then a new process takes the slot and rejoins wherever the party is.
+            for marker in sorted(output.glob('left-*')):
+                departure = int(marker.name.split('-')[1])
+                if departure in leaves:
+                    continue
+                role = int(marker.read_text().strip())
+                if processes[role].poll() is None:
+                    continue
+                if processes[role].returncode != 0:
+                    raise RuntimeError(f'Departing engine {role} exited unsuccessfully')
+                leaves.append(departure)
+                # Markers of the previous occupant must not stand for the new process.
+                for stale in (f'joined-{role}', f'closed-{role}', f'result-{role}.json'):
+                    (output / stale).unlink(missing_ok=True)
+                incarnations[role] += 1
+                spawn(role, incarnations[role])
+                await_marker(role, output / f'joined-{role}')
+                (output / f'rejoined-{departure}').write_text(str(role))
             if any(p.poll() is not None and p.returncode != 0 for p in processes):
                 raise RuntimeError('An engine exited unsuccessfully')
             if time.monotonic() - started > timeout:
@@ -111,8 +148,10 @@ def run_case(build, output, *, players, seed, difficulty, level, composition,
                      'characterLevel': character_level, 'maxTicks': max_ticks,
                      'tickRate': tick_rate, 'classic': classic, 'targets': targets,
                      'leaveAfterKills': leave_after_kills, 'leavers': leavers,
-                     'friendlyFire': friendly_fire, 'soakSeconds': soak_seconds},
+                     'friendlyFire': friendly_fire, 'soakSeconds': soak_seconds,
+                     'leaveEverySeconds': leave_every, 'joinSpacingSeconds': join_spacing},
         'commands': commands, 'codes': [p.returncode for p in processes],
+        'history': history, 'leaves': sorted(leaves),
         'wallSeconds': time.monotonic() - started, 'failure': failure,
         'workerSha256': hashlib.sha256(worker.read_bytes()).hexdigest(),
         'platform': platform.platform(), 'results': results, 'heroes': manifests,
@@ -143,6 +182,10 @@ def main():
     parser.add_argument('--leavers', type=int, default=0)
     parser.add_argument('--soak-seconds', type=int, default=0,
                         help='Endurance mode: keep cycling town and dungeon levels for this long and append samples-N.jsonl')
+    parser.add_argument('--leave-every', type=int, default=0,
+                        help='Endurance mode: every this many seconds one of the last three slots leaves in town and a new process rejoins')
+    parser.add_argument('--join-spacing', type=float, default=0,
+                        help='Seconds between initial joins, like people joining one after another')
     parser.add_argument('--timeout', type=float, default=300)
     args = parser.parse_args()
     if not args.composition or any(c not in 'WRS' for c in args.composition):
@@ -151,13 +194,16 @@ def main():
         parser.error('Classic supports at most four participants')
     if not 0 <= args.leavers < args.players or args.max_ticks <= 0 or args.targets < 0 or args.timeout <= 0 or args.soak_seconds < 0:
         parser.error('Invalid departure count, target count or duration')
+    if args.leave_every < 0 or args.join_spacing < 0 or (args.leave_every and (not args.soak_seconds or args.players < 2)):
+        parser.error('Departures and rejoins need endurance mode and at least two participants')
     summary = run_case(args.build_dir, args.output, players=args.players, seed=args.seed,
                        difficulty=args.difficulty, level=args.level, composition=args.composition,
                        character_level=args.character_level, max_ticks=args.max_ticks,
                        tick_rate=args.tick_rate, classic=args.classic, targets=args.targets,
                        targets_file=args.targets_file, leave_after_kills=args.leave_after_kills,
                        leavers=args.leavers, friendly_fire=args.friendly_fire,
-                       soak_seconds=args.soak_seconds, timeout=args.timeout)
+                       soak_seconds=args.soak_seconds, leave_every=args.leave_every,
+                       join_spacing=args.join_spacing, timeout=args.timeout)
     print(json.dumps({'codes': summary['codes'], 'wallSeconds': summary['wallSeconds'],
                       'failure': summary['failure'],
                       'outcomes': [r and r['outcome'] for r in summary['results']],

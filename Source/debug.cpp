@@ -103,7 +103,7 @@ void GetDebugMonster()
 void NextDebugMonster()
 {
 	DebugMonsterId++;
-	if (DebugMonsterId == MonsterLimit())
+	if (static_cast<size_t>(DebugMonsterId) >= MonsterLimit())
 		DebugMonsterId = 0;
 
 	EventPlrMsg(StrCat("Current debug monster = ", DebugMonsterId), UiFlags::ColorWhite);

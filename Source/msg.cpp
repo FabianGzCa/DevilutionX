@@ -1898,8 +1898,10 @@ size_t OnPutItem(const TCmdPItem &message, Player &player)
 				return;
 			// A classic drop retains its hand until its local echo applies. A
 			// capacity failure releases the request without discarding the item.
-			if (placed && MyPlayer->HoldItem.keyAttributesMatch(dwSeed, wIndx, wCI))
+			if (placed && MyPlayer->HoldItem.keyAttributesMatch(dwSeed, wIndx, wCI)) {
+				MyPlayer->HoldItem.clear();
 				NewCursor(CURSOR_HAND);
+			}
 			PendingItemDrops.erase(pending);
 			pfile_update(true);
 		};

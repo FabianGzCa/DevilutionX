@@ -1114,6 +1114,49 @@ TEST_F(PlayerSynchronizationTest, ClassicDropKeepsItsHeldItemWhenTheFloorFillsBe
 	EXPECT_NE(FindGetItem(held._iSeed, held.IDidx, held._iCreateInfo), -1);
 }
 
+TEST_F(PlayerSynchronizationTest, ChangingToASpellCursorCannotDiscardAPendingDrop)
+{
+	for (const bool extended : { false, true }) {
+		for (const bool fullFloor : { false, true }) {
+			SCOPED_TRACE(extended);
+			SCOPED_TRACE(fullFloor);
+			delta_init();
+			for (Item &item : Items)
+				item = {};
+			sgGameInitInfo.rules = extended ? ExtendedSessionRules : ClassicSessionRules;
+			PrepareGoldPickupArea(0);
+			CopyUtf8(MyPlayer->_pName, "CursorTest", sizeof(MyPlayer->_pName));
+			InitItemTransfers();
+			InitializeItem(MyPlayer->HoldItem, IDI_HEAL);
+			MyPlayer->HoldItem._iSeed = 25005;
+			NewCursor(MyPlayer->HoldItem);
+			const int itemCursor = pcurs;
+			const Item held = MyPlayer->HoldItem;
+			Drain();
+			NewCursor(CURSOR_IDENTIFY);
+			ASSERT_TRUE(IsItemTransferPending());
+			EXPECT_FALSE(MyPlayer->HoldItem.isEmpty());
+			EXPECT_EQ(pcurs, itemCursor);
+			// Explicit hand cursors must not bypass the same ownership barrier.
+			NewCursor(CURSOR_HAND);
+			EXPECT_FALSE(MyPlayer->HoldItem.isEmpty());
+			if (fullFloor)
+				ActiveItemCount = MAXITEMS;
+			for (int step = 0; step < 16 && IsItemTransferPending(); ++step)
+				ProcessGameMessagePackets();
+			EXPECT_FALSE(IsItemTransferPending());
+			EXPECT_EQ(MyPlayer->HoldItem.isEmpty(), !fullFloor);
+			if (fullFloor) {
+				EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(held._iSeed, held.IDidx, held._iCreateInfo));
+				EXPECT_EQ(pcurs, itemCursor);
+			} else {
+				EXPECT_EQ(pcurs, CURSOR_HAND);
+				EXPECT_NE(FindGetItem(held._iSeed, held.IDidx, held._iCreateInfo), -1);
+			}
+		}
+	}
+}
+
 TEST_F(PlayerSynchronizationTest, ClassicExitAppliesPendingDropsBeforeSavingTheHand)
 {
 	for (const bool fullFloor : { false, true }) {

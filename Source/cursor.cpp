@@ -35,6 +35,7 @@
 #include "inv.h"
 #include "levels/trigs.h"
 #include "missiles.h"
+#include "msg.h"
 #include "options.h"
 #include "qol/itemlabels.h"
 #include "qol/stash.h"
@@ -582,6 +583,9 @@ void NewCursor(int cursId)
 	}
 
 	if (cursId < CURSOR_HOURGLASS && MyPlayer != nullptr) {
+		// An accepted drop is still owned until its local or distributed commit.
+		if (!MyPlayer->HoldItem.isEmpty() && IsItemTransferPending())
+			return;
 		MyPlayer->HoldItem.clear();
 	}
 	pcurs = cursId;

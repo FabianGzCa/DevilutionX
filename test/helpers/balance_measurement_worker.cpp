@@ -48,6 +48,7 @@
 #include "pack.h"
 #include "pfile.h"
 #include "player.h"
+#include "portal.h"
 #include "spells.h"
 #include "storm/storm_net.hpp"
 #include "tables/itemdat.h"
@@ -82,6 +83,10 @@ struct Scenario {
 	unsigned leavers = 0;
 	/** Endurance mode: keep cycling town and dungeon levels for this many wall-clock seconds. */
 	unsigned soakSeconds = 0;
+	/** Endurance mode: every this many seconds one of the last three slots leaves in town and a new process rejoins. */
+	unsigned leaveEverySeconds = 0;
+	/** Zero for the first process of a slot; a rejoining process counts up from one. */
+	unsigned incarnation = 0;
 };
 
 Scenario Config;
@@ -285,6 +290,11 @@ void CreateHero(Player &player, HeroClass heroClass)
 		GivePotion(player, caster && i >= 4 ? IDI_MANA : IDI_HEAL, true);
 	for (int i = 0; i < 16; ++i)
 		GivePotion(player, caster && i >= 6 ? IDI_MANA : IDI_HEAL, false);
+	if (Config.soakSeconds != 0) {
+		// Endurance cycles return to town through each bot's own town portal.
+		for (int i = 0; i < 12; ++i)
+			GivePotion(player, IDI_PORTAL, false);
+	}
 	CalcPlrInv(player, false);
 	player._pHitPoints = player._pMaxHP;
 	player._pHPBase = player._pMaxHPBase;
@@ -364,6 +374,7 @@ enum class Phase : uint8_t {
 	Fighting,
 	Reporting,
 	Done,
+	Portal,
 };
 
 struct MonsterRecord {
@@ -420,6 +431,13 @@ struct Bot {
 	unsigned cycle = 0;
 	unsigned townTicks = 0;
 	bool rejoinFromTown = false;
+	bool portalCast = false;
+	bool warpSent = false;
+	unsigned portalTicks = 0;
+	unsigned portalFallbacks = 0;
+	unsigned strayLevels = 0;
+	int64_t soakEpoch = 0;
+	unsigned leavesHandled = 0;
 	std::chrono::steady_clock::time_point soakStart;
 	size_t sampledTicks = 0;
 	size_t sampledLogic = 0;
@@ -580,11 +598,14 @@ std::string TargetsFile()
 bool PartyOnLevel()
 {
 	unsigned present = 0;
+	unsigned active = 0;
 	for (const Player &player : Players) {
+		active += player.plractive ? 1 : 0;
 		if (player.plractive && player.isOnActiveLevel() && !player._pLvlChanging)
 			++present;
 	}
-	return present == Config.players;
+	// In endurance mode a bot may be away between leaving and rejoining.
+	return present == (Config.soakSeconds != 0 ? active : Config.players);
 }
 
 void BeginFight()
@@ -957,9 +978,26 @@ bool AllReported()
 	return true;
 }
 
+int64_t EpochSeconds()
+{
+	return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+/** All processes, including rejoining ones, share the first peer's start time. */
 bool SoakContinues()
 {
-	return Config.soakSeconds != 0 && std::chrono::steady_clock::now() - State.soakStart < std::chrono::seconds(Config.soakSeconds);
+	return Config.soakSeconds != 0 && EpochSeconds() - State.soakEpoch < static_cast<int64_t>(Config.soakSeconds);
+}
+
+/** The party's current cycle and level, published by the first peer for rejoining or lagging bots. */
+std::optional<std::pair<unsigned, int>> PartyPosition()
+{
+	std::ifstream in(Config.directory / "party");
+	unsigned cycle;
+	int level;
+	if (in >> cycle >> level)
+		return std::make_pair(cycle, level);
+	return std::nullopt;
 }
 
 /** Endurance sample: resources and timing since the previous sample, one JSON line per call. */
@@ -978,8 +1016,11 @@ void WriteSample(const char *reason)
 	};
 	const auto logic = window(State.logicMs, State.sampledLogic);
 	const auto ticks = window(State.tickMs, State.sampledTicks);
-	State.sampledLogic = State.logicMs.size();
-	State.sampledTicks = State.tickMs.size();
+	// Endurance runs keep only the window since the previous sample; the series lives on disk.
+	State.logicMs.clear();
+	State.tickMs.clear();
+	State.sampledLogic = 0;
+	State.sampledTicks = 0;
 	rusage usage {};
 	getrusage(RUSAGE_SELF, &usage);
 	const double cpuSeconds = static_cast<double>(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + static_cast<double>(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6;
@@ -992,20 +1033,41 @@ void WriteSample(const char *reason)
 	    << ",\"logicMeanMs\":" << logic[0] << ",\"logicP95Ms\":" << logic[1] << ",\"tickMeanMs\":" << ticks[0] << ",\"tickP95Ms\":" << ticks[1] << ",\"tickMaxMs\":" << ticks[2]
 	    << ",\"turnsInTransit\":" << turns << ",\"items\":" << static_cast<unsigned>(ActiveItemCount) << ",\"monsters\":" << ActiveMonsterCount << ",\"lights\":" << ActiveLightCount
 	    << ",\"unresolvedTransfers\":" << HasUnresolvedItemTransfers() << ",\"active\":" << static_cast<unsigned>(gbActivePlayers) << ",\"deaths\":" << State.deaths
+	    << ",\"incarnation\":" << Config.incarnation << ",\"portalFallbacks\":" << State.portalFallbacks << ",\"strayLevels\":" << State.strayLevels
 	    << ",\"kills\":" << std::count_if(State.monsters.begin(), State.monsters.end(), [](const MonsterRecord &m) { return m.death != 0; }) << "}\n";
 }
 
 /**
- * Next endurance level: down from the configured level through five more, then up one level at a
- * time to town, as stairs do, and down again. Skipping several levels upwards is not a native move.
+ * Next endurance level: down by stairs from the configured level through five more, then back to
+ * town through each bot's own town portal, and down again.
  */
 int SoakLevel(unsigned cycle)
 {
-	const int deepest = std::min(Config.level + 5, 16);
-	const unsigned down = static_cast<unsigned>(deepest - Config.level + 1);
-	const unsigned period = down + static_cast<unsigned>(deepest);
-	const unsigned step = cycle % period;
-	return step < down ? Config.level + static_cast<int>(step) : deepest - static_cast<int>(step - down + 1);
+	const unsigned down = static_cast<unsigned>(std::min(Config.level + 5, 16) - Config.level + 1);
+	const unsigned step = cycle % (down + 1);
+	return step < down ? Config.level + static_cast<int>(step) : 0;
+}
+
+void GoToLevel(int level, int previous)
+{
+	Player &player = *MyPlayer;
+	State.level = level;
+	if (level == 0 && currlevel == 0 && player.isOnActiveLevel() && !player._pLvlChanging) {
+		State.phase = Phase::Waiting; // already in town
+	} else if (player.hasNoLife()) {
+		// A dead bot returns to town the way a player would, then walks back down to the party.
+		RestartTownLvl(player);
+		State.rejoinFromTown = level != 0;
+		State.phase = Phase::Descending;
+	} else if (level == 0 && previous != 0) {
+		State.portalCast = false;
+		State.warpSent = false;
+		State.portalTicks = 0;
+		State.phase = Phase::Portal;
+	} else {
+		StartNewLvl(player, level > previous ? WM_DIABNEXTLVL : WM_DIABPREVLVL, level);
+		State.phase = Phase::Descending;
+	}
 }
 
 void AdvanceSoak()
@@ -1018,17 +1080,58 @@ void AdvanceSoak()
 	State.townTicks = 0;
 	State.blockedUntil.fill(0);
 	State.outcome = "timeout";
-	const int previous = State.level;
-	State.level = SoakLevel(State.cycle);
-	Player &player = *MyPlayer;
-	if (player.hasNoLife()) {
-		// A dead bot returns to town the way a player would, then walks back down to the party.
-		RestartTownLvl(player);
-		State.rejoinFromTown = State.level != 0;
-	} else {
-		StartNewLvl(player, State.level > previous ? WM_DIABNEXTLVL : WM_DIABPREVLVL, State.level);
+	const int level = SoakLevel(State.cycle);
+	if (Config.role == 0)
+		Mark("party", std::to_string(State.cycle) + " " + std::to_string(level));
+	GoToLevel(level, State.level);
+}
+
+/** A bot that rejoined, or fell behind, moves straight to where the first peer is. */
+bool CatchUpWithParty()
+{
+	if (Config.soakSeconds == 0 || Config.role == 0)
+		return false;
+	const auto party = PartyPosition();
+	if (!party || party->first <= State.cycle)
+		return false;
+	State.cycle = party->first;
+	State.monsters.clear();
+	State.target = -1;
+	State.settleTicks = 0;
+	State.townTicks = 0;
+	State.blockedUntil.fill(0);
+	if (party->second == State.level && currlevel == State.level) {
+		State.phase = Phase::Waiting;
+		return true;
 	}
-	State.phase = Phase::Descending;
+	GoToLevel(party->second, currlevel);
+	return true;
+}
+
+/** Endurance mode: the designated slot leaves in town every leaveEverySeconds; a new process takes it. */
+bool LeaveIfDue()
+{
+	// One bot away at a time: the previous one must have rejoined first.
+	if (Config.leaveEverySeconds == 0 || !SoakContinues() || gbActivePlayers != Config.players)
+		return false;
+	const int64_t due = (EpochSeconds() - State.soakEpoch) / Config.leaveEverySeconds;
+	for (int64_t k = 1; k <= due; ++k) {
+		const std::string marker = "left-" + std::to_string(k);
+		if (Exists(marker))
+			continue;
+		// The runner marks each departure's replacement once it is back in the game.
+		if (k > 1 && !Exists("rejoined-" + std::to_string(k - 1)))
+			return false;
+		const unsigned slot = Config.players - 1 - static_cast<unsigned>((k - 1) % std::min(3U, Config.players - 1));
+		if (slot != Config.role)
+			return false;
+		Mark(marker, std::to_string(Config.role));
+		State.left = true;
+		State.outcome = "left";
+		State.phase = Phase::Done;
+		return true;
+	}
+	return false;
 }
 
 void Tick(bool before)
@@ -1053,9 +1156,28 @@ void Tick(bool before)
 	switch (State.phase) {
 	case Phase::Gathering:
 		if (gbActivePlayers == Config.players && std::all_of(Players.begin(), Players.begin() + Config.players, [](const Player &p) { return p.plractive; })) {
+			if (Config.soakSeconds != 0) {
+				if (Config.role == 0 && Config.incarnation == 0)
+					Mark("soak-epoch", std::to_string(EpochSeconds()));
+				std::ifstream epoch(Config.directory / "soak-epoch");
+				if (!(epoch >> State.soakEpoch))
+					State.soakEpoch = EpochSeconds();
+			}
+			State.soakStart = std::chrono::steady_clock::now();
+			if (Config.incarnation != 0) {
+				// A rejoining bot starts in town and goes to wherever the party is now.
+				const auto party = PartyPosition();
+				Require(party.has_value(), "a rejoining bot needs the party position");
+				State.cycle = party->first;
+				State.level = 0;
+				if (party->second == 0)
+					State.phase = Phase::Waiting;
+				else
+					GoToLevel(party->second, 0);
+				break;
+			}
 			StartNewLvl(player, WM_DIABNEXTLVL, Config.level);
 			State.level = Config.level;
-			State.soakStart = std::chrono::steady_clock::now();
 			State.phase = Phase::Descending;
 		}
 		break;
@@ -1068,7 +1190,11 @@ void Tick(bool before)
 			State.phase = Phase::Waiting;
 		break;
 	case Phase::Waiting:
+		if (CatchUpWithParty())
+			break;
 		if (State.level == 0) {
+			if (LeaveIfDue())
+				break;
 			// The first peer decides when the party leaves town, so no bot waits for one that already left.
 			if (PartyOnLevel())
 				++State.townTicks;
@@ -1090,6 +1216,13 @@ void Tick(bool before)
 		}
 		break;
 	case Phase::Fighting:
+		if (Config.soakSeconds != 0 && !player._pLvlChanging && player.isOnActiveLevel() && currlevel != State.level) {
+			// Stopping on a stair tile changes level natively; count it and take the stairs back.
+			++State.strayLevels;
+			StartNewLvl(player, currlevel < State.level ? WM_DIABNEXTLVL : WM_DIABPREVLVL, State.level);
+			State.phase = Phase::Descending;
+			break;
+		}
 		Require(currlevel == State.level && player.isOnActiveLevel(), "bot left the encounter level unexpectedly");
 		if (Config.leaveAfterKills != 0 && !State.left && Config.role >= Config.players - Config.leavers
 		    && std::count_if(State.monsters.begin(), State.monsters.end(), [](const MonsterRecord &m) { return m.death != 0; }) >= Config.leaveAfterKills) {
@@ -1115,6 +1248,37 @@ void Tick(bool before)
 		Report();
 		State.phase = Phase::Done;
 		break;
+	case Phase::Portal: {
+		// Back to town through the bot's own town portal, as a player would.
+		++State.portalTicks;
+		if (currlevel == 0 && !player._pLvlChanging) {
+			State.phase = Phase::Descending; // already in town; town portals cannot be cast here
+			break;
+		}
+		const Portal &portal = Portals[MyPlayerId];
+		const bool opened = portal.open && portal.level == currlevel;
+		// Cast when standing; try a second scroll if the first portal has not opened.
+		if (player._pmode == PM_STAND && !opened && (!State.portalCast || State.portalTicks == 200)) {
+			NetSendCmdLocParam3(true, CMD_SPELLXY, player.position.tile, static_cast<uint16_t>(SpellID::TownPortal), static_cast<uint16_t>(SpellType::Scroll), 0);
+			State.portalCast = true;
+			break;
+		}
+		if (!State.warpSent && State.portalTicks > 20 && opened && player._pmode == PM_STAND) {
+			NetSendCmdParam1(true, CMD_WARP, static_cast<uint16_t>(MyPlayerId));
+			State.warpSent = true;
+		}
+		if (State.warpSent && player._pLvlChanging) {
+			State.phase = Phase::Descending;
+		} else if (State.portalTicks > 600) {
+			// No scroll or no portal: return the way a dead bot does, and count it.
+			++State.portalFallbacks;
+			WriteSample(opened ? "portal-fallback-open" : State.portalCast ? "portal-fallback-cast"
+			                                                               : "portal-fallback-never-standing");
+			RestartTownLvl(player);
+			State.phase = Phase::Descending;
+		}
+		break;
+	}
 	case Phase::Done:
 		if (State.left || (AllReported() && (Config.role != 0 || AllGuestsClosed()))) {
 			gbRunGameResult = false;
@@ -1219,7 +1383,7 @@ int main(int argc, char **argv)
 {
 	using namespace devilution;
 	if (argc < 12) {
-		std::fprintf(stderr, "usage: %s directory role port players seed difficulty level composition characterLevel maxTicks tickRate [classic] [leaveAfterKills leavers targets friendlyFire [soakSeconds]]\n", argv[0]);
+		std::fprintf(stderr, "usage: %s directory role port players seed difficulty level composition characterLevel maxTicks tickRate [classic] [leaveAfterKills leavers targets friendlyFire [soakSeconds [leaveEverySeconds [incarnation]]]]\n", argv[0]);
 		return 2;
 	}
 	Config.directory = argv[1];
@@ -1245,12 +1409,17 @@ int main(int argc, char **argv)
 		Config.friendlyFire = Argument(argv, 16) != 0;
 	if (argc > 17)
 		Config.soakSeconds = Argument(argv, 17);
+	if (argc > 18)
+		Config.leaveEverySeconds = Argument(argv, 18);
+	if (argc > 19)
+		Config.incarnation = Argument(argv, 19);
 	Require(Config.players >= 1 && Config.players <= (Config.classic ? 4U : 8U), "invalid player count");
 	Require(Config.role < Config.players && Config.port > 0 && Config.port <= 65535, "invalid role or port");
 	Require(Config.level >= 1 && Config.level <= 16 && static_cast<unsigned>(Config.difficulty) <= DIFF_HELL, "invalid level or difficulty");
 	Require(Config.tickRate >= 1 && Config.tickRate <= 255 && Config.characterLevel >= 1 && Config.characterLevel <= 50, "invalid tick rate or character level");
 	Require(!Config.composition.empty() && Config.composition.find_first_not_of("WRS") == std::string::npos, "invalid party composition");
 	Require(Config.leavers < Config.players && Config.maxTicks > 0, "invalid departure count or duration");
+	Require(Config.leaveEverySeconds == 0 || (Config.soakSeconds != 0 && Config.players >= 2), "periodic departures need endurance mode and a party");
 	Run();
 	std::fflush(stdout);
 	std::_Exit(0);

@@ -59,3 +59,35 @@ jobs:
       uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y cmake curl g++-14 git libgtest-dev libgmock-dev libbenchmark-dev libsdl2-dev libsodium-dev libpng-dev libbz2-dev wget
+
+    - name: Switch to GCC 14
+      run: |
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 --slave /usr/bin/g++ g++ /usr/bin/g++-14
+        sudo update-alternatives --set gcc /usr/bin/gcc-14
+
+    - name: Build tests with AddressSanitizer and UndefinedBehaviorSanitizer
+      run: |
+        cmake -S. -Bbuild-sanitizers -G Ninja -DCMAKE_BUILD_TYPE=Debug -DASAN=ON -DUBSAN=ON -DDEVILUTIONX_SYSTEM_BENCHMARK=OFF
+        wget -qnc https://github.com/diasurgical/devilutionx-assets/releases/download/v2/spawn.mpq -P build-sanitizers
+        cmake --build build-sanitizers -j $(nproc)
+
+    - name: Run tests with sanitizers
+      # Leak detection stays enabled; multiplayer tests also run several engine processes.
+      # UndefinedBehaviorSanitizer only reports by default, so make its findings fail the test.
+      env:
+        ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+        UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      run: cd build-sanitizers && ctest --output-on-failure

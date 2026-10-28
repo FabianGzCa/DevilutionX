@@ -1881,10 +1881,6 @@ size_t OnPutItem(const TCmdPItem &message, Player &player)
 		BufferMessage(player, &message, sizeof(message));
 	} else if (IsPItemValid(message, player)) {
 		const Point position { message.x, message.y };
-		if (!CanDeltaPutItem(message, player)) {
-			DeltaPutItem(message, position, player);
-			return sizeof(message);
-		}
 		const bool isSelf = &player == MyPlayer;
 		const int32_t dwSeed = Swap32LE(message.def.dwSeed);
 		const uint16_t wCI = Swap16LE(message.def.wCI);
@@ -1896,6 +1892,21 @@ size_t OnPutItem(const TCmdPItem &message, Player &player)
 			});
 			if (pending == PendingItemDrops.end())
 				return sizeof(message);
+		}
+		const auto complete = [&](bool placed) {
+			if (!isSelf)
+				return;
+			// A classic drop retains its hand until its local echo applies. A
+			// capacity failure releases the request without discarding the item.
+			if (placed && MyPlayer->HoldItem.keyAttributesMatch(dwSeed, wIndx, wCI))
+				NewCursor(CURSOR_HAND);
+			PendingItemDrops.erase(pending);
+			pfile_update(true);
+		};
+		if (!CanDeltaPutItem(message, player)) {
+			DeltaPutItem(message, position, player);
+			complete(false);
+			return sizeof(message);
 		}
 		if (player.isOnActiveLevel()) {
 			int ii;
@@ -1912,18 +1923,12 @@ size_t OnPutItem(const TCmdPItem &message, Player &player)
 			if (ii != -1) {
 				PutItemRecord(dwSeed, wCI, wIndx);
 				DeltaPutItem(message, Items[ii].position, player);
-				if (isSelf) {
-					PendingItemDrops.erase(pending);
-					pfile_update(true);
-				}
 			}
+			complete(ii != -1);
 		} else {
 			PutItemRecord(dwSeed, wCI, wIndx);
 			DeltaPutItem(message, position, player);
-			if (isSelf) {
-				PendingItemDrops.erase(pending);
-				pfile_update(true);
-			}
+			complete(true);
 		}
 	}
 
@@ -3817,12 +3822,14 @@ bool StageGeneratedItem(Item &item)
 
 bool IsItemTransferPending()
 {
-	return ItemTransfersEnabled && (!OwnedItemDrops.empty() || std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return IsPrivateItemTransfer(entry.second.message.kind) && !entry.second.received; }));
+	if (!ItemTransfersEnabled)
+		return gbIsMultiplayer && !PendingItemDrops.empty();
+	return !OwnedItemDrops.empty() || std::any_of(LocalItemTransfers.begin(), LocalItemTransfers.end(), [](const auto &entry) { return IsPrivateItemTransfer(entry.second.message.kind) && !entry.second.received; });
 }
 
 bool HasUnresolvedItemTransfers()
 {
-	return ItemTransfersEnabled && (!LocalItemTransfers.empty() || !StagedItemCreations.empty() || !OwnedItemDrops.empty() || HasPendingPartyRewards());
+	return IsItemTransferPending() || (ItemTransfersEnabled && (!LocalItemTransfers.empty() || !StagedItemCreations.empty() || !OwnedItemDrops.empty() || HasPendingPartyRewards()));
 }
 
 bool HasWorldItemSpace()
@@ -4535,7 +4542,7 @@ bool NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item
 	cmd.y = position.y;
 	PrepareItemForNetwork(item, cmd);
 
-	if (bCmd == CMD_PUTITEM && (ActiveItemCount >= MAXITEMS || !CanDeltaPutItem(cmd, *MyPlayer)))
+	if (bCmd == CMD_PUTITEM && ((gbIsMultiplayer && !PendingItemDrops.empty()) || ActiveItemCount >= MAXITEMS || !CanDeltaPutItem(cmd, *MyPlayer)))
 		return false;
 	if (bCmd == CMD_PUTITEM)
 		PendingItemDrops.push_back(item);

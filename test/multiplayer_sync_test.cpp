@@ -1058,6 +1058,95 @@ TEST_F(PlayerSynchronizationTest, LocalPutUsesItsMessageInsteadOfTheLastSentItem
 	EXPECT_EQ(placedItem._iCharges, droppedItem._iCharges);
 }
 
+TEST_F(PlayerSynchronizationTest, ClassicPendingDropKeepsOwnershipUntilApplication)
+{
+	PrepareGoldPickupArea(0);
+	InitializeItem(MyPlayer->HoldItem, IDI_HEAL);
+	MyPlayer->HoldItem._iSeed = 25001;
+	NewCursor(MyPlayer->HoldItem);
+	const Item held = MyPlayer->HoldItem;
+	Drain();
+	ASSERT_TRUE(TryDropItem());
+	EXPECT_TRUE(IsItemTransferPending());
+	EXPECT_FALSE(MyPlayer->HoldItem.isEmpty());
+	EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(held._iSeed, held.IDidx, held._iCreateInfo));
+	EXPECT_FALSE(TryDropItem());
+	EXPECT_FALSE(TestDeadItem(*MyPlayer, MyPlayer->HoldItem, { 0, 0 }));
+	EXPECT_EQ(ActiveItemCount, 2);
+	for (const auto &message : Drain())
+		Receive(MyPlayerId, message);
+	EXPECT_FALSE(IsItemTransferPending());
+	EXPECT_TRUE(MyPlayer->HoldItem.isEmpty());
+	EXPECT_EQ(pcurs, CURSOR_HAND);
+	EXPECT_NE(FindGetItem(held._iSeed, held.IDidx, held._iCreateInfo), -1);
+}
+
+TEST_F(PlayerSynchronizationTest, ClassicDropKeepsItsHeldItemWhenTheFloorFillsBeforeApplication)
+{
+	PrepareGoldPickupArea(0);
+	InitializeItem(MyPlayer->HoldItem, IDI_HEAL);
+	MyPlayer->HoldItem._iSeed = 25002;
+	NewCursor(MyPlayer->HoldItem);
+	const Item held = MyPlayer->HoldItem;
+	Drain();
+	ASSERT_TRUE(TryDropItem());
+	const auto messages = Drain();
+	ASSERT_FALSE(messages.empty());
+	ActiveItemCount = MAXITEMS;
+	for (const auto &message : messages)
+		Receive(MyPlayerId, message);
+	EXPECT_FALSE(IsItemTransferPending());
+	ASSERT_FALSE(MyPlayer->HoldItem.isEmpty());
+	ASSERT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(held._iSeed, held.IDidx, held._iCreateInfo));
+	EXPECT_EQ(ActiveItemCount, MAXITEMS);
+	TemporaryHeldItemSave archive;
+	archive.Save(*MyPlayer);
+	MyPlayer->HoldItem.clear();
+	ASSERT_TRUE(archive.Load(*MyPlayer));
+	EXPECT_FALSE(MyPlayer->HoldItem.isEmpty());
+	EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(held._iSeed, held.IDidx, held._iCreateInfo));
+	ActiveItemCount = 2;
+	ASSERT_TRUE(TryDropItem());
+	for (const auto &message : Drain())
+		Receive(MyPlayerId, message);
+	EXPECT_TRUE(MyPlayer->HoldItem.isEmpty());
+	EXPECT_FALSE(IsItemTransferPending());
+	EXPECT_NE(FindGetItem(held._iSeed, held.IDidx, held._iCreateInfo), -1);
+}
+
+TEST_F(PlayerSynchronizationTest, ClassicDropKeepsItsHeldItemWhenTheDeltaFillsBeforeApplication)
+{
+	PrepareGoldPickupArea(0);
+	InitializeItem(MyPlayer->HoldItem, IDI_HEAL);
+	MyPlayer->HoldItem._iSeed = 25003;
+	NewCursor(MyPlayer->HoldItem);
+	const Item held = MyPlayer->HoldItem;
+	Drain();
+	ASSERT_TRUE(TryDropItem());
+	const auto messages = Drain();
+	for (uint32_t i = 0; i < ItemDeltaCapacity(); ++i) {
+		TCmdGItem pickup {};
+		pickup.bCmd = CMD_GETITEM;
+		pickup.x = 40;
+		pickup.y = 50;
+		pickup.def.wIndx = static_cast<_item_indexes>(Swap16LE(IDI_GOLD));
+		pickup.def.wCI = Swap16LE(CF_PREGEN);
+		pickup.def.dwSeed = Swap32LE(26000 + i);
+		pickup.bMaster = MyPlayerId;
+		pickup.bPnum = MyPlayerId;
+		pickup.bLevel = currlevel;
+		ASSERT_EQ(ParseCmd(MyPlayerId, reinterpret_cast<const TCmd *>(&pickup), sizeof(pickup)), sizeof(pickup));
+	}
+	const auto before = Canonical(Export());
+	for (const auto &message : messages)
+		Receive(MyPlayerId, message);
+	EXPECT_FALSE(IsItemTransferPending());
+	EXPECT_FALSE(MyPlayer->HoldItem.isEmpty());
+	EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(held._iSeed, held.IDidx, held._iCreateInfo));
+	EXPECT_EQ(ActiveItemCount, 2);
+	EXPECT_EQ(Canonical(Export()), before);
+}
+
 TEST_F(PlayerSynchronizationTest, ReplayedPutMessagesDoNotDuplicateFloorItems)
 {
 	for (const _cmd_id command : { CMD_PUTITEM, CMD_SYNCPUTITEM }) {
@@ -1180,10 +1269,13 @@ TEST_F(PlayerSynchronizationTest, ManualDropRoundTripPreservesItemInClassicAndEx
 			Drain();
 
 			ASSERT_TRUE(TryDropItem());
-			EXPECT_TRUE(MyPlayer->HoldItem.isEmpty());
+			EXPECT_FALSE(MyPlayer->HoldItem.isEmpty());
+			EXPECT_TRUE(IsItemTransferPending());
 			const auto messages = Drain();
 			ASSERT_EQ(messages.size(), 1U);
 			Receive(MyPlayerId, messages.front());
+			EXPECT_TRUE(MyPlayer->HoldItem.isEmpty());
+			EXPECT_FALSE(IsItemTransferPending());
 			ASSERT_EQ(ActiveItemCount, 1);
 			const Item &placed = Items[ActiveItems[0]];
 			EXPECT_TRUE(placed.keyAttributesMatch(source._iSeed, source.IDidx, source._iCreateInfo));

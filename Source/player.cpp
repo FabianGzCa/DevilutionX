@@ -321,6 +321,8 @@ bool DeadItem(Player &player, Item &item, Displacement direction)
 {
 	if (item.isEmpty())
 		return true;
+	if (&player == MyPlayer && &item == &player.HoldItem && IsItemTransferPending())
+		return false;
 
 	const Point playerTile = player.position.tile;
 	if (IsExtendedItemTransferSession()) {

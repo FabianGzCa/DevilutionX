@@ -2409,6 +2409,8 @@ void UpdateSpellTarget(SpellID spell)
  */
 bool TryDropItem()
 {
+	if (IsItemTransferPending())
+		return false;
 	Player &myPlayer = *MyPlayer;
 
 	if (myPlayer.HoldItem.isEmpty()) {

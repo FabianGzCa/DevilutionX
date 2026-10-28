@@ -1316,27 +1316,12 @@ void SearchAutomapItem(const Surface &out, const Displacement &myPlayerOffset, i
 	}
 }
 
-void DrawPlayerMapNumber(const Surface &out, Point center, const PlayerVisualIdentity &identity)
-{
-	constexpr int GlyphWidth = 3;
-	constexpr int GlyphHeight = 5;
-	constexpr uint8_t BackgroundColor = 239;
-	constexpr uint8_t NumberColor = 255;
-	FillRect(out, center.x - 2, center.y - 3, GlyphWidth + 2, GlyphHeight + 2, BackgroundColor);
-	for (int y = 0; y < GlyphHeight; ++y) {
-		for (int x = 0; x < GlyphWidth; ++x) {
-			if ((identity.automapNumber[y] & (1 << (GlyphWidth - x - 1))) != 0)
-				DrawHorizontalLine(out, { center.x - 1 + x, center.y - 2 + y }, 1, NumberColor);
-		}
-	}
-}
-
 /**
  * @brief Renders an arrow on the automap, centered on and facing the direction of the player.
  */
 void DrawAutomapPlr(const Surface &out, const Displacement &myPlayerOffset, const Player &player)
 {
-	const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(player.getId());
+	const PlayerVisualIdentity &identity = GetConfiguredPlayerVisualIdentity(player.getId());
 	const uint8_t playerColor = identity.automapColor;
 
 	const Point tile = player.position.tile;
@@ -1545,7 +1530,7 @@ std::unique_ptr<AutomapTile[]> LoadAutomapData(size_t &tileCount)
 
 void DrawAutomapPlayerIdentifier(const Surface &out, Point center, int playerId)
 {
-	DrawPlayerMapNumber(out, center, GetPlayerVisualIdentity(playerId));
+	DrawPlayerNumber(out, center, playerId);
 }
 
 bool AutomapActive;

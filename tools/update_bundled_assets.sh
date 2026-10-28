@@ -42,7 +42,7 @@ pcx2clx --transparent-color 1 --num-sprites 6 --output-dir "${OUTPUT_DIR}/data" 
 pcx2clx --num-sprites 2 --output-dir "${OUTPUT_DIR}/data" data/panel8buc.pcx data/dirtybuc.pcx data/dirtybucp.pcx
 pcx2clx --transparent-color 1 --output-dir "${OUTPUT_DIR}/data" data/healthbox.pcx
 pcx2clx --transparent-color 1 --num-sprites 6 --output-dir "${OUTPUT_DIR}/data" data/resistance.pcx
-pcx2clx --transparent-color 1 --num-sprites 9 --output-dir "${OUTPUT_DIR}/data" data/monstertags.pcx
+pcx2clx --transparent-color 1 --num-sprites 5 --output-dir "${OUTPUT_DIR}/data" data/monstertags.pcx
 pcx2clx --transparent-color 1 --output-dir "${OUTPUT_DIR}/data" data/stash.pcx
 pcx2clx --transparent-color 1 --num-sprites 5 --output-dir "${OUTPUT_DIR}/data" data/stashnavbtns.pcx
 pcx2clx --num-sprites 6 --output-dir "${OUTPUT_DIR}/data" data/panel8bucp.pcx

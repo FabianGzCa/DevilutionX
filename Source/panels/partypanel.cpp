@@ -224,11 +224,10 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 			    PortraitFrameSize.height - (PartyPanelFrameBorderSize * 2));
 			RenderClxSprite(frameSubregion, playerPortraitSprite, portraitPos);
 
-			const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(player.getId());
-			if (PlayerTags.has_value() && identity.tagSprite < (*PlayerTags).numSprites()) {
-				const int tagWidth = (*PlayerTags)[identity.tagSprite].width();
-				RenderClxSprite(frameSubregion, (*PlayerTags)[identity.tagSprite],
-				    { PortraitFrameSize.width - (tagWidth + (tagWidth / 2)), 0 });
+			if (PlayerTags.has_value()) {
+				const int tagWidth = (*PlayerTags)[0].width();
+				DrawPlayerTag(frameSubregion, *PlayerTags,
+				    { PortraitFrameSize.width - (tagWidth + (tagWidth / 2)), 0 }, player.getId());
 			}
 
 			if (player._pHitPoints <= 0)
@@ -237,9 +236,10 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 			const int manaTicks = GetPartyPanelBarWidth(player._pMana.raw(), player._pMaxMana.raw());
 			DrawBar(gameScreen, { card.manaBarPosition, { manaTicks, PartyPanelManaBarHeight } }, PAL8_BLUE + 3);
 
-			const int labelWidth = GetLineWidth(identity.nameLabel) + 2;
+			const std::string_view nameLabel = GetPlayerNameLabel(player.getId());
+			const int labelWidth = nameLabel.empty() ? 0 : GetLineWidth(nameLabel) + 2;
 			const int visibleNameWidth = std::max(0, card.nameArea.size.width - labelWidth);
-			DrawString(gameScreen, identity.nameLabel, card.nameArea,
+			DrawString(gameScreen, nameLabel, card.nameArea,
 			    { .flags = UiFlags::ColorGold | UiFlags::Outlined | UiFlags::FontSize12 });
 			if (visibleNameWidth > 0) {
 				const std::string name = TruncatePartyPanelName(player._pName, visibleNameWidth);

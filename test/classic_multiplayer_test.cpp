@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -23,6 +24,7 @@
 #include "levels/dun_tile_data.hpp"
 #include "monster.h"
 #include "multi.h"
+#include "options.h"
 #include "player.h"
 #include "player_mask.hpp"
 #include "player_visual_identity.hpp"
@@ -62,7 +64,7 @@ std::expected<void, std::string> WritePlayerVisualGallery(const ClxSpriteList &p
 	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
 		const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
 		const int row = 64 + playerId * 42;
-		RenderClxSprite(out, playerTags[identity.tagSprite], { left + 32, row });
+		DrawPlayerTag(out, playerTags, { left + 32, row }, playerId);
 		std::string label(identity.nameLabel);
 		label += " Player ";
 		label += identity.number;
@@ -93,6 +95,8 @@ protected:
 
 	void SetUp() override
 	{
+		savedPlayerIdentifiers = *GetOptions().Gameplay.showPlayerIdentifiers;
+		GetOptions().Gameplay.showPlayerIdentifiers.SetValue(false);
 		gbIsMultiplayer = true;
 		gbIsHellfire = false;
 		gbIsSpawn = false;
@@ -113,6 +117,7 @@ protected:
 
 	void TearDown() override
 	{
+		GetOptions().Gameplay.showPlayerIdentifiers.SetValue(savedPlayerIdentifiers);
 		SNetDestroy();
 		InitPortals();
 		Players.clear();
@@ -122,6 +127,9 @@ protected:
 		gbIsMultiplayer = false;
 		leveltype = DTYPE_TOWN;
 	}
+
+private:
+	bool savedPlayerIdentifiers = false;
 };
 
 TEST_F(ClassicMultiplayerTest, AdvertisesFourPlayerSlots)
@@ -160,14 +168,11 @@ TEST_F(ClassicMultiplayerTest, PlayerVisualIdentitiesCoverAllEightPlayers)
 {
 	std::set<uint8_t> automapColors;
 	std::set<uint8_t> outlineColors;
-	std::set<uint8_t> tagSprites;
 	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
 		const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
 		EXPECT_EQ(identity.number, '1' + playerId);
 		EXPECT_TRUE(automapColors.insert(identity.automapColor).second);
 		EXPECT_TRUE(outlineColors.insert(identity.outlineColor).second);
-		EXPECT_EQ(identity.tagSprite, playerId + 1);
-		EXPECT_TRUE(tagSprites.insert(identity.tagSprite).second);
 		uint8_t glyphPixels = 0;
 		for (uint8_t row : identity.automapNumber)
 			glyphPixels |= row;
@@ -177,7 +182,6 @@ TEST_F(ClassicMultiplayerTest, PlayerVisualIdentitiesCoverAllEightPlayers)
 	}
 	EXPECT_EQ(automapColors.size(), static_cast<size_t>(PlayerStorageCapacity));
 	EXPECT_EQ(outlineColors.size(), static_cast<size_t>(PlayerStorageCapacity));
-	EXPECT_EQ(tagSprites.size(), static_cast<size_t>(PlayerStorageCapacity));
 }
 
 TEST_F(ClassicMultiplayerTest, PlayerVisualIdentityPreservesClassicColorsAndBoundsInvalidIds)
@@ -196,6 +200,7 @@ TEST_F(ClassicMultiplayerTest, PlayerVisualIdentityPreservesClassicColorsAndBoun
 
 TEST_F(ClassicMultiplayerTest, AutomapPlayerIdentifiersRenderAllEightNumbers)
 {
+	GetOptions().Gameplay.showPlayerIdentifiers.SetValue(true);
 	OwnedSurface marker(5, 7);
 	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
 		FillRect(marker, 0, 0, marker.w(), marker.h(), 0);
@@ -219,37 +224,70 @@ TEST_F(ClassicMultiplayerTest, AutomapPlayerIdentifiersRenderAllEightNumbers)
 	EXPECT_EQ(marker[centerPixel], 255);
 }
 
-TEST_F(ClassicMultiplayerTest, AllEightPlayerTagSpritesAreAvailable)
+TEST_F(ClassicMultiplayerTest, PlayerIdentifiersAreDisabledByDefaultAndCanChangeLocally)
 {
-	const OwnedClxSpriteList playerTags = LoadClx("data\\monstertags.clx");
-	ASSERT_EQ(playerTags.numSprites(), static_cast<uint32_t>(PlayerStorageCapacity + 1));
-	EXPECT_EQ(playerTags[0].width(), 13);
-	EXPECT_EQ(playerTags[0].height(), 22);
-	std::set<std::vector<uint8_t>> tagPixels;
-	constexpr std::array<uint8_t, PlayerStorageCapacity> NumberColors = { 255, 239, 239, 239, 255, 239, 255, 239 };
-	OwnedSurface renderedTag(13, 22);
-	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
-		const ClxSprite tag = playerTags[GetPlayerVisualIdentity(playerId).tagSprite];
-		ASSERT_EQ(tag.width(), 13);
-		ASSERT_EQ(tag.height(), 22);
-		ASSERT_GT(tag.pixelDataSize(), 0U);
-		EXPECT_TRUE(tagPixels.emplace(tag.pixelData(), tag.pixelData() + tag.pixelDataSize()).second);
+	GameplayOptions defaults;
+	EXPECT_FALSE(*defaults.showPlayerIdentifiers);
+	const std::vector<OptionEntryBase *> entries = defaults.GetEntries();
+	EXPECT_NE(std::find(entries.begin(), entries.end(), &defaults.showPlayerIdentifiers), entries.end());
+	EXPECT_EQ(defaults.showPlayerIdentifiers.GetFlags(), OptionEntryFlags::None);
 
-		FillRect(renderedTag, 0, 0, renderedTag.w(), renderedTag.h(), 1);
-		RenderClxSprite(renderedTag, tag, { 0, 0 });
-		const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
-		for (int y = 0; y < static_cast<int>(identity.automapNumber.size()); ++y) {
-			for (int x = 0; x < 3; ++x) {
-				const bool isNumberPixel = (identity.automapNumber[y] & (1 << (2 - x))) != 0;
-				const Point pixelPosition { x + 5, y + 4 };
-				if (isNumberPixel) {
-					EXPECT_EQ(renderedTag[pixelPosition], NumberColors[playerId]) << "player " << playerId + 1 << ", glyph row " << y << ", column " << x;
-				} else {
-					EXPECT_NE(renderedTag[pixelPosition], 1) << "player " << playerId + 1 << ", glyph row " << y << ", column " << x;
+	OwnedSurface marker(5, 7);
+	for (const bool enabled : { false, true, false }) {
+		GetOptions().Gameplay.showPlayerIdentifiers.SetValue(enabled);
+		for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
+			SCOPED_TRACE(playerId);
+			FillRect(marker, 0, 0, marker.w(), marker.h(), 1);
+			DrawAutomapPlayerIdentifier(marker, { 2, 3 }, playerId);
+			if (enabled) {
+				EXPECT_FALSE(GetPlayerNameLabel(playerId).empty());
+				EXPECT_EQ(&GetConfiguredPlayerVisualIdentity(playerId), &GetPlayerVisualIdentity(playerId));
+				EXPECT_EQ(marker[Point(0, 0)], 239);
+			} else {
+				EXPECT_TRUE(GetPlayerNameLabel(playerId).empty());
+				EXPECT_EQ(&GetConfiguredPlayerVisualIdentity(playerId), &GetPlayerVisualIdentity(playerId % ClassicPlayerLimit));
+				for (int y = 0; y < marker.h(); ++y) {
+					for (int x = 0; x < marker.w(); ++x)
+						EXPECT_EQ(marker[Point(x, y)], 1);
 				}
 			}
 		}
 	}
+}
+
+TEST_F(ClassicMultiplayerTest, PlayerTagsKeepClassicPixelsUnlessIdentifiersAreEnabled)
+{
+	const OwnedClxSpriteList playerTags = LoadClx("data\\monstertags.clx");
+	ASSERT_EQ(playerTags.numSprites(), static_cast<uint32_t>(ClassicPlayerLimit + 1));
+	OwnedSurface expected(13, 22);
+	OwnedSurface actual(13, 22);
+	for (int playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
+		SCOPED_TRACE(playerId);
+		const ClxSprite tag = playerTags[playerId % ClassicPlayerLimit + 1];
+		ASSERT_EQ(tag.width(), expected.w());
+		ASSERT_EQ(tag.height(), expected.h());
+		FillRect(expected, 0, 0, expected.w(), expected.h(), 1);
+		RenderClxSprite(expected, tag, { 0, 0 });
+		for (const bool enabled : { false, true, false }) {
+			GetOptions().Gameplay.showPlayerIdentifiers.SetValue(enabled);
+			FillRect(actual, 0, 0, actual.w(), actual.h(), 1);
+			DrawPlayerTag(actual, playerTags, { 0, 0 }, playerId);
+			const PlayerVisualIdentity &identity = GetPlayerVisualIdentity(playerId);
+			for (int y = 0; y < actual.h(); ++y) {
+				for (int x = 0; x < actual.w(); ++x) {
+					const Point pixel { x, y };
+					uint8_t expectedColor = expected[pixel];
+					if (enabled && x >= 4 && x <= 8 && y >= 3 && y <= 9) {
+						expectedColor = 239;
+						if (x >= 5 && x <= 7 && y >= 4 && y <= 8 && (identity.automapNumber[y - 4] & (1 << (7 - x))) != 0)
+							expectedColor = 255;
+					}
+					EXPECT_EQ(actual[pixel], expectedColor) << "pixel " << x << ',' << y;
+				}
+			}
+		}
+	}
+	GetOptions().Gameplay.showPlayerIdentifiers.SetValue(true);
 	if (const char *captureDirectory = std::getenv("DEVILUTIONX_PLAYER_VISUAL_CAPTURE_DIR")) {
 		ASSERT_TRUE(WritePlayerVisualGallery(playerTags, captureDirectory, 640, 480).has_value());
 		ASSERT_TRUE(WritePlayerVisualGallery(playerTags, captureDirectory, 1280, 720).has_value());

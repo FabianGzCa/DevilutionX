@@ -176,13 +176,10 @@ void DrawMonsterHealthBar(const Surface &out)
 	if (Players.size() > 1) {
 		int tagOffset = 5;
 		for (size_t i = 0; i < Players.size(); i++) {
-			const uint8_t playerTag = GetPlayerVisualIdentity(static_cast<int>(i)).tagSprite;
-			if (playerTag < (*playerExpTags).numSprites()) {
-				if (IsPlayerInExperienceMask(monster.whoHit, i)) {
-					RenderClxSprite(out, (*playerExpTags)[playerTag], position + Displacement { tagOffset, height - 31 });
-				} else if (Players[i].plractive) {
-					RenderClxSprite(out, (*playerExpTags)[0], position + Displacement { tagOffset, height - 31 });
-				}
+			if (IsPlayerInExperienceMask(monster.whoHit, i)) {
+				DrawPlayerTag(out, *playerExpTags, position + Displacement { tagOffset, height - 31 }, static_cast<int>(i));
+			} else if (Players[i].plractive) {
+				RenderClxSprite(out, (*playerExpTags)[0], position + Displacement { tagOffset, height - 31 });
 			}
 			tagOffset += (*playerExpTags)[0].width();
 		}

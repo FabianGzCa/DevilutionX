@@ -26,6 +26,7 @@ set(libdevilutionx_SRCS
   msg.cpp
   nthread.cpp
   pfile.cpp
+  player_visual_identity.cpp
   plrmsg.cpp
   portal.cpp
   restrict.cpp

@@ -608,6 +608,8 @@ struct GameplayOptions : OptionCategoryBase {
 	OptionEntryBoolean showManaValues;
 	/** @brief Enable the multiplayer party information display */
 	OptionEntryEnum<PartyPortraits> showMultiplayerPartyInfo;
+	/** @brief Show additional local player numbers and distinct colors for eight players. */
+	OptionEntryBoolean showPlayerIdentifiers;
 	/** @brief Show enemy health at the top of the screen. */
 	OptionEntryBoolean enemyHealthBar;
 	/** @brief Displays item info in a floating box when hovering over an ite. */

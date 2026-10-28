@@ -1434,6 +1434,7 @@ int main(int argc, char **argv)
 	Require(Config.leavers < Config.players && Config.maxTicks > 0, "invalid departure count or duration");
 	Require(Config.leaveEverySeconds == 0 || (Config.soakSeconds != 0 && Config.players >= 2), "periodic departures need endurance mode and a party");
 	Run();
-	std::fflush(stdout);
-	std::_Exit(0);
+	LuaShutdown();
+	SDL_Quit();
+	return 0;
 }

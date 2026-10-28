@@ -921,6 +921,11 @@ DVL_API_FOR_TEST void TestRegisterNetEventHandlers()
 {
 	RegisterNetEventHandlers();
 }
+
+DVL_API_FOR_TEST void TestCheckDropPlayer()
+{
+	CheckDropPlayer();
+}
 #endif
 
 bool NetInit(bool bSinglePlayer)

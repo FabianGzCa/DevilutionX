@@ -358,7 +358,7 @@ TEST_F(MultiplayerFailureTest, CanonicalCheckpointsDetectQuestRngAndSlotGenerati
 	}
 }
 
-TEST_F(MultiplayerFailureTest, KillingTheTcpHostClosesEveryClientsTurnsWithoutInventingMigration)
+TEST_F(MultiplayerFailureTest, KillingTheTcpHostDropsItsSilentPeersWithoutInventingMigration)
 {
 	ASSERT_NO_FATAL_FAILURE(Command("session-init"));
 	ASSERT_NO_FATAL_FAILURE(Interrupt(0));

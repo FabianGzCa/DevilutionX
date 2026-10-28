@@ -81,6 +81,8 @@ bool NetInit(bool bSinglePlayer);
 #ifdef BUILD_TESTING
 /** Replaces the provider and game menus so a test process can create or join a session itself. */
 extern DVL_API_FOR_TEST bool (*TestSelectMultiplayerGame)(GameData *gameData, int *playerId);
+/** Runs the turn-timeout drop of silent peers without waiting for the timeout. */
+DVL_API_FOR_TEST void TestCheckDropPlayer();
 #endif
 void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv);
 

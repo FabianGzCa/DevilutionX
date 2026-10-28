@@ -679,7 +679,13 @@ void Run(unsigned port)
 				std::array<uint32_t, PlayerStorageCapacity> status {};
 				SNetReceiveTurns(Players.size(), turns.data(), sizes.data(), status.data());
 				if (actor == 0 || actor == Role) {
-					lost = std::all_of(status.begin(), status.end(), [](uint32_t flags) { return (flags & PS_CONNECTED) == 0; });
+					// A lost server keeps the local turn transport, as in the original client. The
+					// engine's turn timeout drops the silent peers; run that drop without the wait.
+					std::copy(status.begin(), status.end(), player_state);
+					TestCheckDropPlayer();
+					lost = true;
+					for (size_t peer = 0; peer < status.size(); ++peer)
+						lost = lost && (peer == Role || (status[peer] & PS_CONNECTED) == 0);
 				} else {
 					lost = !Players[actor].plractive && !Portals[actor].open && FindGolemForPlayer(Players[actor]) == nullptr;
 				}
@@ -690,7 +696,7 @@ void Run(unsigned port)
 			Require(lost, "the native transport did not close or clean the departed slot");
 			if (actor == 0 || actor == Role) {
 				uint32_t turn = 0;
-				Require(!SNetSendTurn(reinterpret_cast<char *>(&turn), sizeof(turn)), "disconnected TCP transport still accepts turns");
+				Require(SNetSendTurn(reinterpret_cast<char *>(&turn), sizeof(turn)), "a lost server closed the local turn transport");
 				Mark("result-" + std::to_string(stage), "closed");
 				break;
 			}

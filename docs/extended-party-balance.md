@@ -271,7 +271,9 @@ within the existing 16-bit transfer limit.
 
 ## Revision 1 measurements
 
-Revision 1 was measured with the tool described in
+These measurements predate the fix that keeps native monster regeneration in
+extended sessions (see below); four and five to eight players were measured
+with the same engine. Revision 1 was measured with the tool described in
 [multiplayer testing](multiplayer-testing.md#balance-measurements): one headless
 engine process per player over loopback TCP, each driven by a bot that sends
 the same commands a player would. The bots clear the 32 reachable enemies
@@ -318,13 +320,19 @@ Special scenarios, on the same seeds and targets:
 
 - Four players in a Classic session, against Extended with four present
   (Normal, all compositions, 37 pairs): identical heroes, kills, potion use and
-  XP per contribution, but encounters took 110% [105–115] as long. Monsters
-  survived 8% longer from first damage to death, while every peer saw each
-  death within the same few ticks in both modes. Classic is unchanged native
-  code; the likely cause is that Extended applies each published hit once in
-  every engine. Measured against Classic four, five to eight players would
-  take about 97–102%, near the lower duration bound. This is recorded for
-  review, not adjusted.
+  XP per contribution, but encounters took 110% [105–115] as long. Two causes
+  were examined. First, extended engines discarded native monster regeneration
+  when a hit arrived from another player; this is fixed, but with these
+  low-level monsters it accounted for only 2.8% [−2.4–8.0] of the duration.
+  Second, and still present after the fix (111% [102–120]): in classic
+  sessions a lethal hit received from another player only lowers a monster to
+  one hit point, and the monster dies when a hit crosses zero in the
+  attacker's own engine. When several players strike at once, that race
+  wastes damage. In extended sessions the hit that crosses zero is the single
+  agreed death. This is part of the synchronized lifecycle, not a scaling
+  rule. The formulas stay inactive for one to four players. Five to eight
+  players were compared with Extended four, which has the same lifecycle;
+  against Classic four they would take about 97–102%.
 - Bosses: the Butcher (Normal level 2) and the Skeleton King (Nightmare
   level 3) fell inside the matrix with no change in outcome by party size,
   apart from one Skeleton King seed with three to five player deaths for five

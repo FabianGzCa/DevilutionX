@@ -912,6 +912,48 @@ TEST_F(MonsterSummonsTest, RemoteExtendedDamageKeepsNativeRegenerationWithFourPl
 	EXPECT_EQ(monster->hitPoints, regenerated - Fixed26_6::fromInt(1)) << "native regeneration was discarded by a remote hit";
 }
 
+TEST_F(MonsterSummonsTest, LethalRemoteHitWaitsForTheKillerInClassicButKillsInExtended)
+{
+	// Classic: a remote hit can only lower health to one; the attacker's own engine reports the kill.
+	sgGameInitInfo.rules = ClassicSessionRules;
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	TCmdMonDamage hit { };
+	hit.bCmd = CMD_MONSTDAMAGE;
+	hit.wMon = Swap16LE(static_cast<uint16_t>(monster->getId()));
+	hit.dwDam = Swap32LE(static_cast<uint32_t>((monster->hitPoints + Fixed26_6::fromInt(5)).raw()));
+	ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&hit), sizeof(hit)), sizeof(hit));
+	EXPECT_EQ(monster->hitPoints, Fixed26_6::fromInt(1));
+	EXPECT_FALSE(monster->hasNoLife());
+
+	// Extended: the receipt that crosses zero is the single agreed death, whoever sent it.
+	sgGameInitInfo.rules = ExtendedSessionRules;
+	InitItemTransfers();
+	CommitPartyLevel(1, 4, 0, 0, 4);
+	Monster *partyMonster = AddMonster({ 44, 40 }, Direction::South, 1, true);
+	ASSERT_NE(partyMonster, nullptr);
+	CapturePartyMonsters();
+	const auto &state = GetPartyLevelState(1).monsters[partyMonster->getId()];
+	PartyDamageMessage remote { };
+	remote.command = CMD_PARTYMONSTDAMAGE;
+	remote.level = 1;
+	remote.participants = 4;
+	remote.epoch = MultiplayerSlotEpoch(1);
+	remote.receipt = 1;
+	remote.monster = static_cast<uint16_t>(partyMonster->getId());
+	remote.damage = static_cast<uint32_t>((partyMonster->hitPoints + Fixed26_6::fromInt(5)).raw());
+	remote.generation = state.generation;
+	remote.nativeMax = state.nativeMax;
+	remote.type = state.type;
+	remote.unique = state.unique;
+	remote.x = state.x;
+	remote.y = state.y;
+	ReceivePartyMonsterDamage(1, remote);
+	EXPECT_TRUE(partyMonster->hasNoLife());
+	EXPECT_NE(state.flags & PartyMonsterDead, 0);
+	EXPECT_EQ(state.killer, 1);
+}
+
 TEST_F(MonsterSummonsTest, PartySharedDamageHasOnePublisherAndPreservesEnvironmentalContributions)
 {
 	InitItemTransfers();

@@ -16,6 +16,8 @@
 #include <thread>
 #include <vector>
 
+#include <sys/resource.h>
+
 #ifdef USE_SDL3
 #include <SDL3/SDL.h>
 #else
@@ -34,6 +36,7 @@
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
 #include "levels/trigs.h"
+#include "lighting.h"
 #include "lua/lua_global.hpp"
 #include "menu.h"
 #include "monster.h"
@@ -77,6 +80,8 @@ struct Scenario {
 	bool classic = false;
 	unsigned leaveAfterKills = 0;
 	unsigned leavers = 0;
+	/** Endurance mode: keep cycling town and dungeon levels for this many wall-clock seconds. */
+	unsigned soakSeconds = 0;
 };
 
 Scenario Config;
@@ -410,6 +415,14 @@ struct Bot {
 	std::chrono::steady_clock::time_point lastTick;
 	std::string outcome = "timeout";
 	std::array<uint8_t, MAXDUNX * MAXDUNY> reachable {};
+	// Endurance mode.
+	int level = 0;
+	unsigned cycle = 0;
+	unsigned townTicks = 0;
+	bool rejoinFromTown = false;
+	std::chrono::steady_clock::time_point soakStart;
+	size_t sampledTicks = 0;
+	size_t sampledLogic = 0;
 };
 
 Bot State;
@@ -559,6 +572,11 @@ bool UsePotion(Player &player, bool mana)
 	return false;
 }
 
+std::string TargetsFile()
+{
+	return State.cycle == 0 ? "targets" : "targets-" + std::to_string(State.cycle);
+}
+
 bool PartyOnLevel()
 {
 	unsigned present = 0;
@@ -575,7 +593,7 @@ void BeginFight()
 	State.fightStart = State.tick;
 	State.startExperience = MyPlayer->_pExperience;
 	State.hpAtStart = MyPlayer->_pHitPoints.raw();
-	const auto manifest = Config.directory / "targets";
+	const auto manifest = Config.directory / TargetsFile();
 	if (!std::filesystem::exists(manifest)) {
 		Require(Config.role == 0, "target selection must come from the first peer");
 		Point anchor = MyPlayer->position.tile;
@@ -605,7 +623,7 @@ void BeginFight()
 		std::ostringstream out;
 		for (const unsigned id : ids)
 			out << id << ' ';
-		Mark("targets", out.str());
+		Mark(TargetsFile(), out.str());
 	}
 	std::ifstream in(manifest);
 	unsigned id;
@@ -613,7 +631,8 @@ void BeginFight()
 		Require(id < MonsterStorageCapacity && !Monsters[id].isPlayerMinion(), "invalid encounter target");
 		State.monsters.push_back({ id, 0, 0, Monsters[id].isUnique() });
 	}
-	Require(!State.monsters.empty(), "no reachable targets were selected");
+	// An endurance cycle may revisit a level whose targets are already dead.
+	Require(Config.soakSeconds != 0 || !State.monsters.empty(), "no reachable targets were selected");
 }
 
 void Observe()
@@ -938,36 +957,140 @@ bool AllReported()
 	return true;
 }
 
+bool SoakContinues()
+{
+	return Config.soakSeconds != 0 && std::chrono::steady_clock::now() - State.soakStart < std::chrono::seconds(Config.soakSeconds);
+}
+
+/** Endurance sample: resources and timing since the previous sample, one JSON line per call. */
+void WriteSample(const char *reason)
+{
+	const auto window = [](const std::vector<double> &values, size_t from) {
+		std::vector<double> part(values.begin() + static_cast<std::ptrdiff_t>(std::min(from, values.size())), values.end());
+		std::sort(part.begin(), part.end());
+		double mean = 0;
+		for (const double value : part)
+			mean += value;
+		if (!part.empty())
+			mean /= static_cast<double>(part.size());
+		const double p95 = part.empty() ? 0 : part[std::min(part.size() - 1, part.size() * 95 / 100)];
+		return std::array<double, 3> { mean, p95, part.empty() ? 0 : part.back() };
+	};
+	const auto logic = window(State.logicMs, State.sampledLogic);
+	const auto ticks = window(State.tickMs, State.sampledTicks);
+	State.sampledLogic = State.logicMs.size();
+	State.sampledTicks = State.tickMs.size();
+	rusage usage {};
+	getrusage(RUSAGE_SELF, &usage);
+	const double cpuSeconds = static_cast<double>(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + static_cast<double>(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6;
+	uint32_t turns = 0;
+	SNetGetTurnsInTransit(&turns);
+	std::ofstream out(Config.directory / ("samples-" + std::to_string(Config.role) + ".jsonl"), std::ios::app);
+	out << "{\"wallSeconds\":" << std::chrono::duration<double>(std::chrono::steady_clock::now() - State.soakStart).count() << ",\"reason\":\"" << reason << "\""
+	    << ",\"tick\":" << State.tick << ",\"cycle\":" << State.cycle << ",\"level\":" << static_cast<int>(currlevel) << ",\"phase\":" << static_cast<int>(State.phase)
+	    << ",\"rssKb\":" << ResidentKilobytes() << ",\"cpuSeconds\":" << cpuSeconds
+	    << ",\"logicMeanMs\":" << logic[0] << ",\"logicP95Ms\":" << logic[1] << ",\"tickMeanMs\":" << ticks[0] << ",\"tickP95Ms\":" << ticks[1] << ",\"tickMaxMs\":" << ticks[2]
+	    << ",\"turnsInTransit\":" << turns << ",\"items\":" << static_cast<unsigned>(ActiveItemCount) << ",\"monsters\":" << ActiveMonsterCount << ",\"lights\":" << ActiveLightCount
+	    << ",\"unresolvedTransfers\":" << HasUnresolvedItemTransfers() << ",\"active\":" << static_cast<unsigned>(gbActivePlayers) << ",\"deaths\":" << State.deaths
+	    << ",\"kills\":" << std::count_if(State.monsters.begin(), State.monsters.end(), [](const MonsterRecord &m) { return m.death != 0; }) << "}\n";
+}
+
+/**
+ * Next endurance level: down from the configured level through five more, then up one level at a
+ * time to town, as stairs do, and down again. Skipping several levels upwards is not a native move.
+ */
+int SoakLevel(unsigned cycle)
+{
+	const int deepest = std::min(Config.level + 5, 16);
+	const unsigned down = static_cast<unsigned>(deepest - Config.level + 1);
+	const unsigned period = down + static_cast<unsigned>(deepest);
+	const unsigned step = cycle % period;
+	return step < down ? Config.level + static_cast<int>(step) : deepest - static_cast<int>(step - down + 1);
+}
+
+void AdvanceSoak()
+{
+	++State.cycle;
+	State.monsters.clear();
+	State.target = -1;
+	State.settleTicks = 0;
+	State.stuckTicks = 0;
+	State.townTicks = 0;
+	State.blockedUntil.fill(0);
+	State.outcome = "timeout";
+	const int previous = State.level;
+	State.level = SoakLevel(State.cycle);
+	Player &player = *MyPlayer;
+	if (player.hasNoLife()) {
+		// A dead bot returns to town the way a player would, then walks back down to the party.
+		RestartTownLvl(player);
+		State.rejoinFromTown = State.level != 0;
+	} else {
+		StartNewLvl(player, State.level > previous ? WM_DIABNEXTLVL : WM_DIABPREVLVL, State.level);
+	}
+	State.phase = Phase::Descending;
+}
+
 void Tick(bool before)
 {
 	if (!before) {
-		if (State.phase == Phase::Fighting)
+		if (State.phase == Phase::Fighting || Config.soakSeconds != 0)
 			State.logicMs.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - State.logicStart).count());
 		return;
 	}
 	const auto now = std::chrono::steady_clock::now();
-	if (State.phase == Phase::Fighting && State.tick > State.fightStart)
+	if ((State.phase == Phase::Fighting && State.tick > State.fightStart) || (Config.soakSeconds != 0 && State.tick > 0))
 		State.tickMs.push_back(std::chrono::duration<double, std::milli>(now - State.lastTick).count());
 	State.lastTick = now;
 	++State.tick;
 	Player &player = *MyPlayer;
+	if (Config.soakSeconds != 0 && State.phase != Phase::Gathering && State.phase != Phase::Reporting && State.phase != Phase::Done && !SoakContinues()) {
+		// Time is up wherever the bot is (town, stairs or a fight): every peer reports and closes.
+		State.outcome = "soak-complete";
+		State.fightEnd = State.tick;
+		State.phase = Phase::Reporting;
+	}
 	switch (State.phase) {
 	case Phase::Gathering:
 		if (gbActivePlayers == Config.players && std::all_of(Players.begin(), Players.begin() + Config.players, [](const Player &p) { return p.plractive; })) {
 			StartNewLvl(player, WM_DIABNEXTLVL, Config.level);
+			State.level = Config.level;
+			State.soakStart = std::chrono::steady_clock::now();
 			State.phase = Phase::Descending;
 		}
 		break;
 	case Phase::Descending:
-		if (player.isOnActiveLevel() && currlevel == Config.level && !player._pLvlChanging)
+		if (State.rejoinFromTown && player.isOnActiveLevel() && currlevel == 0 && !player._pLvlChanging) {
+			State.rejoinFromTown = false;
+			StartNewLvl(player, WM_DIABNEXTLVL, State.level);
+		}
+		if (player.isOnActiveLevel() && currlevel == State.level && !player._pLvlChanging)
 			State.phase = Phase::Waiting;
 		break;
 	case Phase::Waiting:
-		if (PartyOnLevel() && (Config.role == 0 || Exists("targets")))
+		if (State.level == 0) {
+			// The first peer decides when the party leaves town, so no bot waits for one that already left.
+			if (PartyOnLevel())
+				++State.townTicks;
+			const std::string leave = "town-" + std::to_string(State.cycle);
+			if (Config.role == 0 && State.townTicks >= 200)
+				Mark(leave);
+			if (Exists(leave))
+				AdvanceSoak();
+			break;
+		}
+		// The first peer writes the targets once the whole party is here; the others follow the file,
+		// because that peer may already have moved on from a level without living targets.
+		if (Config.role == 0 ? PartyOnLevel() : Exists(TargetsFile())) {
 			BeginFight();
+			if (State.monsters.empty()) {
+				WriteSample("no-targets");
+				AdvanceSoak();
+			}
+		}
 		break;
 	case Phase::Fighting:
-		Require(currlevel == Config.level && player.isOnActiveLevel(), "bot left the encounter level unexpectedly");
+		Require(currlevel == State.level && player.isOnActiveLevel(), "bot left the encounter level unexpectedly");
 		if (Config.leaveAfterKills != 0 && !State.left && Config.role >= Config.players - Config.leavers
 		    && std::count_if(State.monsters.begin(), State.monsters.end(), [](const MonsterRecord &m) { return m.death != 0; }) >= Config.leaveAfterKills) {
 			State.left = true;
@@ -984,6 +1107,11 @@ void Tick(bool before)
 		// Let native death/reward transactions and earlier commands settle before reading XP/loot.
 		if (++State.settleTicks < 128 || HasUnresolvedItemTransfers())
 			break;
+		if (SoakContinues()) {
+			WriteSample("cycle");
+			AdvanceSoak();
+			break;
+		}
 		Report();
 		State.phase = Phase::Done;
 		break;
@@ -1008,6 +1136,8 @@ void Tick(bool before)
 		      << ",\"unresolvedTransfers\":" << HasUnresolvedItemTransfers() << ",\"pendingRewards\":" << HasPendingPartyRewards()
 		      << ",\"localReward\":" << HasLocalPartyRewardTransfer() << ",\"active\":" << static_cast<unsigned>(gbActivePlayers) << ",\"reported\":" << AllReported() << "}\n";
 	}
+	if (Config.soakSeconds != 0 && State.tick % 1200 == 0 && State.phase != Phase::Gathering)
+		WriteSample("minute");
 	State.logicStart = std::chrono::steady_clock::now();
 }
 
@@ -1089,7 +1219,7 @@ int main(int argc, char **argv)
 {
 	using namespace devilution;
 	if (argc < 12) {
-		std::fprintf(stderr, "usage: %s directory role port players seed difficulty level composition characterLevel maxTicks tickRate [classic] [leaveAfterKills leavers targets friendlyFire]\n", argv[0]);
+		std::fprintf(stderr, "usage: %s directory role port players seed difficulty level composition characterLevel maxTicks tickRate [classic] [leaveAfterKills leavers targets friendlyFire [soakSeconds]]\n", argv[0]);
 		return 2;
 	}
 	Config.directory = argv[1];
@@ -1113,6 +1243,8 @@ int main(int argc, char **argv)
 		Config.targets = Argument(argv, 15);
 	if (argc > 16)
 		Config.friendlyFire = Argument(argv, 16) != 0;
+	if (argc > 17)
+		Config.soakSeconds = Argument(argv, 17);
 	Require(Config.players >= 1 && Config.players <= (Config.classic ? 4U : 8U), "invalid player count");
 	Require(Config.role < Config.players && Config.port > 0 && Config.port <= 65535, "invalid role or port");
 	Require(Config.level >= 1 && Config.level <= 16 && static_cast<unsigned>(Config.difficulty) <= DIFF_HELL, "invalid level or difficulty");

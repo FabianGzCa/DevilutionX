@@ -41,7 +41,7 @@ def kernel_queues(port):
 def run_case(build, output, *, players, seed, difficulty, level, composition,
              character_level, max_ticks=18000, tick_rate=255, classic=False,
              targets=32, targets_file=None, leave_after_kills=0, leavers=0,
-             friendly_fire=False, timeout=300):
+             friendly_fire=False, soak_seconds=0, timeout=300):
     build, output = Path(build).resolve(), Path(output).resolve()
     worker = build / 'balance_measurement_worker'
     if not worker.is_file():
@@ -63,7 +63,7 @@ def run_case(build, output, *, players, seed, difficulty, level, composition,
                        str(seed), str(difficulty), str(level), composition,
                        str(character_level), str(max_ticks), str(tick_rate),
                        'classic' if classic else 'extended', str(leave_after_kills),
-                       str(leavers), str(targets), str(int(friendly_fire))]
+                       str(leavers), str(targets), str(int(friendly_fire)), str(soak_seconds)]
             commands.append(command)
             log = (output / f'peer-{role}.log').open('w')
             logs.append(log)
@@ -111,7 +111,7 @@ def run_case(build, output, *, players, seed, difficulty, level, composition,
                      'characterLevel': character_level, 'maxTicks': max_ticks,
                      'tickRate': tick_rate, 'classic': classic, 'targets': targets,
                      'leaveAfterKills': leave_after_kills, 'leavers': leavers,
-                     'friendlyFire': friendly_fire},
+                     'friendlyFire': friendly_fire, 'soakSeconds': soak_seconds},
         'commands': commands, 'codes': [p.returncode for p in processes],
         'wallSeconds': time.monotonic() - started, 'failure': failure,
         'workerSha256': hashlib.sha256(worker.read_bytes()).hexdigest(),
@@ -141,20 +141,23 @@ def main():
     parser.add_argument('--friendly-fire', action='store_true')
     parser.add_argument('--leave-after-kills', type=int, default=0)
     parser.add_argument('--leavers', type=int, default=0)
+    parser.add_argument('--soak-seconds', type=int, default=0,
+                        help='Endurance mode: keep cycling town and dungeon levels for this long and append samples-N.jsonl')
     parser.add_argument('--timeout', type=float, default=300)
     args = parser.parse_args()
     if not args.composition or any(c not in 'WRS' for c in args.composition):
         parser.error('Composition must contain only W, R and S')
     if args.classic and args.players > 4:
         parser.error('Classic supports at most four participants')
-    if not 0 <= args.leavers < args.players or args.max_ticks <= 0 or args.targets < 0 or args.timeout <= 0:
+    if not 0 <= args.leavers < args.players or args.max_ticks <= 0 or args.targets < 0 or args.timeout <= 0 or args.soak_seconds < 0:
         parser.error('Invalid departure count, target count or duration')
     summary = run_case(args.build_dir, args.output, players=args.players, seed=args.seed,
                        difficulty=args.difficulty, level=args.level, composition=args.composition,
                        character_level=args.character_level, max_ticks=args.max_ticks,
                        tick_rate=args.tick_rate, classic=args.classic, targets=args.targets,
                        targets_file=args.targets_file, leave_after_kills=args.leave_after_kills,
-                       leavers=args.leavers, friendly_fire=args.friendly_fire, timeout=args.timeout)
+                       leavers=args.leavers, friendly_fire=args.friendly_fire,
+                       soak_seconds=args.soak_seconds, timeout=args.timeout)
     print(json.dumps({'codes': summary['codes'], 'wallSeconds': summary['wallSeconds'],
                       'failure': summary['failure'],
                       'outcomes': [r and r['outcome'] for r in summary['results']],

@@ -192,7 +192,34 @@ void RecordLeftPlayer(_SNETEVENT *event)
 	LeftPlayers.push_back(static_cast<uint8_t>(event->playerid));
 }
 
-TEST(TcpClientConnectionLoss, LostServerKeepsTheSessionUsableUntilTheHostIsDropped)
+class TcpClientConnectionLoss : public testing::Test {
+protected:
+	~TcpClientConnectionLoss() override
+	{
+		CloseServer();
+	}
+
+	void StartServer(const buffer_t &info)
+	{
+		server_ = std::make_unique<tcp_server>(context_, "127.0.0.1", 0, factory_, info);
+		thread_ = std::thread([this] { context_.run(); });
+	}
+
+	void CloseServer()
+	{
+		if (thread_.joinable()) {
+			asio::post(context_, [this] { server_->Close(); });
+			thread_.join();
+		}
+	}
+
+	asio::io_context context_;
+	packet_factory factory_;
+	std::unique_ptr<tcp_server> server_;
+	std::thread thread_;
+};
+
+TEST_F(TcpClientConnectionLoss, LostServerKeepsTheSessionUsableUntilTheHostIsDropped)
 {
 	GameData data {};
 	data.size = sizeof(data);
@@ -200,11 +227,8 @@ TEST(TcpClientConnectionLoss, LostServerKeepsTheSessionUsableUntilTheHostIsDropp
 	SwapGameDataLE(data);
 	const auto *bytes = reinterpret_cast<const unsigned char *>(&data);
 	const buffer_t info { bytes, bytes + sizeof(data) };
-	asio::io_context context;
-	packet_factory factory;
-	auto server = std::make_unique<tcp_server>(context, "127.0.0.1", 0, factory, info);
-	const std::string address = server->LocalhostSelf();
-	std::thread thread([&] { context.run(); });
+	StartServer(info);
+	const std::string address = server_->LocalhostSelf();
 	tcp_client host;
 	tcp_client client;
 	for (tcp_client *peer : { &host, &client }) {
@@ -226,8 +250,7 @@ TEST(TcpClientConnectionLoss, LostServerKeepsTheSessionUsableUntilTheHostIsDropp
 	ASSERT_EQ(size, 1U);
 
 	// The host disappears without a goodbye, as when its process or network fails.
-	asio::post(context, [&] { server->Close(); });
-	thread.join();
+	CloseServer();
 	bool lost = false;
 	while (!lost && std::chrono::steady_clock::now() < deadline + std::chrono::seconds(5)) {
 		lost = !client.poll().has_value();

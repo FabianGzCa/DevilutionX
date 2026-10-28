@@ -33,6 +33,8 @@ Download the latest [DevilutionX release](https://github.com/diasurgical/devilut
 
 For more detailed instructions: [Installation Instructions](./docs/installing.md).
 
+To host or join games for five to eight players, see [Extended multiplayer games](./docs/extended-multiplayer.md).
+
 # Contributing
 
 We are always looking for more people to help with [coding](docs/CONTRIBUTING.md), [documentation](https://github.com/diasurgical/devilutionX/wiki), [testing the latest builds](#test-builds), spreading the word, or simply just hanging out on our [Discord server](https://discord.gg/devilutionx-518540764754608128).

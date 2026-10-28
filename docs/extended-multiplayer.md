@@ -49,6 +49,13 @@ hit point, until a hit in the attacker's own game kills it. Groups that strike
 together therefore finish monsters slightly sooner in extended games, even with
 four players.
 
+## Telling players apart
+
+Players five to eight reuse the original four automap and outline colors. To
+number every player on the automap, the party portraits and the monster health
+bar tags, enable **Settings → Gameplay → Player Identifiers**. It only changes
+your own display. See [Optional player identifiers](player-identifiers.md).
+
 ## Limitations
 
 - **No host migration.** In a TCP game the host is the server: when the host

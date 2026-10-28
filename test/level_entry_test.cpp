@@ -1102,8 +1102,8 @@ TEST_F(LevelEntryPlacementTest, ActualDungeonStairsKeepEightEntrantsOnReachableF
 {
 	if (!HaveMainData())
 		LoadGameArchives();
-	if (!HaveMainData())
-		GTEST_SKIP() << "MPQ assets (spawn.mpq or DIABDAT.MPQ) not found - skipping generated maps";
+	if (!HaveMainData() || gbIsSpawn)
+		GTEST_SKIP() << "DIABDAT.MPQ not found - the shareware data has no catacomb, cave or hell levels";
 	InitQuests();
 	MyPlayer->pOriginalCathedral = true;
 	for (const int level : { 1, 5, 9, 13 }) {
@@ -1146,8 +1146,8 @@ TEST_F(LevelEntryPlacementTest, ActualQuestMapEntrancesKeepEightPlayersOffReturn
 {
 	if (!HaveMainData())
 		LoadGameArchives();
-	if (!HaveMainData())
-		GTEST_SKIP() << "DIABDAT.MPQ not found - skipping quest maps";
+	if (!HaveMainData() || gbIsSpawn)
+		GTEST_SKIP() << "DIABDAT.MPQ not found - the shareware data has no quest maps";
 	setlevel = true;
 	for (const _setlevels quest : { SL_SKELKING, SL_BONECHAMB, SL_POISONWATER }) {
 		SCOPED_TRACE(quest);

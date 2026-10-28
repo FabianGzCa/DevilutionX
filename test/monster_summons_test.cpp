@@ -382,8 +382,8 @@ TEST_F(MonsterSummonsTest, NormalAndExtendedSessionsGenerateIdenticalEnemyPopula
 {
 	if (!HaveMainData())
 		LoadGameArchives();
-	if (!HaveMainData())
-		GTEST_SKIP() << "DIABDAT.MPQ not found - skipping actual monster populations";
+	if (!HaveMainData() || gbIsSpawn)
+		GTEST_SKIP() << "DIABDAT.MPQ not found - the shareware data has no catacomb, cave or hell levels";
 	MyPlayer->pOriginalCathedral = true;
 	for (const int level : { 1, 5, 9, 13 }) {
 		SCOPED_TRACE(level);

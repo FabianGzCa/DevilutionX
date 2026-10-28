@@ -35,6 +35,15 @@ sudo apt-get install smpq
 sudo dnf install cmake gcc-c++ glibc-devel libstdc++-static SDL2-devel SDL2_image-devel libsodium-devel libpng-devel bzip2-devel gmock-devel gtest-devel google-benchmark-devel libasan libubsan libpfm-devel
 ```
 
+### Installing dependencies on Arch Linux
+
+```
+sudo pacman -S --needed cmake gcc ninja sdl2-compat sdl2_image libsodium libpng bzip2 gtest benchmark
+```
+
+`sdl2-compat` provides SDL2 on current Arch. For translations also install `gettext`; `smpq` is
+available from the AUR.
+
 ### Compiling
 
 ```bash

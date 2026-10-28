@@ -1,5 +1,8 @@
 # Multiplayer session compatibility
 
+This document describes the protocol. For how to create and join games, see
+[Extended multiplayer games](extended-multiplayer.md).
+
 ## Scope
 
 Classic sessions retain four player slots and the existing wire layout. The

@@ -263,3 +263,87 @@ receipt set; snapshots preserve this table and restoration merges locally seen
 early votes. This prevents a receiver waiting forever for a vote that arrived
 before it knew the offer. The table adds at most 785 bytes to the junk snapshot,
 within the existing 16-bit transfer limit.
+
+## Revision 1 measurements
+
+Revision 1 was measured with the tool described in
+[multiplayer testing](multiplayer-testing.md#balance-measurements): one headless
+engine process per player over loopback TCP, each driven by a bot that sends
+the same commands a player would. The bots clear the 32 reachable enemies
+nearest to the entrance. Five through eight players reuse the four-player target
+list of the same seed. Friendly Fire is off and the logic cadence is raised
+equally for all sizes; times are normalized to 20 ticks per second.
+
+Main matrix: Normal level 2 (character level 6), Normal level 6 (14),
+Nightmare level 3 (30) and Hell level 2 (40); all-Warrior, all-Rogue,
+all-Sorcerer and mixed parties; seeds 20001–20005; four to eight players. Of the
+400 runs, 371 cleared, 18 timed out and 10 ended in a party wipe (all three
+excluded from the ratios). One run stalled while closing and was excluded; 23
+repeats of that run did not stall. Five through eight players accounted for
+20438 eligible random deaths. Pooled ratios against four players, paired by
+cell and seed, with 95% t intervals:
+
+| Players | Pairs | Duration | XP per living contributor per minute | Random drops per contributor per minute | Drops per eligible death ÷ (N/4) | Player deaths per player (difference) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 5 | 72 | 108% [100–116] | 101% [96–106] | 97% [93–102] | 99.7% [97.9–101.5] | +0.02 [0.00–0.05] |
+| 6 | 74 | 107% [100–114] | 101% [97–106] | 98% [94–102] | 99.7% [97.9–101.4] | +0.03 [0.00–0.05] |
+| 7 | 73 | 112% [103–121] | 100% [95–105] | 100% [94–106] | 100.8% [98.4–103.2] | +0.02 [0.00–0.05] |
+| 8 | 73 | 106% [101–112] | 104% [99–108] | 102% [97–107] | 100.1% [97.4–102.7] | +0.02 [0.00–0.03] |
+
+The four-player references had almost no player deaths, so deaths and potions
+are reported as absolute differences rather than ratios. Potion use per player
+fell with eight players, by 0.6 [0.2–1.1] potions per encounter. Bots
+spent 2–6% of their time with a target they could not attack; this share does
+not grow with party size in the catacomb and cave layouts. Per-cell intervals are wide
+(five seeds) and mostly inconclusive. The only cells entirely outside a
+tolerance are isolated and point in opposite directions.
+
+Random loot *value* per contributor per minute measured 110–149% of four
+players, but this figure is not an independent sample. The extra roll continues
+the monster's native item generator, so a monster gives the same extra item in
+every run of its seed, whatever the party. The 1419 extra items in the matrix
+are only 210 distinct items, and a few items worth 8000–14400 gold decide the
+mean. Counted once each, extra items are worth 138% [94–206] of native items.
+An engine-level comparison over 200000 monster seeds per type, with no bots,
+found chained extra rolls within ±4% of native and independent rolls in value
+and within 1% in item count, in Normal and Hell, for normal and unique monsters.
+The number of drops matches the formula exactly (table above).
+
+Special scenarios, on the same seeds and targets:
+
+- Four players in a Classic session, against Extended with four present
+  (Normal, all compositions, 37 pairs): identical heroes, kills, potion use and
+  XP per contribution, but encounters took 110% [105–115] as long. Monsters
+  survived 8% longer from first damage to death, while every peer saw each
+  death within the same few ticks in both modes. Classic is unchanged native
+  code; the likely cause is that Extended applies each published hit once in
+  every engine. Measured against Classic four, five to eight players would
+  take about 97–102%, near the lower duration bound. This is recorded for
+  review, not adjusted.
+- Bosses: the Butcher (Normal level 2) and the Skeleton King (Nightmare
+  level 3) fell inside the matrix with no change in outcome by party size,
+  apart from one Skeleton King seed with three to five player deaths for five
+  to eight players. Diablo was not measured: these bots cannot survive deep
+  Hell levels.
+- Departures: with eight players, two left after 16 target deaths in 20 runs.
+  The scale stayed at eight (high-water) with six present and no run failed;
+  17 cleared and 3 timed out, taking 113% [99–127] as long as eight players.
+- Friendly Fire, measured separately with mixed parties: eight players had more
+  party wipes (7 of 20 against 3 of 20 with four) and used 3.0 [1.6–4.5] more
+  potions per player than four. Bots do not avoid hitting allies, and the
+  formulas do not change friendly damage, so this is left to human playtests.
+
+Performance at the native 20 ticks per second, run one at a time on the same
+machine (Hell level 2 mixed and Normal level 6 Warriors, three seeds each):
+game logic took 0.04–0.05 ms per tick with four players and 0.10–0.12 ms with
+eight, with a worst 95th percentile of 0.73 ms against the 50 ms tick. Ticks
+stayed 50.0 ms apart on average for both sizes (95th percentile at most
+50.6 ms, one 73.8 ms outlier with eight). Each process used about 21 MiB, 1–2%
+more with eight, and at most two turns were in transit for both sizes.
+Rendering cost was not measured, since these processes are headless.
+
+Decision: no dimension has intervals consistently outside its tolerance, so
+the revision 1 formulas are unchanged and no new balance revision is needed.
+These are automated engine measurements with simple bots. They do not show that
+five to eight human players find the game clear, uncongested or fun. Human
+playtests remain pending.

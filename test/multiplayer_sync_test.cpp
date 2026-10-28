@@ -1114,6 +1114,37 @@ TEST_F(PlayerSynchronizationTest, ClassicDropKeepsItsHeldItemWhenTheFloorFillsBe
 	EXPECT_NE(FindGetItem(held._iSeed, held.IDidx, held._iCreateInfo), -1);
 }
 
+TEST_F(PlayerSynchronizationTest, ClassicExitAppliesPendingDropsBeforeSavingTheHand)
+{
+	for (const bool fullFloor : { false, true }) {
+		SCOPED_TRACE(fullFloor);
+		delta_init();
+		PrepareGoldPickupArea(0);
+		CopyUtf8(MyPlayer->_pName, "DropTest", sizeof(MyPlayer->_pName));
+		InitializeItem(MyPlayer->HoldItem, IDI_HEAL);
+		MyPlayer->HoldItem._iSeed = 25004;
+		NewCursor(MyPlayer->HoldItem);
+		const Item held = MyPlayer->HoldItem;
+		Drain();
+		ASSERT_TRUE(TryDropItem());
+		ASSERT_TRUE(IsItemTransferPending());
+		if (fullFloor)
+			ActiveItemCount = MAXITEMS;
+		FinishItemTransfers();
+		EXPECT_FALSE(IsItemTransferPending());
+		EXPECT_EQ(MyPlayer->HoldItem.isEmpty(), !fullFloor);
+		TemporaryHeldItemSave archive;
+		archive.Save(*MyPlayer);
+		MyPlayer->HoldItem.clear();
+		EXPECT_EQ(archive.Load(*MyPlayer), fullFloor);
+		if (fullFloor) {
+			EXPECT_TRUE(MyPlayer->HoldItem.keyAttributesMatch(held._iSeed, held.IDidx, held._iCreateInfo));
+		} else {
+			EXPECT_NE(FindGetItem(held._iSeed, held.IDidx, held._iCreateInfo), -1);
+		}
+	}
+}
+
 TEST_F(PlayerSynchronizationTest, ClassicDropKeepsItsHeldItemWhenTheDeltaFillsBeforeApplication)
 {
 	PrepareGoldPickupArea(0);

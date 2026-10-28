@@ -3874,8 +3874,13 @@ void LeaveItemTransfers(uint8_t player)
 
 void FinishItemTransfers()
 {
-	if (!ItemTransfersEnabled)
+	if (!ItemTransfersEnabled) {
+		// Classic sends have local echoes too. Settle the retained hand before
+		// saving it, so a completed drop cannot also survive in the profile.
+		if (gbIsMultiplayer && !PendingItemDrops.empty())
+			ProcessGameMessagePackets();
 		return;
+	}
 	FlushStagedItemCreations();
 	const uint32_t started = SDL_GetTicks();
 	while ((!LocalItemTransfers.empty() || !OwnedItemDrops.empty() || HasPendingPartyRewards()) && !ItemTransfers.Stopped() && SDL_GetTicks() - started < 10000) {

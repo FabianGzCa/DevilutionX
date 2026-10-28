@@ -14,6 +14,12 @@
 #include <thread>
 #include <vector>
 
+#ifdef USE_SDL3
+#include <SDL3/SDL_timer.h>
+#else
+#include <SDL_timer.h>
+#endif
+
 #include "cursor.h"
 #include "diablo.h"
 #include "engine/assets.hpp"

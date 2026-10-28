@@ -64,6 +64,11 @@ bool shareNextHighPriorityMessage;
 uint8_t gbActivePlayers;
 bool gbGameDestroyed;
 bool sgbSendDeltaTbl[PlayerStorageCapacity];
+/**
+ * Extended joiners repeat their snapshot request until it starts, so a donor answers it once.
+ * Any departure can change a joiner's donor and its retry must then be answered again.
+ */
+bool sgbDeltaSentTbl[PlayerStorageCapacity];
 bool gbSelectProvider;
 int sglTimeoutStart;
 leaveinfo_t sgdwPlayerLeftReasonTbl[PlayerStorageCapacity];
@@ -245,7 +250,8 @@ void HandleTurnUpperBit(uint8_t pnum)
 	}
 
 	if (MyPlayerId == i) {
-		sgbSendDeltaTbl[pnum] = true;
+		if (sgGameInitInfo.rules != ExtendedSessionRules || !sgbDeltaSentTbl[pnum])
+			sgbSendDeltaTbl[pnum] = true;
 	} else if (pnum == MyPlayerId) {
 		gbDeltaSender = i < Players.size() ? i : NoDeltaSender;
 	}
@@ -526,6 +532,7 @@ void HandleEvents(_SNETEVENT *pEvt)
 			gbSomebodyWonGameKludge = true;
 
 		sgbSendDeltaTbl[playerId] = false;
+		memset(sgbDeltaSentTbl, 0, sizeof(sgbDeltaSentTbl));
 
 		if (gbDeltaSender == playerId)
 			delta_reset_transfer();
@@ -740,6 +747,7 @@ void multi_player_left(uint8_t pnum, leaveinfo_t reason)
 	sgbPlayerLeftGameTbl[pnum] = true;
 	sgbPlayerTurnBitTbl[pnum] = false;
 	sgbSendDeltaTbl[pnum] = false;
+	memset(sgbDeltaSentTbl, 0, sizeof(sgbDeltaSentTbl));
 	if (gbDeltaSender == pnum)
 		delta_reset_transfer();
 	sgdwPlayerLeftReasonTbl[pnum] = reason;
@@ -762,6 +770,7 @@ bool multi_handle_delta()
 	for (uint8_t i = 0; i < Players.size(); i++) {
 		if (sgbSendDeltaTbl[i]) {
 			sgbSendDeltaTbl[i] = false;
+			sgbDeltaSentTbl[i] = true;
 			DeltaExportData(i);
 			// Let the transport drain between large snapshots for concurrent joins.
 			if (sgGameInitInfo.rules == ExtendedSessionRules)
@@ -922,6 +931,11 @@ DVL_API_FOR_TEST void TestRegisterNetEventHandlers()
 	RegisterNetEventHandlers();
 }
 
+DVL_API_FOR_TEST bool TestDeltaRequested(uint8_t player)
+{
+	return sgbSendDeltaTbl[player];
+}
+
 DVL_API_FOR_TEST void TestCheckDropPlayer()
 {
 	CheckDropPlayer();
@@ -938,6 +952,7 @@ bool NetInit(bool bSinglePlayer)
 		memset(sgbPlayerLeftGameTbl, 0, sizeof(sgbPlayerLeftGameTbl));
 		memset(sgdwPlayerLeftReasonTbl, 0, sizeof(sgdwPlayerLeftReasonTbl));
 		memset(sgbSendDeltaTbl, 0, sizeof(sgbSendDeltaTbl));
+		memset(sgbDeltaSentTbl, 0, sizeof(sgbDeltaSentTbl));
 		Players.clear();
 		MyPlayer = nullptr;
 		InspectPlayer = nullptr;

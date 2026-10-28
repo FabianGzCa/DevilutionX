@@ -142,6 +142,13 @@ void nthread_set_turn_upper_bit()
 	turn_upper_bit = 0x80000000;
 }
 
+#ifdef BUILD_TESTING
+bool TestTurnUpperBitArmed()
+{
+	return turn_upper_bit != 0;
+}
+#endif
+
 void nthread_start(bool setTurnUpperBit)
 {
 	last_tick = SDL_GetTicks();

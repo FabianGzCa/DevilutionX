@@ -2932,5 +2932,49 @@ TEST_F(PlayerSynchronizationTest, TcpEngineReceivesSevenRemotePlayersAtTheSameTu
 }
 #endif
 
+TEST_F(MultiplayerSyncTest, ExtendedJoinersRepeatTheSnapshotRequestAndDonorsAnswerOnce)
+{
+	// Joiner: the donor is known, but no snapshot fragment has arrived. Its first request turn
+	// may have been numbered behind the donor and dropped, so every later turn repeats it.
+	msg_start_resync();
+	player_state[MyPlayerId] = PS_CONNECTED;
+	Players[7].plractive = true;
+	gbActivePlayers = 2;
+	player_state[7] = PS_CONNECTED;
+	gbDeltaSender = 7;
+	EXPECT_LT(TestWaitForTurns(), 100);
+	EXPECT_TRUE(TestTurnUpperBitArmed());
+	gbBufferMsgs = 0;
+
+	// Donor: a repeated request is answered once per occupant of the joining slot.
+	std::fill_n(player_state, PlayerStorageCapacity, 0);
+	player_state[MyPlayerId] = PS_CONNECTED;
+	uint32_t request = 0x80000001;
+	const auto receiveRequest = [&] {
+		player_state[5] = PS_CONNECTED | PS_TURN_ARRIVED;
+		gdwMsgLenTbl[5] = sizeof(request);
+		glpMsgTbl[5] = reinterpret_cast<uintptr_t>(&request);
+		multi_msg_countdown();
+	};
+	receiveRequest();
+	EXPECT_TRUE(TestDeltaRequested(5));
+	ASSERT_TRUE(multi_handle_delta());
+	EXPECT_FALSE(TestDeltaRequested(5));
+	receiveRequest();
+	EXPECT_FALSE(TestDeltaRequested(5));
+	// Another departure may move the joiner to a new donor and back: answer the retry again.
+	Players[6].plractive = true;
+	multi_player_left(6, leaveinfo_t::LEAVE_DROP);
+	receiveRequest();
+	EXPECT_TRUE(TestDeltaRequested(5));
+	ASSERT_TRUE(multi_handle_delta());
+	multi_player_left(5, leaveinfo_t::LEAVE_DROP);
+	receiveRequest();
+	EXPECT_TRUE(TestDeltaRequested(5));
+	gdwMsgLenTbl[5] = 0;
+	glpMsgTbl[5] = 0;
+	std::fill_n(player_state, PlayerStorageCapacity, 0);
+}
+
 } // namespace
 } // namespace devilution

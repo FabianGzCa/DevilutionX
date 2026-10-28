@@ -26,6 +26,10 @@ void nthread_terminate_game(const char *pszFcn);
 uint32_t nthread_send_and_recv_turn(uint32_t curTurn, int turnDelta);
 bool nthread_recv_turns(bool *pfSendAsync = nullptr);
 void nthread_set_turn_upper_bit();
+#ifdef BUILD_TESTING
+/** Whether the next turn this engine sends asks for a world snapshot. */
+DVL_API_FOR_TEST bool TestTurnUpperBitArmed();
+#endif
 void nthread_start(bool setTurnUpperBit);
 void nthread_cleanup();
 void nthread_ignore_mutex(bool bStart);

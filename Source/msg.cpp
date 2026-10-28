@@ -628,6 +628,10 @@ int WaitForTurns()
 		gbDeltaSender = MyPlayerId;
 		nthread_set_turn_upper_bit();
 	}
+	// Peers drop turns numbered behind their own, which a joiner's first turns can be. Extended
+	// joiners therefore repeat the snapshot request until it starts; the donor answers it once.
+	if (sgGameInitInfo.rules == ExtendedSessionRules && !deltaTransferComplete && receivingDeltaSender == NoDeltaSender)
+		nthread_set_turn_upper_bit();
 	if (deltaTransferComplete) {
 		// Show completion once; the progress dialog closes on the following call.
 		if (sgbDeltaChunks == MaxChunks)

@@ -97,6 +97,9 @@ namespace devilution {
 Item Items[MAXITEMS + 1];
 uint8_t ActiveItems[MAXITEMS];
 uint8_t ActiveItemCount;
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST void (*TestMonsterLootObserver)(const Monster &, const Item *) = nullptr;
+#endif
 int8_t dItem[MAXDUNX][MAXDUNY];
 bool ShowUniqueItemInfoBox;
 CornerStoneStruct CornerStone;
@@ -3491,8 +3494,13 @@ void SpawnItem(Monster &monster, Point position, bool sendmsg, bool spawn /*= fa
 	if (idx == IDI_NONE)
 		return;
 
-	if (!HasWorldItemSpace())
+	if (!HasWorldItemSpace()) {
+#ifdef BUILD_TESTING
+		if (TestMonsterLootObserver != nullptr)
+			TestMonsterLootObserver(monster, nullptr);
+#endif
 		return;
+	}
 
 	const int ii = AllocateItem();
 	auto &item = Items[ii];
@@ -3510,6 +3518,10 @@ void SpawnItem(Monster &monster, Point position, bool sendmsg, bool spawn /*= fa
 		NetSendCmdPItem(false, CMD_SPAWNITEM, item.position, item);
 
 	StageGeneratedItem(item);
+#ifdef BUILD_TESTING
+	if (TestMonsterLootObserver != nullptr)
+		TestMonsterLootObserver(monster, &item);
+#endif
 }
 
 void CreateRndItem(Point position, bool onlygood, bool sendmsg, bool delta)

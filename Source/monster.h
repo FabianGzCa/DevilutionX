@@ -560,6 +560,10 @@ void KillGolem(Monster &golem);
 void M_StartKill(Monster &monster, const Player &player);
 void StartPartyMonsterDeath(Monster &monster, const Player &player);
 void FinalizePartyMonsterReward(Monster &monster, bool sendmsg, uint8_t participants, uint8_t extraRolls);
+#ifdef BUILD_TESTING
+/** Observes each monster reward before its native loot is spawned. */
+extern DVL_API_FOR_TEST void (*TestMonsterRewardObserver)(const Monster &monster);
+#endif
 bool IsPartyRandomLoot(uint16_t type, uint8_t unique);
 
 void M_SyncStartKill(Monster &monster, Point position, const Player &player);

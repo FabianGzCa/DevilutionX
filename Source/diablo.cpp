@@ -140,6 +140,9 @@ bool gbRunGameResult;
 bool ReturnToMainMenu;
 /** Enable updating of player character, set to false once Diablo dies */
 bool gbProcessPlayers;
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST void (*TestGameLogicHook)(bool before) = nullptr;
+#endif
 bool gbLoadGame;
 bool cineflag;
 int PauseMode;
@@ -1535,6 +1538,10 @@ void GameLogic()
 	if (!ProcessInput()) {
 		return;
 	}
+#ifdef BUILD_TESTING
+	if (TestGameLogicHook != nullptr)
+		TestGameLogicHook(true);
+#endif
 	if (gbProcessPlayers) {
 		gGameLogicStep = GameLogicStep::ProcessPlayers;
 		ProcessPlayers();
@@ -1576,6 +1583,10 @@ void GameLogic()
 	pfile_update(false);
 
 	plrctrls_after_game_logic();
+#ifdef BUILD_TESTING
+	if (TestGameLogicHook != nullptr)
+		TestGameLogicHook(false);
+#endif
 }
 
 void TimeoutCursor(bool bTimeout)

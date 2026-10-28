@@ -78,6 +78,10 @@ void ProcessGameMessagePackets();
 void multi_send_zero_packet(uint8_t pnum, _cmd_id bCmd, const std::byte *data, size_t size);
 void NetClose();
 bool NetInit(bool bSinglePlayer);
+#ifdef BUILD_TESTING
+/** Replaces the provider and game menus so a test process can create or join a session itself. */
+extern DVL_API_FOR_TEST bool (*TestSelectMultiplayerGame)(GameData *gameData, int *playerId);
+#endif
 void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv);
 
 } // namespace devilution

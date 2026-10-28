@@ -93,6 +93,10 @@ void InitKeymapActions();
 void SetCursorPos(Point position);
 void FreeGameMem();
 bool StartGame(bool bNewGame, bool bSinglePlayer);
+#ifdef BUILD_TESTING
+/** Observes the start and end of a complete logic tick; the start may issue local player commands. */
+extern DVL_API_FOR_TEST void (*TestGameLogicHook)(bool before);
+#endif
 [[noreturn]] void diablo_quit(int exitStatus);
 int DiabloMain(int argc, char **argv);
 bool TryIconCurs();

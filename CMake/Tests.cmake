@@ -67,6 +67,9 @@ if(UNIX AND NOT NONET AND NOT DISABLE_TCP)
   add_executable(multiplayer_gameplay_worker test/helpers/multiplayer_gameplay_worker.cpp)
   target_link_dependencies(multiplayer_gameplay_worker PRIVATE libdevilutionx_so)
   set_target_properties(multiplayer_gameplay_worker PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_executable(balance_measurement_worker test/helpers/balance_measurement_worker.cpp)
+  target_link_dependencies(balance_measurement_worker PRIVATE libdevilutionx_so)
+  set_target_properties(balance_measurement_worker PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 endif()
 
 set(standalone_tests

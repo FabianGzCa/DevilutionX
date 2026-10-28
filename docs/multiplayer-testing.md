@@ -91,3 +91,40 @@ joins and authorized public discovery. Record timeouts and actual host-loss
 behavior. Close all test rooms afterward. Real provider traffic on one computer
 is not evidence of multiple machines, WAN conditions, another platform, or a long
 campaign. Record those limits separately instead of inferring them from CTest.
+
+## Balance measurements
+
+`balance_measurement_worker` plays a real headless game: one process per player,
+native TCP on loopback, the complete game loop, level generation, monster AI,
+missiles, damage, potions, experience and loot. Two test-only hooks replace the
+game menus with a direct create or join and give a bot one decision per logic
+tick. The bot sends the same network commands a player's input would (walk,
+melee, ranged attack, spell, potion), so each player's damage and potions are
+applied in that player's own engine. Observers count monster rewards and loot
+without changing them.
+
+Heroes are deterministic for a class and character level. Each slot receives
+native magic items: the generator scans a fixed seed range and keeps the first
+item that reaches a damage or armor target, with an item level that native
+validation accepts. The first peer records the nearest reachable enemies as the
+encounter targets. Larger parties can reuse that list with `--targets-file`, so
+four and eight players face the same enemies of the same level.
+
+Run one encounter from the repository root after building `classic-tests`:
+
+```sh
+python3 tools/measure_multiplayer_balance.py --build-dir build/classic-tests \
+  --output /absolute/private/evidence/p4 --players 4 --seed 20001 \
+  --difficulty 0 --level 2 --composition WRS --character-level 6
+```
+
+The output directory holds per-player logs, hero manifests, the target list,
+`result-N.json` and `summary.json` with the commands, exit codes, worker hash,
+sampled loopback TCP queues, time spent in each logic tick and the interval
+between ticks. Durations are logic ticks; divide by 20 for seconds at native game
+speed. `--tick-rate` runs the game faster than native speed for balance batches;
+measure performance at 20. Wall-clock time is never a rendering frame rate.
+
+Bots do not dodge, retreat, trade or judge risk the way people do. Their results
+measure the engine's workload and rewards under controlled play, not how clear,
+crowded or enjoyable a session feels; that still needs human playtests.

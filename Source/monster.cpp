@@ -109,6 +109,9 @@
 #endif
 
 namespace devilution {
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST void (*TestMonsterRewardObserver)(const Monster &) = nullptr;
+#endif
 
 CMonster LevelMonsterTypes[MaxLvlMTypes];
 size_t LevelMonsterTypeCount;
@@ -921,6 +924,10 @@ void DiabloDeath(Monster &diablo, bool sendmsg)
 
 void SpawnLoot(Monster &monster, bool sendmsg)
 {
+#ifdef BUILD_TESTING
+	if (TestMonsterRewardObserver != nullptr)
+		TestMonsterRewardObserver(monster);
+#endif
 	if (monster.type().type == MT_HORKSPWN) {
 		return;
 	}

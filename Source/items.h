@@ -531,6 +531,10 @@ _item_indexes RndItemForMonsterLevel(int8_t monsterLevel);
 void SetupAllItems(const Player &player, Item &item, _item_indexes idx, uint32_t iseed, int lvl, int uper, bool onlygood, bool pregen, int uidOffset = 0, bool forceNotUnique = false);
 void TryRandomUniqueItem(Item &item, _item_indexes idx, int8_t mLevel, int uper, bool onlygood, bool pregen);
 void SpawnItem(Monster &monster, Point position, bool sendmsg, bool spawn = false);
+#ifdef BUILD_TESTING
+/** Observes each random monster drop; the item is null when the level had no room for it. */
+extern DVL_API_FOR_TEST void (*TestMonsterLootObserver)(const Monster &monster, const Item *item);
+#endif
 void CreateRndItem(Point position, bool onlygood, bool sendmsg, bool delta);
 void CreateRndUseful(Point position, bool sendmsg);
 void CreateTypeItem(Point position, bool onlygood, ItemType itemType, int imisc, bool sendmsg, bool delta, bool spawn = false);

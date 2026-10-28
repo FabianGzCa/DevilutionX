@@ -588,6 +588,13 @@ bool InitMulti(GameData *gameData)
 	int playerId;
 
 	while (true) {
+#ifdef BUILD_TESTING
+		if (TestSelectMultiplayerGame != nullptr) {
+			if (!TestSelectMultiplayerGame(gameData, &playerId))
+				return false;
+			break;
+		}
+#endif
 		if (gbSelectProvider && !UiSelectProvider(gameData)) {
 			return false;
 		}
@@ -909,6 +916,8 @@ void NetClose()
 }
 
 #ifdef BUILD_TESTING
+DVL_API_FOR_TEST bool (*TestSelectMultiplayerGame)(GameData *gameData, int *playerId) = nullptr;
+
 DVL_API_FOR_TEST void TestRegisterNetEventHandlers()
 {
 	RegisterNetEventHandlers();

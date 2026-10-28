@@ -424,10 +424,13 @@ void DeactivateVision(size_t id)
 	if (id >= VisionActive.size() || !VisionActive[id])
 		return;
 
-	const Light &vision = VisionList[id];
-	DoUnVision(vision.position.tile, vision.radius);
-	if (vision.hasChanged)
-		DoUnVision(vision.position.old, vision.oldRadius);
+	// Town stays fully lit and does not refresh dungeon vision after an admission or departure.
+	if (leveltype != DTYPE_TOWN) {
+		const Light &vision = VisionList[id];
+		DoUnVision(vision.position.tile, vision.radius);
+		if (vision.hasChanged)
+			DoUnVision(vision.position.old, vision.oldRadius);
+	}
 	VisionActive[id] = false;
 	UpdateVision = true;
 }

@@ -1762,6 +1762,32 @@ TEST_F(MultiplayerSyncTest, VisionTracksEightPlayersAcrossLevelsDeathAndDepartur
 	InitLighting();
 }
 
+TEST_F(MultiplayerSyncTest, RemovingTownVisionPreservesNativeIllumination)
+{
+	InitLighting();
+	currlevel = 0;
+	leveltype = DTYPE_TOWN;
+	std::array<DungeonFlag, MAXDUNX * MAXDUNY> savedFlags;
+	std::copy(&dFlags[0][0], &dFlags[0][0] + savedFlags.size(), savedFlags.begin());
+
+	for (size_t playerId = 0; playerId < PlayerStorageCapacity; ++playerId) {
+		SCOPED_TRACE(playerId);
+		// Town sets every tile lit and does not run the dungeon vision refresh.
+		std::fill(&dFlags[0][0], &dFlags[0][0] + savedFlags.size(), DungeonFlag::Lit);
+		const Point position { 40, 50 };
+		ActivateVision(position, 4, playerId);
+		ChangeVisionXY(playerId, position + Displacement { 1, 1 });
+
+		DeactivateVision(playerId);
+
+		EXPECT_FALSE(VisionActive[playerId]);
+		EXPECT_TRUE(std::all_of(&dFlags[0][0], &dFlags[0][0] + savedFlags.size(), [](DungeonFlag flags) { return HasAnyOf(flags, DungeonFlag::Lit); }));
+	}
+
+	std::copy(savedFlags.begin(), savedFlags.end(), &dFlags[0][0]);
+	InitLighting();
+}
+
 TEST_F(MultiplayerSyncTest, LightingPoolRejectsExhaustionAndReclaimsReleasedEntries)
 {
 	InitLighting();

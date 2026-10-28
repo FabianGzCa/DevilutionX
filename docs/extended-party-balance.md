@@ -355,6 +355,15 @@ stayed 50.0 ms apart on average for both sizes (95th percentile at most
 more with eight, and at most two turns were in transit for both sizes.
 Rendering cost was not measured, since these processes are headless.
 
+A comparable check after the regeneration fix (mixed parties in Normal level 2,
+Normal level 6 and Hell level 2, the same seeds and targets, 14 pairs) moved
+eight against four from 110% [100–119] to 116% [105–127] in duration and from
+99% [92–106] to 94% [87–101] in XP per minute. Restoring regeneration helps
+larger parties more, because their tougher monsters receive more remote hits.
+Neither interval lies entirely outside its tolerance, and longer is the
+permitted direction, so the decision below stands. A full matrix should be
+repeated before balance is called settled.
+
 Decision: no dimension has intervals consistently outside its tolerance, so
 the revision 1 formulas are unchanged and no new balance revision is needed.
 These are automated engine measurements with simple bots. They do not show that

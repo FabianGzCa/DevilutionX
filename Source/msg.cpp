@@ -232,6 +232,13 @@ struct TMegaPkt {
 };
 
 #pragma pack(push, 1)
+/** Extended sessions prefix every buffered message with its sender and length, so replay can skip one. */
+struct TFakeCmdPlrLen {
+	_cmd_id bCmd;
+	uint8_t bPlr;
+	uint16_t wLen;
+};
+
 struct DMonsterStr {
 	WorldTilePosition position;
 	uint8_t menemy;
@@ -505,14 +512,32 @@ void FreePackets()
 
 void PrePacket()
 {
+	const bool extended = sgGameInitInfo.rules == ExtendedSessionRules;
 	uint8_t playerId = std::numeric_limits<uint8_t>::max();
 	for (TMegaPkt &pkt : MegaPktList) {
 		std::byte *data = pkt.data;
 		size_t remainingBytes = sizeof(pkt.data) - pkt.spaceLeft;
 		while (remainingBytes > 0) {
 			auto cmdId = static_cast<_cmd_id>(*data);
+			size_t messageSize = remainingBytes;
 
-			if (cmdId == FAKE_CMD_SETID) {
+			if (extended) {
+				TFakeCmdPlrLen header;
+				if (cmdId != FAKE_CMD_SETID || remainingBytes < sizeof(header)) {
+					Log("Missing source of network message");
+					return;
+				}
+				memcpy(&header, data, sizeof(header));
+				data += sizeof(header);
+				remainingBytes -= sizeof(header);
+				if (header.wLen == 0 || header.wLen > remainingBytes) {
+					Log("Discarding bad network message");
+					return;
+				}
+				playerId = header.bPlr;
+				messageSize = header.wLen;
+				cmdId = static_cast<_cmd_id>(*data);
+			} else if (cmdId == FAKE_CMD_SETID) {
 				auto *cmd = reinterpret_cast<TFakeCmdPlr *>(data);
 				data += sizeof(*cmd);
 				remainingBytes -= sizeof(*cmd);
@@ -535,13 +560,20 @@ void PrePacket()
 
 			if (IsNoneOf(cmdId, CMD_SEND_PLRINFO, CMD_ACK_PLRINFO)) {
 				if (!IsNetPlayerValid(playerId)) {
+					if (extended) {
+						// Distrust only this message, as the live path does: the sender's player
+						// information can still follow it, and must not be discarded with it.
+						data += messageSize;
+						remainingBytes -= messageSize;
+						continue;
+					}
 					Log("Source of network message is no longer valid");
 					return;
 				}
 			}
 
-			const size_t size = ParseCmd(playerId, reinterpret_cast<TCmd *>(data), remainingBytes);
-			if (size == 0) {
+			const size_t size = ParseCmd(playerId, reinterpret_cast<TCmd *>(data), messageSize);
+			if (size == 0 || (extended && size != messageSize)) {
 				Log("Discarding bad network message");
 				return;
 			}
@@ -573,6 +605,20 @@ void BufferMessage(uint8_t pnum, const void *message, size_t messageSize)
 {
 	if (messageSize > sizeof(TMegaPkt::data)) {
 		Log("Discarding enormous network message");
+		return;
+	}
+
+	if (sgGameInitInfo.rules == ExtendedSessionRules) {
+		// Header and message must share one packet: replay walks each packet separately.
+		const TFakeCmdPlrLen header { FAKE_CMD_SETID, pnum, static_cast<uint16_t>(messageSize) };
+		std::vector<std::byte> framed(sizeof(header) + messageSize);
+		if (framed.size() > sizeof(TMegaPkt::data)) {
+			Log("Discarding enormous network message");
+			return;
+		}
+		memcpy(framed.data(), &header, sizeof(header));
+		memcpy(framed.data() + sizeof(header), message, messageSize);
+		BufferMessage(framed.data(), framed.size());
 		return;
 	}
 

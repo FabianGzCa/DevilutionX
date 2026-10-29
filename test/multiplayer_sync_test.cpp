@@ -546,6 +546,39 @@ TEST_F(PlayerSynchronizationTest, LevelLoadingCanStartANewBufferAfterThePrevious
 	}
 }
 
+TEST_F(PlayerSynchronizationTest, ExtendedReplayKeepsPlayerInfoThatFollowsACommandFromItsUnknownSender)
+{
+	// A host's level-entry message could reach a joiner before the host's player information.
+	// Replaying it discarded every later buffered message, so the joiner never learned the host
+	// and dropped it after the player information timeout. Classic sessions keep their replay.
+	for (const SessionRules rules : { ExtendedSessionRules, ClassicSessionRules }) {
+		SCOPED_TRACE(rules == ExtendedSessionRules ? "extended" : "classic");
+		sgGameInitInfo.rules = rules;
+		Players[1] = {};
+		Players[3] = {};
+		Join(3, MakePlayer(3));
+		run_delta_info();
+		ASSERT_TRUE(IsNetPlayerValid(3));
+		const auto unknown = MakePlayer(1);
+		ASSERT_FALSE(IsNetPlayerValid(1));
+
+		gbBufferMsgs = 1;
+		const TCmdParam1 early { CMD_SETDEX, Swap16LE(71) };
+		ASSERT_EQ(ParseCmd(1, reinterpret_cast<const TCmd *>(&early), sizeof(early)), sizeof(early));
+		Join(1, unknown);
+		const TCmdParam1 later { CMD_SETDEX, Swap16LE(72) };
+		ASSERT_EQ(ParseCmd(3, reinterpret_cast<const TCmd *>(&later), sizeof(later)), sizeof(later));
+		run_delta_info();
+
+		const bool extended = rules == ExtendedSessionRules;
+		EXPECT_EQ(IsNetPlayerValid(1), extended);
+		EXPECT_EQ(Players[3]._pBaseDex == 72, extended);
+		EXPECT_NE(Players[1]._pBaseDex, 71);
+		EXPECT_FALSE(gbGameDestroyed);
+	}
+	sgGameInitInfo.rules = ExtendedSessionRules;
+}
+
 TEST_F(PlayerSynchronizationTest, HeldItemsSurviveAProfileRoundTripWithoutChangingInventory)
 {
 	PrepareGoldPickupArea(0);

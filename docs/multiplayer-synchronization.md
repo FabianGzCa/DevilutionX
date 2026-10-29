@@ -24,7 +24,10 @@ Leaving a slot clears its player object, assembly offset, timer, turn pointers,
 pending delta request and cursor selection. Extended sessions also clear
 live/stored damage contribution bits; classic sessions retain their original
 XP divisors for departed contributors. Buffered leave and player-info messages are replayed in their original
-order, including when the same slot is reused during resynchronization.
+order, including when the same slot is reused during resynchronization. Extended
+sessions store each buffered message with its length, so replay skips only a
+message whose sender's player information has not arrived yet, as the live path
+does. A classic replay still stops at such a message, as before.
 
 World deltas are assembled separately from the committed state. Fragments must
 be contiguous, fit the receive buffer, and contain a valid compression marker.

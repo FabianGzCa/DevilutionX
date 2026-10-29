@@ -13,6 +13,7 @@
 
 #include "dvlnet/frame_queue.h"
 #include "dvlnet/packet.h"
+#include "dvlnet/send_queue.hpp"
 #include "utils/log.hpp"
 
 namespace devilution {
@@ -86,7 +87,10 @@ public:
 	std::expected<void, PacketError> send(const endpoint &peer, const buffer_t &data);
 	bool send_oob(const endpoint &peer, const buffer_t &data) const;
 	bool send_oob_mc(const buffer_t &data) const;
+	/** Receive one framed packet from a peer stream. */
 	bool recv(endpoint &peer, buffer_t &data);
+	/** Receive one discovery datagram. Any node on the network can send these. */
+	bool recv_oob(endpoint &peer, buffer_t &data);
 	bool get_disconnected(endpoint &peer);
 	std::expected<bool, PacketError> network_online();
 	std::expected<bool, PacketError> peers_ready();
@@ -101,11 +105,14 @@ private:
 
 	struct peer_state {
 		int fd = -1;
-		std::deque<buffer_t> send_queue;
+		send_queue outgoing;
+		size_t sentBytes = 0;
+		uint64_t lastActivity = 0;
 		frame_queue recv_queue;
 	};
 
 	std::deque<std::pair<endpoint, buffer_t>> oob_recv_queue;
+	size_t oobQueueBytes_ = 0;
 	std::deque<endpoint> disconnect_queue;
 
 	ankerl::unordered_dense::map<endpoint, peer_state, EndpointHash> peer_list;
@@ -121,6 +128,7 @@ private:
 
 	std::expected<bool, PacketError> send_queued_peer(const endpoint &peer);
 	bool recv_peer(const endpoint &peer);
+	void MarkDisconnected(const endpoint &peer);
 	bool send_queued_all();
 	bool recv_from_peers();
 	bool recv_from_udp();

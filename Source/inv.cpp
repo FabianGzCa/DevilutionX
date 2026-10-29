@@ -1444,6 +1444,9 @@ std::vector<int> SortItemsBySize(Player &player)
 
 void ReorganizeInventory(Player &player)
 {
+	if (IsItemTransferPending())
+		return;
+
 	// Sort items by size
 	const std::vector<int> sortedIndices = SortItemsBySize(player);
 
@@ -1646,6 +1649,9 @@ void TransferItemToStash(Player &player, int location)
 
 void CheckInvItem(bool isShiftHeld, bool isCtrlHeld)
 {
+	if (IsItemTransferPending())
+		return;
+
 	if (IsInspectingPlayer())
 		return;
 	if (!MyPlayer->HoldItem.isEmpty()) {
@@ -1664,6 +1670,33 @@ void CheckInvScrn(bool isShiftHeld, bool isCtrlHeld)
 	    && MousePosition.y > mainPanelPosition.y && MousePosition.y < 33 + mainPanelPosition.y) {
 		CheckInvItem(isShiftHeld, isCtrlHeld);
 	}
+}
+
+bool ReceiveTransferredItem(Player &player, Item item, bool automatic)
+{
+	if (item.isEmpty() || !player.HoldItem.isEmpty())
+		return false;
+	CloseGoldDrop();
+	item._iCreateInfo &= ~CF_PREGEN;
+	CheckQuestItem(player, item);
+	item.updateRequiredStatsCacheForPlayer(player);
+	bool stored = false;
+	if (item._itype == ItemType::Gold) {
+		stored = GoldAutoPlace(player, item);
+	} else if (automatic) {
+		stored = (AutoEquipEnabled(player, item) && AutoEquip(player, item, true, &player == MyPlayer))
+		    || AutoPlaceItemInBelt(player, item, true, &player == MyPlayer)
+		    || AutoPlaceItemInInventory(player, item, &player == MyPlayer);
+	}
+	if (!stored) {
+		player.HoldItem = std::move(item);
+		if (&player == MyPlayer)
+			NewCursor(player.HoldItem);
+	} else if (&player == MyPlayer && *GetOptions().Audio.itemPickupSound) {
+		PlaySFX(SfxID::GrabItem);
+	}
+	player._pGold = CalculateGold(player);
+	return true;
 }
 
 void InvGetItem(Player &player, int ii)
@@ -1687,8 +1720,13 @@ void InvGetItem(Player &player, int ii)
 	} else {
 		// The item needs to go into the players hand
 		if (MyPlayer == &player && !player.HoldItem.isEmpty()) {
-			// drop whatever the player is currently holding
-			NetSendCmdPItem(true, CMD_SYNCPUTITEM, player.position.tile, player.HoldItem);
+			const bool storedHeldItem = !CanDeltaPutItem(player.HoldItem, player)
+			    && (AutoPlaceItemInBelt(player, player.HoldItem, true, true)
+			        || AutoPlaceItemInInventory(player, player.HoldItem, true));
+			if (storedHeldItem)
+				player._pGold = CalculateGold(player);
+			else
+				NetSendCmdPItem(true, CMD_SYNCPUTITEM, player.position.tile, player.HoldItem);
 		}
 
 		// need to copy here instead of move so CleanupItems still has access to the position
@@ -1703,7 +1741,7 @@ void InvGetItem(Player &player, int ii)
 
 std::optional<Point> FindAdjacentPositionForItem(Point origin, Direction facing)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace())
 		return {};
 
 	if (CanPut(origin + facing))
@@ -1832,6 +1870,9 @@ void SyncGetItem(Point position, uint32_t iseed, _item_indexes idx, uint16_t ci)
 
 bool CanPut(Point position)
 {
+	if (IsItemTileReserved(position))
+		return false;
+
 	if (!InDungeonBounds(position)) {
 		return false;
 	}
@@ -1886,7 +1927,7 @@ uint8_t ClampMaxDam(const Item &item, uint8_t maxDam)
 
 int SyncDropItem(Point position, _item_indexes idx, uint16_t icreateinfo, int iseed, int id, int dur, int mdur, int ch, int mch, int ivalue, uint32_t ibuff, int toHit, int maxDam)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace())
 		return -1;
 
 	Item item;
@@ -1908,7 +1949,7 @@ int SyncDropItem(Point position, _item_indexes idx, uint16_t icreateinfo, int is
 
 int SyncDropEar(Point position, uint16_t icreateinfo, uint32_t iseed, uint8_t cursval, std::string_view heroname)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace())
 		return -1;
 
 	Item item;
@@ -2090,6 +2131,8 @@ Item &GetInventoryItem(Player &player, int location)
 
 bool UseInvItem(int cii)
 {
+	if (IsItemTransferPending())
+		return true;
 	if (IsInspectingPlayer())
 		return false;
 
@@ -2242,11 +2285,13 @@ void CloseStash()
 		return;
 
 	Player &myPlayer = *MyPlayer;
+	if (IsItemTransferPending()) {
+		IsStashOpen = false;
+		return;
+	}
 	if (!myPlayer.HoldItem.isEmpty()) {
 		std::optional<Point> itemTile = FindAdjacentPositionForItem(myPlayer.position.future, myPlayer._pdir);
-		if (itemTile) {
-			NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem);
-		} else {
+		if (!itemTile || !NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem)) {
 			if (!AutoPlaceItemInBelt(myPlayer, myPlayer.HoldItem, true, true)
 			    && !AutoPlaceItemInInventory(myPlayer, myPlayer.HoldItem, true)
 			    && !AutoPlaceItemInStash(myPlayer.HoldItem, true)) {
@@ -2256,8 +2301,10 @@ void CloseStash()
 			}
 			PlaySFX(ItemInvSnds[ItemCAnimTbl[myPlayer.HoldItem._iCurs]]);
 		}
-		myPlayer.HoldItem.clear();
-		NewCursor(CURSOR_HAND);
+		if (!IsItemTransferPending()) {
+			myPlayer.HoldItem.clear();
+			NewCursor(CURSOR_HAND);
+		}
 	}
 
 	IsStashOpen = false;

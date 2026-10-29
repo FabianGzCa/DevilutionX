@@ -1,0 +1,100 @@
+{
+	"version": 3,
+	"cmakeMinimumRequired": {
+		"major": 3,
+		"minor": 22,
+		"patch": 0
+	},
+	"configurePresets": [
+		{
+			"name": "classic-base",
+			"hidden": true,
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build/${presetName}",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "RelWithDebInfo",
+				"CPACK": false,
+				"BUILD_ASSETS_MPQ": false,
+				"DEVILUTIONX_SYSTEM_LUA": false,
+				"ASAN": false,
+				"UBSAN": false,
+				"DEBUG": false
+			}
+		},
+		{
+			"name": "classic-play",
+			"displayName": "Classic game (no tests)",
+			"inherits": "classic-base",
+			"cacheVariables": {
+				"BUILD_TESTING": false
+			},
+			"binaryDir": "${sourceDir}/build"
+		},
+		{
+			"name": "classic-tests",
+			"displayName": "Classic regression tests",
+			"inherits": "classic-base",
+			"cacheVariables": {
+				"BUILD_TESTING": true,
+				"DEVILUTIONX_SYSTEM_GOOGLETEST": true,
+				"DEVILUTIONX_SYSTEM_BENCHMARK": true
+			}
+		},
+		{
+			"name": "classic-sanitizers",
+			"displayName": "Classic tests with ASan and UBSan",
+			"inherits": "classic-tests",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Debug",
+				"ASAN": true,
+				"UBSAN": true,
+				"DEBUG": true
+			}
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "classic-play",
+			"configurePreset": "classic-play",
+			"jobs": 4
+		},
+		{
+			"name": "classic-tests",
+			"configurePreset": "classic-tests",
+			"jobs": 4
+		},
+		{
+			"name": "classic-sanitizers",
+			"configurePreset": "classic-sanitizers",
+			"jobs": 2
+		}
+	],
+	"testPresets": [
+		{
+			"name": "classic-tests",
+			"configurePreset": "classic-tests",
+			"environment": {
+				"SDL_VIDEODRIVER": "dummy",
+				"SDL_AUDIODRIVER": "dummy",
+				"XDG_DATA_HOME": "${sourceDir}/build/${presetName}/test-user-data",
+				"XDG_CONFIG_HOME": "${sourceDir}/build/${presetName}/test-user-config"
+			},
+			"output": {
+				"outputOnFailure": true
+			},
+			"execution": {
+				"jobs": 1,
+				"noTestsAction": "error"
+			}
+		},
+		{
+			"name": "classic-sanitizers",
+			"configurePreset": "classic-sanitizers",
+			"inherits": "classic-tests",
+			"environment": {
+				"ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+				"UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+			}
+		}
+	]
+}

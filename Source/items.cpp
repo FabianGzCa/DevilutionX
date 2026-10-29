@@ -97,6 +97,9 @@ namespace devilution {
 Item Items[MAXITEMS + 1];
 uint8_t ActiveItems[MAXITEMS];
 uint8_t ActiveItemCount;
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST void (*TestMonsterLootObserver)(const Monster &, const Item *) = nullptr;
+#endif
 int8_t dItem[MAXDUNX][MAXDUNY];
 bool ShowUniqueItemInfoBox;
 CornerStoneStruct CornerStone;
@@ -1494,24 +1497,30 @@ int GetItemBLevel(int lvl, item_misc_id miscId, bool onlygood, bool uper15)
 
 void SetupBaseItem(Point position, _item_indexes idx, bool onlygood, bool sendmsg, bool delta, bool spawn = false)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	const bool deferred = IsExtendedItemTransferSession() && spawn && !HasWorldItemSpace();
+	if (!deferred && !HasWorldItemSpace())
 		return;
 
-	const int ii = AllocateItem();
-	auto &item = Items[ii];
-	GetSuperItemSpace(position, ii);
+	Item candidate;
+	const int ii = deferred ? -1 : AllocateItem();
+	auto &item = deferred ? candidate : Items[ii];
+	if (deferred)
+		item.position = FindClosestValidPosition(ItemSpaceOk, position, 0, 50).value_or(position);
+	else
+		GetSuperItemSpace(position, ii);
 	const int curlv = ItemsGetCurrlevel();
 
 	SetupAllItems(*MyPlayer, item, idx, AdvanceRndSeed(), 2 * curlv, 1, onlygood, delta);
 	TryRandomUniqueItem(item, idx, 2 * curlv, 1, onlygood, delta);
 	SetupItem(item);
 
-	if (sendmsg)
+	if (sendmsg && !deferred)
 		NetSendCmdPItem(false, CMD_DROPITEM, item.position, item);
-	if (delta)
-		DeltaAddItem(ii);
 	if (spawn)
 		NetSendCmdPItem(false, CMD_SPAWNITEM, item.position, item);
+
+	if (!StageGeneratedItem(item) && delta && ii >= 0)
+		DeltaAddItem(ii);
 }
 
 void SetupAllUseful(Item &item, int iseed, int lvl)
@@ -1575,7 +1584,7 @@ void Hex2bin(const char *src, int bytes, uint8_t *target)
 
 void SpawnRock()
 {
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace())
 		return;
 
 	const Object *stand = nullptr;
@@ -2167,11 +2176,13 @@ void RecreateTownItem(const Player &player, Item &item, _item_indexes idx, uint1
 
 void CreateMagicItem(Point position, int lvl, ItemType itemType, int imid, int icurs, bool sendmsg, bool delta, bool spawn = false)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	const bool deferred = IsExtendedItemTransferSession() && spawn && !HasWorldItemSpace();
+	if (!deferred && !HasWorldItemSpace())
 		return;
 
-	const int ii = AllocateItem();
-	auto &item = Items[ii];
+	Item candidate;
+	const int ii = deferred ? -1 : AllocateItem();
+	auto &item = deferred ? candidate : Items[ii];
 	_item_indexes idx = RndTypeItems(itemType, imid, lvl);
 
 	while (true) {
@@ -2184,14 +2195,18 @@ void CreateMagicItem(Point position, int lvl, ItemType itemType, int imid, int i
 
 		idx = RndTypeItems(itemType, imid, lvl);
 	}
-	GetSuperItemSpace(position, ii);
+	if (deferred)
+		item.position = FindClosestValidPosition(ItemSpaceOk, position, 0, 50).value_or(position);
+	else
+		GetSuperItemSpace(position, ii);
 
-	if (sendmsg)
+	if (sendmsg && !deferred)
 		NetSendCmdPItem(false, CMD_DROPITEM, item.position, item);
-	if (delta)
-		DeltaAddItem(ii);
 	if (spawn)
 		NetSendCmdPItem(false, CMD_SPAWNITEM, item.position, item);
+
+	if (!StageGeneratedItem(item) && delta && ii >= 0)
+		DeltaAddItem(ii);
 }
 
 void NextItemRecord(int i)
@@ -3060,6 +3075,9 @@ void CreatePlrItems(Player &player)
 
 bool ItemSpaceOk(Point position)
 {
+	if (IsItemTileReserved(position))
+		return false;
+
 	if (!InDungeonBounds(position)) {
 		return false;
 	}
@@ -3192,19 +3210,9 @@ void SetupItem(Item &item)
 	item._iIdentified = false;
 }
 
-Item *SpawnUnique(_unique_items uid, Point position, std::optional<int> level /*= std::nullopt*/, bool sendmsg /*= true*/, bool exactPosition /*= false*/)
+namespace {
+void SetupQuestUnique(Item &item, _unique_items uid, std::optional<int> level)
 {
-	if (ActiveItemCount >= MAXITEMS)
-		return nullptr;
-
-	const int ii = AllocateItem();
-	auto &item = Items[ii];
-	if (exactPosition && CanPut(position)) {
-		item.position = position;
-		dItem[position.x][position.y] = ii + 1;
-	} else {
-		GetSuperItemSpace(position, ii);
-	}
 	int curlv = ItemsGetCurrlevel();
 
 	std::underlying_type_t<_item_indexes> idx = 0;
@@ -3226,10 +3234,35 @@ Item *SpawnUnique(_unique_items uid, Point position, std::optional<int> level /*
 		TryRandomUniqueItem(item, dropIdx, curlv * 2, 15, true, false);
 		SetupItem(item);
 	}
+}
+} // namespace
+
+Item *SpawnUnique(_unique_items uid, Point position, std::optional<int> level /*= std::nullopt*/, bool sendmsg /*= true*/, bool exactPosition /*= false*/)
+{
+	if (!HasWorldItemSpace()) {
+		if (IsExtendedItemTransferSession() && sendmsg) {
+			Item candidate;
+			candidate.position = FindClosestValidPosition(ItemSpaceOk, position, 0, 50).value_or(position);
+			SetupQuestUnique(candidate, uid, level);
+			NetSendCmdPItem(false, CMD_SPAWNITEM, candidate.position, candidate);
+		}
+		return nullptr;
+	}
+
+	const int ii = AllocateItem();
+	auto &item = Items[ii];
+	if (exactPosition && CanPut(position)) {
+		item.position = position;
+		dItem[position.x][position.y] = ii + 1;
+	} else {
+		GetSuperItemSpace(position, ii);
+	}
+	SetupQuestUnique(item, uid, level);
 
 	if (sendmsg)
 		NetSendCmdPItem(false, CMD_SPAWNITEM, item.position, item);
 
+	StageGeneratedItem(item);
 	return &item;
 }
 
@@ -3461,8 +3494,13 @@ void SpawnItem(Monster &monster, Point position, bool sendmsg, bool spawn /*= fa
 	if (idx == IDI_NONE)
 		return;
 
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace()) {
+#ifdef BUILD_TESTING
+		if (TestMonsterLootObserver != nullptr)
+			TestMonsterLootObserver(monster, nullptr);
+#endif
 		return;
+	}
 
 	const int ii = AllocateItem();
 	auto &item = Items[ii];
@@ -3478,6 +3516,12 @@ void SpawnItem(Monster &monster, Point position, bool sendmsg, bool spawn /*= fa
 		NetSendCmdPItem(false, CMD_DROPITEM, item.position, item);
 	if (spawn)
 		NetSendCmdPItem(false, CMD_SPAWNITEM, item.position, item);
+
+	StageGeneratedItem(item);
+#ifdef BUILD_TESTING
+	if (TestMonsterLootObserver != nullptr)
+		TestMonsterLootObserver(monster, &item);
+#endif
 }
 
 void CreateRndItem(Point position, bool onlygood, bool sendmsg, bool delta)
@@ -3489,7 +3533,7 @@ void CreateRndItem(Point position, bool onlygood, bool sendmsg, bool delta)
 
 void CreateRndUseful(Point position, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace())
 		return;
 
 	const int ii = AllocateItem();
@@ -3500,6 +3544,8 @@ void CreateRndUseful(Point position, bool sendmsg)
 	SetupAllUseful(item, AdvanceRndSeed(), curlv);
 	if (sendmsg)
 		NetSendCmdPItem(false, CMD_DROPITEM, item.position, item);
+
+	StageGeneratedItem(item);
 }
 
 void CreateTypeItem(Point position, bool onlygood, ItemType itemType, int imisc, bool sendmsg, bool delta, bool spawn)
@@ -3662,15 +3708,18 @@ void SpawnQuestItem(_item_indexes itemid, Point position, int randarea, Selectio
 		}
 	}
 
-	if (ActiveItemCount >= MAXITEMS)
+	const bool deferred = IsExtendedItemTransferSession() && sendmsg;
+	if (!deferred && !HasWorldItemSpace())
 		return;
 
-	const int ii = AllocateItem();
-	auto &item = Items[ii];
+	Item candidate;
+	const int ii = deferred ? -1 : AllocateItem();
+	auto &item = deferred ? candidate : Items[ii];
 
 	item.position = position;
 
-	dItem[position.x][position.y] = ii + 1;
+	if (!deferred)
+		dItem[position.x][position.y] = ii + 1;
 
 	const int curlv = ItemsGetCurrlevel();
 	GetItemAttrs(item, itemid, curlv);
@@ -3695,14 +3744,17 @@ void SpawnQuestItem(_item_indexes itemid, Point position, int randarea, Selectio
 
 void SpawnRewardItem(_item_indexes itemid, Point position, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS)
+	const bool deferred = IsExtendedItemTransferSession() && sendmsg;
+	if (!deferred && !HasWorldItemSpace())
 		return;
 
-	const int ii = AllocateItem();
-	auto &item = Items[ii];
+	Item candidate;
+	const int ii = deferred ? -1 : AllocateItem();
+	auto &item = deferred ? candidate : Items[ii];
 
 	item.position = position;
-	dItem[position.x][position.y] = ii + 1;
+	if (!deferred)
+		dItem[position.x][position.y] = ii + 1;
 	const int curlv = ItemsGetCurrlevel();
 	GetItemAttrs(item, itemid, curlv);
 	item.setNewAnimation(true);
@@ -3714,6 +3766,7 @@ void SpawnRewardItem(_item_indexes itemid, Point position, bool sendmsg)
 	if (sendmsg) {
 		NetSendCmdPItem(true, CMD_SPAWNITEM, item.position, item);
 	}
+	StageGeneratedItem(item);
 }
 
 void SpawnMapOfDoom(Point position, bool sendmsg)
@@ -3783,7 +3836,7 @@ void ProcessItems()
 	for (int i = 0; i < ActiveItemCount; i++) {
 		const int ii = ActiveItems[i];
 		auto &item = Items[ii];
-		if (!item._iAnimFlag)
+		if (item.pendingCreation || !item._iAnimFlag)
 			continue;
 		item.AnimInfo.processAnimation();
 		if (item._iCurs == ICURS_MAGIC_ROCK) {
@@ -4707,7 +4760,7 @@ void CreateSpellBook(Point position, SpellID ispell, bool sendmsg, bool delta)
 	}
 
 	const _item_indexes idx = RndTypeItems(ItemType::Misc, IMISC_BOOK, lvl);
-	if (ActiveItemCount >= MAXITEMS)
+	if (!HasWorldItemSpace())
 		return;
 
 	const int ii = AllocateItem();
@@ -4726,6 +4779,9 @@ void CreateSpellBook(Point position, SpellID ispell, bool sendmsg, bool delta)
 		NetSendCmdPItem(false, CMD_DROPITEM, item.position, item);
 	if (delta)
 		DeltaAddItem(ii);
+
+	if (!delta)
+		StageGeneratedItem(item);
 }
 
 void CreateMagicArmor(Point position, ItemType itemType, int icurs, bool sendmsg, bool delta)

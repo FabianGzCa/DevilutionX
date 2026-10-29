@@ -32,8 +32,13 @@ enum packet_type : uint8_t {
 	PT_JOIN_ACCEPT  = 0x12,
 	PT_CONNECT      = 0x13,
 	PT_DISCONNECT   = 0x14,
+	PT_JOIN_REQUEST_EXTENDED = 0x15,
+	PT_JOIN_ACCEPT_EXTENDED = 0x16,
+	PT_JOIN_REJECT = 0x17,
 	PT_INFO_REQUEST = 0x21,
 	PT_INFO_REPLY   = 0x22,
+	PT_INFO_REQUEST_EXTENDED = 0x23,
+	PT_INFO_REPLY_EXTENDED = 0x24,
 	PT_ECHO_REQUEST = 0x31,
 	PT_ECHO_REPLY   = 0x32,
 	// clang-format on
@@ -194,6 +199,7 @@ class packet_in : public packet_proc<packet_in> {
 public:
 	using packet_proc<packet_in>::packet_proc;
 	std::expected<void, PacketError> Create(buffer_t buf);
+	bool FullyRead() const { return decrypted_buffer.empty(); }
 	std::expected<void, PacketError> process_element(buffer_t &x);
 	template <class T>
 	std::expected<void, PacketError> process_element(T &x);
@@ -237,9 +243,12 @@ std::expected<void, PacketError> packet_proc<P>::process_data()
 		return self.process_element(m_turn.SequenceNumber)
 		    .and_then([&]() { return self.process_element(m_turn.Value); });
 	case PT_JOIN_REQUEST:
+	case PT_JOIN_REQUEST_EXTENDED:
+	case PT_JOIN_REJECT:
 		return self.process_element(m_cookie)
 		    .and_then([&]() { return self.process_element(m_info); });
 	case PT_JOIN_ACCEPT:
+	case PT_JOIN_ACCEPT_EXTENDED:
 		return self.process_element(m_cookie)
 		    .and_then([&]() { return self.process_element(m_newplr); })
 		    .and_then([&]() { return self.process_element(m_info); });
@@ -250,8 +259,10 @@ std::expected<void, PacketError> packet_proc<P>::process_data()
 		return self.process_element(m_newplr)
 		    .and_then([&]() { return self.process_element(m_leaveinfo); });
 	case PT_INFO_REPLY:
+	case PT_INFO_REPLY_EXTENDED:
 		return self.process_element(m_info);
 	case PT_INFO_REQUEST:
+	case PT_INFO_REQUEST_EXTENDED:
 		return {};
 	case PT_ECHO_REQUEST:
 	case PT_ECHO_REPLY:
@@ -361,6 +372,41 @@ inline void packet_out::create<PT_JOIN_ACCEPT>(plr_t s, plr_t d, cookie_t c,
 	m_cookie = c;
 	m_newplr = n;
 	m_info = i;
+}
+
+template <>
+inline void packet_out::create<PT_JOIN_REQUEST_EXTENDED>(plr_t s, plr_t d, cookie_t c, buffer_t i)
+{
+	create<PT_JOIN_REQUEST>(s, d, c, std::move(i));
+	m_type = PT_JOIN_REQUEST_EXTENDED;
+}
+
+template <>
+inline void packet_out::create<PT_JOIN_REJECT>(plr_t s, plr_t d, cookie_t c, buffer_t i)
+{
+	create<PT_JOIN_REQUEST>(s, d, c, std::move(i));
+	m_type = PT_JOIN_REJECT;
+}
+
+template <>
+inline void packet_out::create<PT_JOIN_ACCEPT_EXTENDED>(plr_t s, plr_t d, cookie_t c, plr_t n, buffer_t i)
+{
+	create<PT_JOIN_ACCEPT>(s, d, c, n, std::move(i));
+	m_type = PT_JOIN_ACCEPT_EXTENDED;
+}
+
+template <>
+inline void packet_out::create<PT_INFO_REQUEST_EXTENDED>(plr_t s, plr_t d)
+{
+	create<PT_INFO_REQUEST>(s, d);
+	m_type = PT_INFO_REQUEST_EXTENDED;
+}
+
+template <>
+inline void packet_out::create<PT_INFO_REPLY_EXTENDED>(plr_t s, plr_t d, buffer_t i)
+{
+	create<PT_INFO_REPLY>(s, d, std::move(i));
+	m_type = PT_INFO_REPLY_EXTENDED;
 }
 
 template <>
@@ -489,6 +535,8 @@ inline std::expected<std::unique_ptr<packet>, PacketError> packet_factory::make_
 	if (const std::expected<void, PacketError> result = ret->process_data(); !result.has_value()) {
 		return std::unexpected(result.error());
 	}
+	if (!ret->FullyRead())
+		return std::unexpected("Unexpected trailing packet data");
 	return ret;
 }
 

@@ -19,6 +19,7 @@
 
 #include "automap.h"
 #include "control/control.hpp"
+#include "control/control_chat.hpp"
 #include "controls/controller_motion.h"
 #ifndef USE_SDL1
 #include "controls/devices/game_controller.h"
@@ -2104,6 +2105,21 @@ void ProcessGameAction(const GameAction &action)
 	case GameActionType_NONE:
 	case GameActionType_SEND_KEY:
 		break;
+	case GameActionType_CHAT_RECIPIENT_UP:
+		MoveChatRecipientFocus(-1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_DOWN:
+		MoveChatRecipientFocus(1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_PREVIOUS_PAGE:
+		ChangeChatRecipientPage(-1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_NEXT_PAGE:
+		ChangeChatRecipientPage(1);
+		break;
+	case GameActionType_CHAT_RECIPIENT_TOGGLE:
+		ToggleFocusedChatRecipient();
+		break;
 	case GameActionType_USE_HEALTH_POTION:
 		UseBeltItem(BeltItemType::Healing);
 		break;
@@ -2393,6 +2409,8 @@ void UpdateSpellTarget(SpellID spell)
  */
 bool TryDropItem()
 {
+	if (IsItemTransferPending())
+		return false;
 	Player &myPlayer = *MyPlayer;
 
 	if (myPlayer.HoldItem.isEmpty()) {
@@ -2418,9 +2436,14 @@ bool TryDropItem()
 		return false;
 	}
 
-	NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem);
-	myPlayer.HoldItem.clear();
-	NewCursor(CURSOR_HAND);
+	if (!NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, myPlayer.HoldItem)) {
+		myPlayer.Say(HeroSpeech::WhereWouldIPutThis);
+		return false;
+	}
+	if (!IsItemTransferPending()) {
+		myPlayer.HoldItem.clear();
+		NewCursor(CURSOR_HAND);
+	}
 	return true;
 }
 

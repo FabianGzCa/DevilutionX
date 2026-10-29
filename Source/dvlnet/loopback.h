@@ -13,6 +13,7 @@ private:
 	std::queue<buffer_t> message_queue;
 	buffer_t message_last;
 	uint8_t plr_single = 0;
+	uint8_t playerLimit_ = ClassicPlayerLimit;
 
 public:
 	loopback() = default;

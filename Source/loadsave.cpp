@@ -35,6 +35,7 @@
 #include "mpq/mpq_common.hpp"
 #include "pfile.h"
 #include "plrmsg.h"
+#include "portals/validation.hpp"
 #include "qol/stash.h"
 #include "stores.h"
 #include "tables/playerdat.hpp"
@@ -429,6 +430,8 @@ void LoadPlayer(LoadHelper &file, Player &player)
 	player.AnimInfo.currentFrame = file.NextLENarrow<int32_t, int8_t>(-1);
 	file.Skip<uint32_t>(3); // Skip _pAnimWidth, _pAnimWidth2, _peflag
 	player.lightId = file.NextLE<int32_t>();
+	if (!IsValidLightId(player.lightId))
+		player.lightId = NO_LIGHT;
 	file.Skip<int32_t>(); // _pvid
 
 	player.queuedSpell.spellId = static_cast<SpellID>(file.NextLE<int32_t>());
@@ -722,7 +725,7 @@ bool gbSkipSync = false;
 	monster.uniqTrans = file->NextLE<uint8_t>();
 	monster.corpseId = file->NextLE<int8_t>();
 
-	monster.whoHit = file->NextLE<int8_t>();
+	monster.whoHit = PlayerExperienceMaskFromByte(file->NextLE<uint8_t>());
 	if (monsterConversionData != nullptr)
 		monsterConversionData->monsterLevel = file->NextLE<int8_t>();
 	else
@@ -763,6 +766,8 @@ bool gbSkipSync = false;
 	monster.lightId = file->NextLE<int8_t>();
 	if (monster.lightId == 0)
 		monster.lightId = NO_LIGHT; // Correct incorrect values in old saves
+	if (!IsValidLightId(monster.lightId))
+		monster.lightId = NO_LIGHT;
 
 	// Omit pointer name;
 
@@ -783,8 +788,12 @@ bool gbSkipSync = false;
 
 void LoadMonsters(LoadHelper &file, ankerl::unordered_dense::set<unsigned> &removedMonsterIds, const bool applyLight, LevelConversionData *levelConversionData)
 {
-	for (unsigned &monsterId : ActiveMonsters)
-		monsterId = file.NextBE<uint32_t>();
+	for (size_t i = 0; i < MaxMonsters; ++i)
+		ActiveMonsters[i] = file.NextBE<uint32_t>();
+	for (size_t i = MaxMonsters; i < MonsterStorageCapacity; ++i) {
+		ActiveMonsters[i] = static_cast<unsigned>(i);
+		Monsters[i] = {};
+	}
 
 	for (size_t i = 0; i < ActiveMonsterCount;) {
 		Monster &monster = Monsters[ActiveMonsters[i]];
@@ -802,7 +811,7 @@ void LoadMonsters(LoadHelper &file, ankerl::unordered_dense::set<unsigned> &remo
 			continue;
 		}
 
-		if (applyLight && monster.isUnique() && monster.lightId != NO_LIGHT)
+		if (applyLight && monster.isUnique() && IsValidLightId(monster.lightId))
 			Lights[monster.lightId].isInvalid = false;
 
 		i++;
@@ -1035,10 +1044,22 @@ void LoadPortal(LoadHelper *file, int i)
 	pPortal->position.x = file->NextLE<int32_t>();
 	pPortal->position.y = file->NextLE<int32_t>();
 	pPortal->level = file->NextLE<int32_t>();
-	pPortal->ltype = static_cast<dungeon_type>(file->NextLE<int32_t>());
-	pPortal->setlvl = file->NextBool32();
+	const int32_t savedLevelType = file->NextLE<int32_t>();
+	const uint32_t savedSetLevel = file->NextLE<uint32_t>();
+	pPortal->ltype = savedLevelType >= DTYPE_TOWN && savedLevelType <= DTYPE_LAST ? static_cast<dungeon_type>(savedLevelType) : DTYPE_NONE;
+	pPortal->setlvl = savedSetLevel != 0;
 	if (!pPortal->setlvl)
 		pPortal->ltype = GetLevelType(pPortal->level);
+	if (pPortal->open && (savedLevelType < DTYPE_TOWN || savedLevelType > DTYPE_LAST || savedSetLevel > 1 || !IsPortalDeltaValid(pPortal->position, pPortal->level, pPortal->ltype, pPortal->setlvl)))
+		pPortal->open = false;
+}
+
+void LoadPortals(LoadHelper &file)
+{
+	// Classic game saves always contain four records, including single player.
+	InitPortals();
+	for (int i = 0; i < ClassicPortalCount; i++)
+		LoadPortal(&file, i);
 }
 
 void GetLevelNames(std::string_view prefix, char *out)
@@ -1571,7 +1592,7 @@ void SaveMonster(SaveHelper *file, Monster &monster, MonsterConversionData *mons
 	file->WriteLE<uint8_t>(monster.uniqTrans);
 	file->WriteLE<int8_t>(monster.corpseId);
 
-	file->WriteLE<int8_t>(monster.whoHit);
+	file->WriteLE<uint8_t>(PlayerExperienceMaskToByte(monster.whoHit));
 	if (monsterConversionData != nullptr)
 		file->WriteLE<int8_t>(monsterConversionData->monsterLevel);
 	else
@@ -1951,8 +1972,8 @@ void SaveLevel(SaveWriter &saveWriter, LevelConversionData *levelConversionData)
 	file.WriteBE<int32_t>(ActiveObjectCount);
 
 	if (leveltype != DTYPE_TOWN) {
-		for (const unsigned monsterId : ActiveMonsters)
-			file.WriteBE<uint32_t>(monsterId);
+		for (size_t i = 0; i < MaxMonsters; ++i)
+			file.WriteBE<uint32_t>(ActiveMonsters[i]);
 		for (size_t i = 0; i < ActiveMonsterCount; i++) {
 			MonsterConversionData *monsterConversionData = nullptr;
 			if (levelConversionData != nullptr)
@@ -2100,7 +2121,7 @@ std::expected<void, std::string> LoadLevel(LevelConversionData *levelConversionD
 	}
 
 	for (const Player &player : Players) {
-		if (player.plractive && player.isOnActiveLevel())
+		if (player.plractive && player.isOnActiveLevel() && IsValidLightId(player.lightId))
 			Lights[player.lightId].hasChanged = true;
 	}
 	return {};
@@ -2407,6 +2428,40 @@ void LoadHeroItems(Player &player)
 	gbIsHellfireSaveGame = gbIsHellfire;
 }
 
+bool LoadHeldItem(std::optional<SaveReader> archive, Player &player)
+{
+	if (!player.HoldItem.isEmpty())
+		return false;
+	LoadHelper file(std::move(archive), "helditem");
+	if (!file.IsValid(2))
+		return false;
+	const uint8_t version = file.NextLE<uint8_t>();
+	const uint8_t edition = file.NextLE<uint8_t>();
+	if (version != 0 || edition > 1 || file.Size() != 2U + (edition != 0 ? HellfireItemSaveSize : DiabloItemSaveSize))
+		return false;
+	const bool previousEdition = gbIsHellfireSaveGame;
+	gbIsHellfireSaveGame = edition != 0;
+	LoadAndValidateItemData(file, player.HoldItem);
+	gbIsHellfireSaveGame = previousEdition;
+	if (player.HoldItem.isEmpty())
+		return false;
+	player.HoldItem.updateRequiredStatsCacheForPlayer(player);
+	return true;
+}
+
+bool LoadHeldItem(Player &player)
+{
+	return LoadHeldItem(OpenSaveArchive(gSaveNumber), player);
+}
+
+void SaveHeldItem(SaveWriter &saveWriter, const Player &player)
+{
+	SaveHelper file(saveWriter, "helditem", 2U + (gbIsHellfire ? HellfireItemSaveSize : DiabloItemSaveSize));
+	file.WriteLE<uint8_t>(0);
+	file.WriteLE<uint8_t>(gbIsHellfire ? 1 : 0);
+	SaveItem(file, player.HoldItem);
+}
+
 constexpr uint8_t StashVersion = 0;
 
 void LoadStash()
@@ -2526,8 +2581,7 @@ std::expected<void, std::string> LoadGame(bool firstflag)
 
 	for (int i = 0; i < giNumberQuests; i++)
 		LoadQuest(&file, i);
-	for (int i = 0; i < MAXPORTAL; i++)
-		LoadPortal(&file, i);
+	LoadPortals(file);
 
 	if (gbIsHellfireSaveGame != gbIsHellfire) {
 		RETURN_IF_ERROR(pfile_convert_levels());
@@ -2575,16 +2629,29 @@ std::expected<void, std::string> LoadGame(bool firstflag)
 		for (int i = 0; i < ActiveObjectCount; i++)
 			SyncObjectAnim(Objects[ActiveObjects[i]]);
 
-		ActiveLightCount = file.NextBE<int32_t>();
+		const int savedLightCount = file.NextBE<int32_t>();
+		if (savedLightCount < 0 || savedLightCount > MAXLIGHTS)
+			return std::unexpected(std::string(_("Invalid save file")));
+		ActiveLightCount = savedLightCount;
 
 		for (uint8_t &lightId : ActiveLights)
 			lightId = file.NextLE<uint8_t>();
+		std::array<bool, MAXLIGHTS> activeLightIds = {};
+		for (int i = 0; i < ActiveLightCount; i++) {
+			const uint8_t lightId = ActiveLights[i];
+			if (!IsValidLightId(lightId) || activeLightIds[lightId])
+				return std::unexpected(std::string(_("Invalid save file")));
+			activeLightIds[lightId] = true;
+		}
 		for (int i = 0; i < ActiveLightCount; i++)
 			LoadLighting(&file, &Lights[ActiveLights[i]]);
 
 		file.Skip<int32_t>(); // VisionId
 		const int visionCount = file.NextBE<int32_t>();
+		if (visionCount < 0 || visionCount > MAXVISION || static_cast<size_t>(visionCount) > Players.size())
+			return std::unexpected(std::string(_("Invalid save file")));
 
+		VisionActive.fill(false);
 		for (int i = 0; i < visionCount; i++) {
 			LoadLighting(&file, &VisionList[i]);
 			VisionActive[i] = true;
@@ -2812,7 +2879,7 @@ void SaveGameData(SaveWriter &saveWriter)
 
 	for (int i = 0; i < giNumberQuests; i++)
 		SaveQuest(&file, i);
-	for (int i = 0; i < MAXPORTAL; i++)
+	for (int i = 0; i < ClassicPortalCount; i++)
 		SavePortal(&file, i);
 	for (size_t i = 0; i < MonstersData.size(); ++i) {
 		const int monstkill = MonsterKillCounts[i];
@@ -2822,8 +2889,8 @@ void SaveGameData(SaveWriter &saveWriter)
 	file.Skip(4 * (MaxMonsters - MonstersData.size()));
 
 	if (leveltype != DTYPE_TOWN) {
-		for (const unsigned monsterId : ActiveMonsters)
-			file.WriteBE<uint32_t>(monsterId);
+		for (size_t i = 0; i < MaxMonsters; ++i)
+			file.WriteBE<uint32_t>(ActiveMonsters[i]);
 		for (size_t i = 0; i < ActiveMonsterCount; i++)
 			SaveMonster(&file, Monsters[ActiveMonsters[i]]);
 		// Write ActiveMissiles

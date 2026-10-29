@@ -410,6 +410,8 @@ void DrawStash(const Surface &out)
 
 void CheckStashItem(Point mousePosition, bool isShiftHeld, bool isCtrlHeld)
 {
+	if (IsItemTransferPending())
+		return;
 	if (!MyPlayer->HoldItem.isEmpty()) {
 		CheckStashPaste(mousePosition);
 	} else if (isCtrlHeld) {

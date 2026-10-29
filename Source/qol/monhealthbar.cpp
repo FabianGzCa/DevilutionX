@@ -15,6 +15,7 @@
 #include "engine/render/primitive_render.hpp"
 #include "game_mode.hpp"
 #include "options.h"
+#include "player_visual_identity.hpp"
 #include "utils/language.h"
 #include "utils/str_cat.hpp"
 
@@ -175,8 +176,8 @@ void DrawMonsterHealthBar(const Surface &out)
 	if (Players.size() > 1) {
 		int tagOffset = 5;
 		for (size_t i = 0; i < Players.size(); i++) {
-			if (((1U << i) & monster.whoHit) != 0) {
-				RenderClxSprite(out, (*playerExpTags)[i + 1], position + Displacement { tagOffset, height - 31 });
+			if (IsPlayerInExperienceMask(monster.whoHit, i)) {
+				DrawPlayerTag(out, *playerExpTags, position + Displacement { tagOffset, height - 31 }, static_cast<int>(i));
 			} else if (Players[i].plractive) {
 				RenderClxSprite(out, (*playerExpTags)[0], position + Displacement { tagOffset, height - 31 });
 			}

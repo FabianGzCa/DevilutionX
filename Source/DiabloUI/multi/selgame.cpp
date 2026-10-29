@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #ifdef USE_SDL3
@@ -67,6 +68,8 @@ std::vector<std::unique_ptr<UiItemBase>> vecSelGameDialog;
 std::vector<GameInfo> Gamelist;
 uint32_t firstPublicGameInfoRequestSend = 0;
 size_t HighlightedItem;
+/** Mode chosen while creating a game. Copied to the session only when the game is created. */
+SessionRules SelectedRules = ClassicSessionRules;
 
 void selgame_FreeVectors()
 {
@@ -88,17 +91,40 @@ void selgame_Free()
 	selgame_FreeVectors();
 }
 
+std::optional<GameDataError> GameCompatibilityError(const GameData &data)
+{
+	GameData local = sgGameInitInfo;
+	// This build can join either supported mode. The join request adopts the advertised one.
+	if (IsSupportedSessionRules(data.rules))
+		local.rules = data.rules;
+	local.size = sizeof(GameData);
+	local.versionMajor = PROJECT_VERSION_MAJOR;
+	local.versionMinor = PROJECT_VERSION_MINOR;
+	local.versionPatch = PROJECT_VERSION_PATCH;
+	local.isSpawn = gbIsSpawn ? 1 : 0;
+	local.isHellfire = gbIsHellfire ? 1 : 0;
+	return CheckGameCompatibility(data, local);
+}
+
 bool IsGameCompatible(const GameData &data)
 {
-	// TODO GetGameId is now only used cosmetic (gamelist icon), we need to check the enabled mods in addition to the below check
-	return data.versionMajor == PROJECT_VERSION_MAJOR
-	    && data.versionMinor == PROJECT_VERSION_MINOR
-	    && data.versionPatch == PROJECT_VERSION_PATCH
-	    && data.isSpawn == (gbIsSpawn ? 1 : 0);
+	// Mod identity beyond edition and session rules still needs its own handshake.
+	return !GameCompatibilityError(data).has_value();
+}
+
+std::string_view SessionModeName(SessionRules rules)
+{
+	if (rules == ExtendedSessionRules)
+		return _(/* TRANSLATORS: Multiplayer game mode for up to eight players. */ "Extended");
+	return _(/* TRANSLATORS: Multiplayer game mode with the original four player limit. */ "Classic");
 }
 
 static std::string GetErrorMessageIncompatibility(const GameData &data)
 {
+	if (auto error = GameCompatibilityError(data); error && *error != GameDataError::VersionMismatch && *error != GameDataError::EditionMismatch)
+		return std::string(GameDataErrorMessage(*error));
+	if (data.isExtended() && data.isHellfire != (gbIsHellfire ? 1 : 0))
+		return std::string(GameDataErrorMessage(GameDataError::EditionMismatch));
 	if (data.isSpawn != (gbIsSpawn ? 1 : 0)) {
 		if (data.isSpawn)
 			return std::string(_("The host is running the shareware edition."));
@@ -167,7 +193,12 @@ void UiInitGameSelectionList(std::string_view search)
 				vecSelGameDlgItems.push_back(std::make_unique<UiListItem>(_("None"), -1, UiFlags::ElementDisabled | UiFlags::ColorUiSilver));
 		} else {
 			for (unsigned i = 0; i < Gamelist.size(); i++) {
-				vecSelGameDlgItems.push_back(std::make_unique<UiListItem>(std::string_view(Gamelist[i].name), i + 3, UiFlags::ColorUiGold));
+				const GameInfo &gameInfo = Gamelist[i];
+				const int capacity = SessionPlayerCapacity(gameInfo.gameData.rules);
+				std::string label = gameInfo.name;
+				if (capacity != 0)
+					label = StrCat(label, " ", static_cast<int>(gameInfo.players.size()), "/", capacity);
+				vecSelGameDlgItems.push_back(std::make_unique<UiListItem>(std::move(label), i + 3, UiFlags::ColorUiGold));
 			}
 		}
 	}
@@ -267,7 +298,9 @@ void selgame_GameSelection_Focus(size_t value)
 				break;
 			}
 			infoString += '\n';
-			infoString.append(_("Players: "));
+			infoString.append(FormatRuntime(_(/* TRANSLATORS: {:s} is Classic or Extended. */ "Mode: {:s}"), SessionModeName(gameInfo.gameData.rules)));
+			infoString += '\n';
+			infoString.append(FormatRuntime(_(/* TRANSLATORS: Occupied and total player slots of a game, followed by player names. */ "Players ({:d}/{:d}): "), static_cast<int>(gameInfo.players.size()), static_cast<int>(SessionPlayerCapacity(gameInfo.gameData.rules))));
 			for (const auto &playerName : gameInfo.players) {
 				infoString.append(playerName);
 				infoString += ' ';
@@ -551,12 +584,79 @@ void selgame_Speed_Select(size_t value)
 {
 	nTickRate = vecSelGameDlgItems[value]->m_value;
 
-	if (provider == SELCONN_LOOPBACK || selgame_selectedGame == 1) {
+	if (provider == SELCONN_LOOPBACK) {
+		SelectedRules = ClassicSessionRules;
+		selgame_Password_Select(0);
+		return;
+	}
+
+	selgame_GameModeSelection();
+}
+
+void selgame_GameModeSelection()
+{
+	selgame_FreeVectors();
+
+	UiAddBackground(&vecSelGameDialog);
+	UiAddLogo(&vecSelGameDialog);
+
+	const Point uiPosition = GetUIRectangle().position;
+
+	const SDL_Rect rect1 = { (Sint16)(uiPosition.x + 24), (Sint16)(uiPosition.y + 161), 590, 35 };
+	vecSelGameDialog.push_back(std::make_unique<UiArtText>(_("Create Game").data(), rect1, UiFlags::AlignCenter | UiFlags::FontSize30 | UiFlags::ColorUiSilver, 3));
+
+	const SDL_Rect rect2 = { (Sint16)(uiPosition.x + 34), (Sint16)(uiPosition.y + 211), 205, 33 };
+	vecSelGameDialog.push_back(std::make_unique<UiArtText>(selgame_Label, rect2, UiFlags::AlignCenter | UiFlags::FontSize30 | UiFlags::ColorUiSilver, 3));
+
+	const SDL_Rect rect3 = { (Sint16)(uiPosition.x + 35), (Sint16)(uiPosition.y + 256), DESCRIPTION_WIDTH, 192 };
+	vecSelGameDialog.push_back(std::make_unique<UiArtText>(selgame_Description, rect3, UiFlags::FontSize12 | UiFlags::ColorUiSilverDark, 1, 16));
+
+	const SDL_Rect rect4 = { (Sint16)(uiPosition.x + 299), (Sint16)(uiPosition.y + 211), 295, 35 };
+	vecSelGameDialog.push_back(std::make_unique<UiArtText>(_("Select Game Mode").data(), rect4, UiFlags::AlignCenter | UiFlags::FontSize30 | UiFlags::ColorUiSilver, 3));
+
+	// Classic comes first so it remains the default selection.
+	vecSelGameDlgItems.push_back(std::make_unique<UiListItem>(SessionModeName(ClassicSessionRules), SessionPlayerCapacity(ClassicSessionRules)));
+	vecSelGameDlgItems.push_back(std::make_unique<UiListItem>(SessionModeName(ExtendedSessionRules), SessionPlayerCapacity(ExtendedSessionRules)));
+
+	vecSelGameDialog.push_back(std::make_unique<UiList>(vecSelGameDlgItems, vecSelGameDlgItems.size(), uiPosition.x + 300, (uiPosition.y + 282), 295, 26, UiFlags::AlignCenter | UiFlags::FontSize24 | UiFlags::ColorUiGold));
+
+	const SDL_Rect rect5 = { (Sint16)(uiPosition.x + 299), (Sint16)(uiPosition.y + 427), 140, 35 };
+	vecSelGameDialog.push_back(std::make_unique<UiArtTextButton>(_("OK"), &UiFocusNavigationSelect, rect5, UiFlags::AlignCenter | UiFlags::VerticalCenter | UiFlags::FontSize30 | UiFlags::ColorUiGold));
+
+	const SDL_Rect rect6 = { (Sint16)(uiPosition.x + 449), (Sint16)(uiPosition.y + 427), 140, 35 };
+	vecSelGameDialog.push_back(std::make_unique<UiArtTextButton>(_("CANCEL"), &UiFocusNavigationEsc, rect6, UiFlags::AlignCenter | UiFlags::VerticalCenter | UiFlags::FontSize30 | UiFlags::ColorUiGold));
+
+	UiInitList(selgame_Mode_Focus, selgame_Mode_Select, selgame_Mode_Esc, vecSelGameDialog, true);
+}
+
+void selgame_Mode_Focus(size_t value)
+{
+	if (vecSelGameDlgItems[value]->m_value == SessionPlayerCapacity(ExtendedSessionRules)) {
+		CopyUtf8(selgame_Label, SessionModeName(ExtendedSessionRules), sizeof(selgame_Label));
+		CopyUtf8(selgame_Description, _("Extended Game\nUp to 8 players. When five or more players enter a level, its monsters gain health and award proportionally more experience and loot. Every player needs a version that supports extended games."), sizeof(selgame_Description));
+	} else {
+		CopyUtf8(selgame_Label, SessionModeName(ClassicSessionRules), sizeof(selgame_Label));
+		CopyUtf8(selgame_Description, _("Classic Game\nUp to 4 players with the original multiplayer rules."), sizeof(selgame_Description));
+	}
+	CopyUtf8(selgame_Description, WordWrapString(selgame_Description, DESCRIPTION_WIDTH), sizeof(selgame_Description));
+}
+
+void selgame_Mode_Select(size_t value)
+{
+	SelectedRules = vecSelGameDlgItems[value]->m_value == SessionPlayerCapacity(ExtendedSessionRules) ? ExtendedSessionRules : ClassicSessionRules;
+
+	if (selgame_selectedGame == 1) {
 		selgame_Password_Select(0);
 		return;
 	}
 
 	selgame_Password_Init(0);
+}
+
+void selgame_Mode_Esc()
+{
+	SelectedRules = ClassicSessionRules;
+	selgame_GameSpeedSelection();
 }
 
 void selgame_Password_Init(size_t /*value*/)
@@ -626,8 +726,14 @@ void selgame_Password_Select(size_t /*value*/)
 
 	if (selgame_selectedGame > 1) {
 		bool allowJoin = true;
-		if (selgame_selectedGame > 2)
-			allowJoin = IsGameCompatible(Gamelist[selgame_selectedGame - 3].gameData);
+		// A direct join starts with the classic request, which original hosts understand.
+		SetSessionRules(*m_game_data, ClassicSessionRules);
+		if (selgame_selectedGame > 2) {
+			const GameData &advertised = Gamelist[selgame_selectedGame - 3].gameData;
+			allowJoin = IsGameCompatible(advertised);
+			if (allowJoin)
+				SetSessionRules(*m_game_data, advertised.rules);
+		}
 		if (provider == SELCONN_ZT) {
 			for (unsigned int i = 0; i < (sizeof(selgame_Ip) / sizeof(selgame_Ip[0])); i++) {
 				selgame_Ip[i] = (selgame_Ip[i] >= 'A' && selgame_Ip[i] <= 'Z') ? selgame_Ip[i] + 'a' - 'A' : selgame_Ip[i];
@@ -670,15 +776,19 @@ void selgame_Password_Select(size_t /*value*/)
 	m_game_data->bRunInTown = *GetOptions().Gameplay.runInTown ? 1 : 0;
 	m_game_data->bTheoQuest = *GetOptions().Gameplay.theoQuest ? 1 : 0;
 	m_game_data->bCowQuest = *GetOptions().Gameplay.cowQuest ? 1 : 0;
+	SetSessionRules(*m_game_data, SelectedRules);
 
+	const std::optional<GameDataError> settingsError = ValidateNewGame(*m_game_data, provider == SELCONN_LOOPBACK);
 	GameData gameInitInfo = *m_game_data;
 	SwapGameDataLE(gameInitInfo);
-	if (SNetCreateGame(nullptr, gamePassword, reinterpret_cast<char *>(&gameInitInfo), sizeof(gameInitInfo), gdwPlayerId)) {
+	if (!settingsError && SNetCreateGame(nullptr, gamePassword, reinterpret_cast<char *>(&gameInitInfo), sizeof(gameInitInfo), gdwPlayerId)) {
 		UiInitList_clear();
 		selgame_endMenu = true;
 	} else {
+		// Do not carry a rejected mode into another menu path.
+		SetSessionRules(*m_game_data, ClassicSessionRules);
 		selgame_Free();
-		std::string error = SDL_GetError();
+		std::string error = settingsError ? std::string(GameDataErrorMessage(*settingsError)) : SDL_GetError();
 		if (error.empty())
 			error = "Unknown network error";
 		UiSelOkDialog(_("Multi Player Game").data(), error.c_str(), false);
@@ -692,7 +802,7 @@ void selgame_Password_Esc()
 	if (selgame_selectedGame == 2)
 		selgame_GameSelection_Select(2);
 	else
-		selgame_GameSpeedSelection();
+		selgame_GameModeSelection();
 }
 
 void RefreshGameList()
@@ -730,6 +840,9 @@ bool UiSelectGame(GameData *gameData, int *playerId)
 	firstPublicGameInfoRequestSend = 0;
 	gdwPlayerId = playerId;
 	m_game_data = gameData;
+	// Returning from an earlier menu or failed attempt must not keep its capacity.
+	SelectedRules = ClassicSessionRules;
+	SetSessionRules(*m_game_data, ClassicSessionRules);
 	selgame_Init();
 	HighlightedItem = 0;
 	selgame_GameSelection_Init();

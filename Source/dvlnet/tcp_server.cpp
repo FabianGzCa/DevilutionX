@@ -7,15 +7,18 @@
 #include <utility>
 
 #include "dvlnet/base.h"
+#include "dvlnet/session.hpp"
 #include "player.h"
 #include "utils/log.hpp"
 
 namespace devilution::net {
 
 tcp_server::tcp_server(asio::io_context &ioc, const std::string &bindaddr,
-    unsigned short port, packet_factory &pktfty)
+    unsigned short port, packet_factory &pktfty, buffer_t gameInfo)
     : ioc(ioc)
     , pktfty(pktfty)
+    , playerLimit_(SessionCapacity(gameInfo))
+    , game_init_info(std::move(gameInfo))
 {
 	auto addr = asio::ip::make_address(bindaddr);
 	auto ep = asio::ip::tcp::endpoint(addr, port);
@@ -25,17 +28,12 @@ tcp_server::tcp_server(asio::io_context &ioc, const std::string &bindaddr,
 
 std::string tcp_server::LocalhostSelf()
 {
-	auto addr = acceptor->local_endpoint().address();
-	if (addr.is_unspecified()) {
-		if (addr.is_v4()) {
-			return asio::ip::address_v4::loopback().to_string();
-		}
-		if (addr.is_v6()) {
-			return asio::ip::address_v6::loopback().to_string();
-		}
-		ABORT();
-	}
-	return addr.to_string();
+	auto endpoint = acceptor->local_endpoint();
+	auto addr = endpoint.address();
+	if (addr.is_unspecified())
+		addr = addr.is_v4() ? asio::ip::address(asio::ip::address_v4::loopback()) : asio::ip::address(asio::ip::address_v6::loopback());
+	const std::string host = addr.is_v6() ? "[" + addr.to_string() + "]" : addr.to_string();
+	return host + ":" + std::to_string(endpoint.port());
 }
 
 tcp_server::scc tcp_server::MakeConnection()
@@ -45,18 +43,10 @@ tcp_server::scc tcp_server::MakeConnection()
 
 plr_t tcp_server::NextFree()
 {
-	for (plr_t i = 0; i < Players.size(); ++i)
+	for (plr_t i = 0; i < playerLimit_; ++i)
 		if (!connections[i])
 			return i;
 	return PLR_BROADCAST;
-}
-
-bool tcp_server::Empty()
-{
-	for (plr_t i = 0; i < Players.size(); ++i)
-		if (connections[i])
-			return false;
-	return true;
 }
 
 void tcp_server::StartReceive(const scc &con)
@@ -69,12 +59,17 @@ void tcp_server::StartReceive(const scc &con)
 void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
     size_t bytesRead)
 {
+	if (con->closed)
+		return;
 	if (ec || bytesRead == 0) {
 		DropConnection(con);
 		return;
 	}
 	con->recv_buffer.resize(bytesRead);
-	con->recv_queue.Write(std::move(con->recv_buffer));
+	if (auto result = con->recv_queue.Write(std::move(con->recv_buffer)); !result.has_value()) {
+		DropConnection(con);
+		return;
+	}
 	con->recv_buffer.resize(frame_queue::max_frame_size);
 	while (true) {
 		std::expected<bool, PacketError> ready = con->recv_queue.PacketReady();
@@ -85,6 +80,10 @@ void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
 		}
 		if (!*ready)
 			break;
+		if (con->recv_queue.ReadPacketFlags() != 0) {
+			DropConnection(con);
+			return;
+		}
 		std::expected<buffer_t, PacketError> pktData = con->recv_queue.ReadPacket();
 		if (!pktData.has_value()) {
 			Log("ReadPacket: {}", pktData.error().what());
@@ -94,8 +93,12 @@ void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
 		std::expected<std::unique_ptr<packet>, PacketError> pkt = pktfty.make_packet(*pktData);
 		if (!pkt.has_value()) {
 			Log("make_packet: {}", pkt.error().what());
-			if (pkt.error().code() == PacketError::ErrorCode::DecryptionFailed)
-				StartSend(con, pkt.error().code());
+			if (pkt.error().code() == PacketError::ErrorCode::DecryptionFailed) {
+				con->rejecting = true;
+				con->closeAfterSend = true;
+				if (auto result = StartSend(con, pkt.error().code()); result.has_value())
+					return;
+			}
 			DropConnection(con);
 			return;
 		}
@@ -106,34 +109,50 @@ void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
 				DropConnection(con);
 				return;
 			}
+			if (con->rejecting)
+				return;
 		} else {
 			con->timeout = timeout_active;
-			std::expected<void, PacketError> result = HandleReceivePacket(**pkt);
+			std::expected<void, PacketError> result = HandleReceivePacket(con, **pkt);
 			if (!result.has_value()) {
 				Log("Network error: {}", result.error().what());
 				DropConnection(con);
 				return;
 			}
 		}
+		if (con->closed)
+			return;
 	}
 	StartReceive(con);
 }
 
 std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &con, packet &inPkt)
 {
-	auto newplr = NextFree();
-	if (newplr == PLR_BROADCAST)
-		return std::unexpected(ServerError());
-
-	if (Empty()) {
-		std::expected<const buffer_t *, PacketError> pktInfo = inPkt.Info();
-		if (!pktInfo.has_value())
-			return std::unexpected(pktInfo.error());
-		game_init_info = **pktInfo;
+	const auto info = inPkt.Info();
+	if (!info.has_value())
+		return std::unexpected(info.error());
+	if (auto error = ValidateJoinRequest(game_init_info, inPkt)) {
+		auto reply = MakeJoinReject(pktfty, PLR_MASTER, inPkt, *error);
+		if (!reply.has_value())
+			return std::unexpected(reply.error());
+		con->rejecting = true;
+		return StartSend(con, (*reply)->Data(), 0, true);
+	}
+	const auto newplr = NextFree();
+	if (newplr == PLR_BROADCAST) {
+		con->rejecting = true;
+		return MakeJoinReject(pktfty, PLR_MASTER, inPkt, GameDataError::SessionFull)
+		    .and_then([&](std::unique_ptr<packet> pkt) { return StartSend(con, pkt->Data(), 0, true); });
 	}
 
-	for (plr_t player = 0; player < Players.size(); player++) {
-		if (connections[player]) {
+	// Own the slot before announcing it: a later failure must notify every peer
+	// that may already have received PT_CONNECT when DropConnection rolls it back.
+	pending_.erase(con);
+	con->plr = newplr;
+	connections[newplr] = con;
+	con->timeout = timeout_active;
+	for (plr_t player = 0; player < playerLimit_; player++) {
+		if (player != newplr && connections[player]) {
 			std::expected<void, PacketError> result
 			    = pktfty.make_packet<PT_CONNECT>(PLR_MASTER, PLR_BROADCAST, newplr)
 			          .and_then([&](std::unique_ptr<packet> &&pkt) { return StartSend(connections[player], *pkt); })
@@ -146,38 +165,56 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 
 	std::expected<void, PacketError> result
 	    = inPkt.Cookie()
-	          .and_then([&](cookie_t &&cookie) { return pktfty.make_packet<PT_JOIN_ACCEPT>(PLR_MASTER, PLR_BROADCAST, cookie, newplr, game_init_info); })
+	          .and_then([&](cookie_t &&cookie) { return MakeJoinAccept(pktfty, PLR_MASTER, cookie, newplr, game_init_info); })
 	          .and_then([&](std::unique_ptr<packet> &&pkt) { return StartSend(con, *pkt); });
-	if (!result.has_value())
-		return result;
-	con->plr = newplr;
-	connections[newplr] = con;
-	con->timeout = timeout_active;
-	return {};
+	return result;
 }
 
-std::expected<void, PacketError> tcp_server::HandleReceivePacket(packet &pkt)
+std::expected<void, PacketError> tcp_server::HandleReceivePacket(const scc &con, packet &pkt)
 {
+	if (pkt.Source() != con->plr)
+		return std::unexpected("Packet source does not match connection");
+	if (auto result = ValidatePacketAddresses(pkt, playerLimit_); !result.has_value())
+		return result;
+	switch (pkt.Type()) {
+	case PT_MESSAGE:
+		if ((*pkt.Message())->size() > MaxMessageSize)
+			return std::unexpected("Message exceeds provider limit");
+		break;
+	case PT_TURN:
+	case PT_ECHO_REQUEST:
+	case PT_ECHO_REPLY:
+		break;
+	case PT_DISCONNECT:
+		return SendPacket(pkt).transform([&] { DisconnectNet(*pkt.NewPlayer()); });
+	default:
+		return std::unexpected("Unexpected packet from an admitted player");
+	}
 	return SendPacket(pkt);
 }
 
 std::expected<void, PacketError> tcp_server::SendPacket(packet &pkt)
 {
 	if (pkt.Destination() == PLR_BROADCAST) {
-		for (size_t i = 0; i < Players.size(); ++i) {
+		for (size_t i = 0; i < playerLimit_; ++i) {
 			if (i == pkt.Source() || !connections[i])
 				continue;
 			std::expected<void, PacketError> result = StartSend(connections[i], pkt);
-			if (!result.has_value())
+			if (!result.has_value()) {
 				LogError("Failed to send packet {} to player {}: {}", static_cast<uint8_t>(pkt.Type()), i, result.error().what());
+				DropConnection(connections[i]);
+			}
 		}
 		return {};
 	}
-	if (pkt.Destination() >= MAX_PLRS)
+	if (pkt.Destination() >= playerLimit_)
 		return std::unexpected(ServerError());
 	if (pkt.Destination() == pkt.Source() || !connections[pkt.Destination()])
 		return {};
-	return StartSend(connections[pkt.Destination()], pkt);
+	const scc recipient = connections[pkt.Destination()];
+	if (auto result = StartSend(recipient, pkt); !result.has_value())
+		DropConnection(recipient);
+	return {};
 }
 
 std::expected<void, PacketError> tcp_server::StartSend(const scc &con, packet &pkt)
@@ -192,27 +229,42 @@ std::expected<void, PacketError> tcp_server::StartSend(const scc &con, PacketErr
 	return StartSend(con, pktData, TcpErrorCodeFlags);
 }
 
-std::expected<void, PacketError> tcp_server::StartSend(const scc &con, buffer_t pktData, uint16_t flags)
+std::expected<void, PacketError> tcp_server::StartSend(const scc &con, buffer_t pktData, uint16_t flags, bool closeAfterSend)
 {
-	std::expected<buffer_t, PacketError> frame = frame_queue::MakeFrame(pktData, flags);
+	if (con->closed)
+		return std::unexpected("Connection is closed");
+	auto frame = frame_queue::MakeFrame(std::move(pktData), flags);
 	if (!frame.has_value())
 		return std::unexpected(frame.error());
-	std::unique_ptr<buffer_t> framePtr = std::make_unique<buffer_t>(*frame);
-	const asio::mutable_buffer buf = asio::buffer(*framePtr);
-	asio::async_write(con->socket, buf,
-	    [this, con, frame = std::move(framePtr)](const asio::error_code &ec, size_t bytesSent) {
-		    HandleSend(con, ec, bytesSent);
-	    });
+	const bool idle = con->outgoing.Empty();
+	if (auto result = con->outgoing.Push(std::move(*frame)); !result.has_value())
+		return result;
+	con->closeAfterSend |= closeAfterSend;
+	if (idle)
+		WriteNext(con);
 	return {};
 }
 
-void tcp_server::HandleSend(const scc &con, const asio::error_code &ec,
-    size_t /*bytesSent*/)
+void tcp_server::WriteNext(const scc &con)
 {
+	const auto frame = con->outgoing.Front();
+	asio::async_write(con->socket, asio::buffer(*frame),
+	    [this, con, frame](const asio::error_code &ec, size_t bytesSent) { HandleSend(con, ec, bytesSent); });
+}
+
+void tcp_server::HandleSend(const scc &con, const asio::error_code &ec, size_t /*bytesSent*/)
+{
+	if (con->closed)
+		return;
 	if (ec) {
-		Log("Network error: {}", ec.message());
 		DropConnection(con);
+		return;
 	}
+	con->outgoing.Pop();
+	if (!con->outgoing.Empty())
+		WriteNext(con);
+	else if (con->closeAfterSend)
+		DropConnection(con);
 }
 
 void tcp_server::StartAccept()
@@ -225,12 +277,14 @@ void tcp_server::StartAccept()
 
 void tcp_server::HandleAccept(const scc &con, const asio::error_code &ec)
 {
+	if (closing_)
+		return;
 	if (ec) {
 		const PacketError packetError = IoHandlerError(ec.message());
 		RaiseIoHandlerError(packetError);
 		return;
 	}
-	if (NextFree() == PLR_BROADCAST) {
+	if (pending_.size() >= playerLimit_) {
 		DropConnection(con);
 	} else {
 		asio::error_code errorCode;
@@ -238,6 +292,7 @@ void tcp_server::HandleAccept(const scc &con, const asio::error_code &ec)
 		con->socket.set_option(option, errorCode);
 		if (errorCode)
 			LogError("Server error setting socket option: {}", errorCode.message());
+		pending_.insert(con);
 		con->timeout = timeout_connect;
 		StartReceive(con);
 		StartTimeout(con);
@@ -254,10 +309,8 @@ void tcp_server::StartTimeout(const scc &con)
 
 void tcp_server::HandleTimeout(const scc &con, const asio::error_code &ec)
 {
-	if (ec) {
-		DropConnection(con);
+	if (ec || con->closed)
 		return;
-	}
 	if (con->timeout > 0)
 		con->timeout -= 1;
 	if (con->timeout <= 0) {
@@ -268,21 +321,34 @@ void tcp_server::HandleTimeout(const scc &con, const asio::error_code &ec)
 	StartTimeout(con);
 }
 
-void tcp_server::DropConnection(const scc &con)
+void tcp_server::DropConnection(const scc &connection)
 {
+	// Keep a local owner: callers may pass a reference to the slot we clear.
+	const scc con = connection;
+	if (!con || con->closed)
+		return;
+	con->closed = true;
 	const plr_t plr = con->plr;
+	con->plr = PLR_BROADCAST;
+	pending_.erase(con);
+	con->outgoing.Clear();
 	con->timer.cancel();
 	con->socket.close();
 	if (plr == PLR_BROADCAST) {
 		return;
 	}
+	if (plr >= playerLimit_ || connections[plr] != con)
+		return;
 	connections[plr] = nullptr;
+	if (closing_)
+		return;
 
 	std::expected<std::unique_ptr<packet>, PacketError> pkt
 	    = pktfty.make_packet<PT_DISCONNECT>(PLR_MASTER, PLR_BROADCAST,
 	        plr, leaveinfo_t::LEAVE_DROP);
 	if (pkt.has_value()) {
-		SendPacket(**pkt);
+		if (std::expected<void, PacketError> result = SendPacket(**pkt); !result.has_value())
+			LogError("SendPacket<PT_DISCONNECT>: {}", result.error().what());
 	} else {
 		LogError("make_packet<PT_DISCONNECT>: {}", pkt.error().what());
 	}
@@ -304,17 +370,20 @@ std::expected<void, PacketError> tcp_server::CheckIoHandlerError()
 
 void tcp_server::DisconnectNet(plr_t plr)
 {
-	scc &con = connections[plr];
-	if (con == nullptr)
-		return;
-	con->timer.cancel();
-	con->socket.close();
-	con = nullptr;
+	if (plr < playerLimit_)
+		DropConnection(connections[plr]);
 }
 
 void tcp_server::Close()
 {
+	if (closing_)
+		return;
+	closing_ = true;
 	acceptor->close();
+	while (!pending_.empty())
+		DropConnection(*pending_.begin());
+	for (const auto &con : connections)
+		DropConnection(con);
 }
 
 tcp_server::~tcp_server()

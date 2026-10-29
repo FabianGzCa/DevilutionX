@@ -10,8 +10,11 @@
 #include "levels/gendung.h"
 #include "lighting.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "monsters/validation.hpp"
 #include "player.h"
+#include "players/level_entry.hpp"
+#include "storm/storm_net.hpp"
 #include "utils/endian_swap.hpp"
 #include "utils/is_of.hpp"
 
@@ -19,9 +22,9 @@ namespace devilution {
 
 namespace {
 
-uint16_t sgnMonsterPriority[MaxMonsters];
+uint16_t sgnMonsterPriority[MonsterStorageCapacity];
 size_t sgnMonsters;
-uint16_t sgwLRU[MaxMonsters];
+uint16_t sgwLRU[MonsterStorageCapacity];
 int sgnSyncItem;
 int sgnSyncPInv;
 
@@ -204,14 +207,14 @@ void SyncMonster(bool isOwner, const TSyncMonster &monsterSync)
 	}
 
 	decode_enemy(monster, enemyId);
-	monster.whoHit = static_cast<int8_t>(monster.whoHit | monsterSync.mWhoHit);
+	monster.whoHit = MergePlayerExperienceMasks(monster.whoHit, monsterSync.mWhoHit);
 }
 
 bool IsTSyncMonsterValid(const TSyncMonster &monsterSync)
 {
 	const size_t monsterId = monsterSync._mndx;
 
-	if (monsterId >= MaxMonsters)
+	if (monsterId >= MonsterLimit())
 		return false;
 
 	if (!InDungeonBounds({ monsterSync._mx, monsterSync._my }))
@@ -235,7 +238,12 @@ size_t sync_all_monsters(std::byte *pbBuf, size_t dwMaxLen)
 	if (ActiveMonsterCount < 1) {
 		return dwMaxLen;
 	}
-	if (dwMaxLen < sizeof(TSyncHeader) + sizeof(TSyncMonster)) {
+	const bool party = IsPartyBalanceEnabled();
+	const size_t headerSize = party ? sizeof(TSyncPartyHeader) : sizeof(TSyncHeader);
+	const size_t recordSize = party ? sizeof(TSyncPartyMonster) : sizeof(TSyncMonster);
+	if (party && GetPartyLevelState(CurrentPartyLevel()).participants == 0)
+		return dwMaxLen;
+	if (dwMaxLen < headerSize + recordSize) {
 		return dwMaxLen;
 	}
 	if (MyPlayer->_pLvlChanging) {
@@ -243,17 +251,23 @@ size_t sync_all_monsters(std::byte *pbBuf, size_t dwMaxLen)
 	}
 
 	auto *pHdr = reinterpret_cast<TSyncHeader *>(pbBuf);
-	pbBuf += sizeof(TSyncHeader);
-	dwMaxLen -= sizeof(TSyncHeader);
+	pbBuf += headerSize;
+	dwMaxLen -= headerSize;
 
-	pHdr->bCmd = CMD_SYNCDATA;
+	pHdr->bCmd = party ? CMD_PARTYSYNCDATA : CMD_SYNCDATA;
+	if (party) {
+		auto *extended = reinterpret_cast<TSyncPartyHeader *>(pHdr);
+		extended->participants = GetPartyLevelState(CurrentPartyLevel()).participants;
+		extended->epoch = Swap32LE(MultiplayerSlotEpoch(MyPlayerId));
+		extended->membership = Swap32LE(MultiplayerMembershipDigest());
+	}
 	pHdr->bLevel = GetLevelForMultiplayer(*MyPlayer);
 	pHdr->wLen = 0;
 	SyncPlrInv(pHdr);
 	assert(dwMaxLen <= 0xffff);
 	SyncOneMonster();
 
-	for (size_t i = 0; i < ActiveMonsterCount && dwMaxLen >= sizeof(TSyncMonster); i++) {
+	for (size_t i = 0; i < ActiveMonsterCount && dwMaxLen >= recordSize; i++) {
 		auto &monsterSync = *reinterpret_cast<TSyncMonster *>(pbBuf);
 		bool sync = false;
 		if (i < 2) {
@@ -265,9 +279,15 @@ size_t sync_all_monsters(std::byte *pbBuf, size_t dwMaxLen)
 		if (!sync) {
 			break;
 		}
-		pbBuf += sizeof(TSyncMonster);
-		pHdr->wLen += sizeof(TSyncMonster);
-		dwMaxLen -= sizeof(TSyncMonster);
+		if (party) {
+			auto *extended = reinterpret_cast<TSyncPartyMonster *>(pbBuf);
+			auto &monster = Monsters[monsterSync._mndx];
+			ReconcilePartyMonster(monster);
+			extended->party = EncodePartyMonster(GetPartyLevelState(CurrentPartyLevel()).monsters[monsterSync._mndx]);
+		}
+		pbBuf += recordSize;
+		pHdr->wLen += recordSize;
+		dwMaxLen -= recordSize;
 	}
 	pHdr->wLen = Swap16LE(pHdr->wLen);
 
@@ -276,6 +296,9 @@ size_t sync_all_monsters(std::byte *pbBuf, size_t dwMaxLen)
 
 size_t OnSyncData(const TSyncHeader &header, size_t maxCmdSize, const Player &player)
 {
+	if (IsPartyBalanceEnabled())
+		return ValidateCmdSize(Swap16LE(header.wLen) + sizeof(header), maxCmdSize, player.getId()) ? Swap16LE(header.wLen) + sizeof(header) : maxCmdSize;
+
 	const uint16_t wLen = Swap16LE(header.wLen);
 
 	if (!ValidateCmdSize(wLen + sizeof(header), maxCmdSize, player.getId()))
@@ -290,11 +313,14 @@ size_t OnSyncData(const TSyncHeader &header, size_t maxCmdSize, const Player &pl
 		return wLen + sizeof(header);
 	}
 
-	assert(header.wLen % sizeof(TSyncMonster) == 0);
+	if (wLen % sizeof(TSyncMonster) != 0) {
+		SNetDropPlayer(player.getId(), leaveinfo_t::LEAVE_DROP);
+		return wLen + sizeof(header);
+	}
 	const int monsterCount = static_cast<int>(wLen / sizeof(TSyncMonster));
 
 	const uint8_t level = header.bLevel;
-	const bool syncLocalLevel = !MyPlayer->_pLvlChanging && GetLevelForMultiplayer(*MyPlayer) == level;
+	const bool syncLocalLevel = !MyPlayer->_pLvlChanging && !IsLevelEntryResolving() && GetLevelForMultiplayer(*MyPlayer) == level;
 
 	if (IsValidLevelForMultiplayer(level)) {
 		const auto *monsterSyncs = reinterpret_cast<const TSyncMonster *>(&header + 1);
@@ -315,6 +341,74 @@ size_t OnSyncData(const TSyncHeader &header, size_t maxCmdSize, const Player &pl
 	}
 
 	return wLen + sizeof(header);
+}
+
+size_t OnPartySyncData(const TSyncPartyHeader &header, size_t maxCmdSize, const Player &player)
+{
+	const size_t length = Swap16LE(header.native.wLen);
+	const size_t total = sizeof(header) + length;
+	if (!ValidateCmdSize(total, maxCmdSize, player.getId()))
+		return maxCmdSize;
+	if (!IsPartyBalanceEnabled() || gbBufferMsgs != 0 || &player == MyPlayer || length % sizeof(TSyncPartyMonster) != 0
+	    || header.participants == 0 || header.participants > 8 || Swap32LE(header.epoch) != MultiplayerSlotEpoch(player.getId())
+	    || Swap32LE(header.membership) != MultiplayerMembershipDigest()
+	    || !IsValidLevelForMultiplayer(header.native.bLevel))
+		return total;
+	const uint8_t levelId = header.native.bLevel;
+	// Peers may briefly count different players on the level; the ledger does not depend on it.
+	auto &level = GetPartyLevelState(levelId);
+	const bool local = CurrentPartyLevel() == levelId && !MyPlayer->_pLvlChanging && !IsLevelEntryResolving();
+	const auto *records = reinterpret_cast<const TSyncPartyMonster *>(&header + 1);
+	uint8_t owner = 255;
+	for (const auto &peer : Players) {
+		if (peer.plractive && !peer._pLvlChanging && GetLevelForMultiplayer(peer) == levelId) {
+			owner = static_cast<uint8_t>(peer.getId());
+			break;
+		}
+	}
+	bool restoreHealth = false;
+	for (size_t i = 0; i < length / sizeof(*records); ++i) {
+		const auto &record = records[i];
+		if (!IsTSyncMonsterValid(record.native))
+			continue;
+		const auto incoming = DecodePartyMonster(record.party);
+		if (!incoming)
+			continue;
+		auto &state = level.monsters[record.native._mndx];
+		if (state.flags != 0 && state.generation != incoming->generation)
+			continue;
+		if (local) {
+			const auto &monster = Monsters[record.native._mndx];
+			if (monster.partyGeneration == incoming->generation && IsTSyncEnemyValid(record.native))
+				SyncMonster(player.getId() > MyPlayerId, record.native);
+		}
+		{
+			bool covers = true;
+			bool newer = state.flags == 0;
+			for (size_t actor = 0; actor < state.receipts.size(); ++actor) {
+				covers &= incoming->receipts[actor] >= state.receipts[actor];
+				newer |= incoming->receipts[actor] > state.receipts[actor];
+			}
+			if (covers && (!local || player.getId() == owner) && (newer || player.getId() == owner)) {
+				const auto contributors = state.contributors;
+				const uint8_t settled = state.flags & (PartyMonsterDead | PartyMonsterRewarded);
+				const uint8_t deathParticipants = state.deathParticipants;
+				state = *incoming;
+				state.contributors |= contributors;
+				state.flags |= settled;
+				if (settled != 0 && state.deathParticipants == 0)
+					state.deathParticipants = deathParticipants;
+				restoreHealth |= local;
+			}
+		}
+		TSyncMonster native = record.native;
+		native._mhitpoints = SwapSigned32LE(PartyMonsterHitPoints(state, level.participants).raw());
+		native.mWhoHit = PlayerExperienceMaskFromByte(state.contributors);
+		delta_sync_monster(native, levelId);
+	}
+	if (restoreHealth)
+		RestorePartyMonsters();
+	return total;
 }
 
 void sync_init()

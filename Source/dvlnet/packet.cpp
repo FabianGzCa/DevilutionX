@@ -62,6 +62,16 @@ const char *packet_type_to_string(uint8_t packetType)
 		return "PT_MESSAGE";
 	case PT_TURN:
 		return "PT_TURN";
+	case PT_JOIN_REQUEST_EXTENDED:
+		return "PT_JOIN_REQUEST_EXTENDED";
+	case PT_JOIN_ACCEPT_EXTENDED:
+		return "PT_JOIN_ACCEPT_EXTENDED";
+	case PT_JOIN_REJECT:
+		return "PT_JOIN_REJECT";
+	case PT_INFO_REQUEST_EXTENDED:
+		return "PT_INFO_REQUEST_EXTENDED";
+	case PT_INFO_REPLY_EXTENDED:
+		return "PT_INFO_REPLY_EXTENDED";
 	case PT_JOIN_REQUEST:
 		return "PT_JOIN_REQUEST";
 	case PT_JOIN_ACCEPT:
@@ -166,14 +176,14 @@ std::expected<turn_t, PacketError> packet::Turn()
 std::expected<cookie_t, PacketError> packet::Cookie()
 {
 	assert(have_decrypted);
-	return CheckPacketTypeOneOf({ PT_JOIN_REQUEST, PT_JOIN_ACCEPT }, m_type)
+	return CheckPacketTypeOneOf({ PT_JOIN_REQUEST, PT_JOIN_ACCEPT, PT_JOIN_REQUEST_EXTENDED, PT_JOIN_ACCEPT_EXTENDED, PT_JOIN_REJECT }, m_type)
 	    .transform([this]() { return m_cookie; });
 }
 
 std::expected<plr_t, PacketError> packet::NewPlayer()
 {
 	assert(have_decrypted);
-	return CheckPacketTypeOneOf({ PT_JOIN_ACCEPT, PT_CONNECT, PT_DISCONNECT }, m_type)
+	return CheckPacketTypeOneOf({ PT_JOIN_ACCEPT, PT_JOIN_ACCEPT_EXTENDED, PT_CONNECT, PT_DISCONNECT }, m_type)
 	    .transform([this]() { return m_newplr; });
 }
 
@@ -187,7 +197,7 @@ std::expected<timestamp_t, PacketError> packet::Time()
 std::expected<const buffer_t *, PacketError> packet::Info()
 {
 	assert(have_decrypted);
-	return CheckPacketTypeOneOf({ PT_JOIN_REQUEST, PT_JOIN_ACCEPT, PT_CONNECT, PT_INFO_REPLY }, m_type)
+	return CheckPacketTypeOneOf({ PT_JOIN_REQUEST, PT_JOIN_ACCEPT, PT_CONNECT, PT_INFO_REPLY, PT_JOIN_REQUEST_EXTENDED, PT_JOIN_ACCEPT_EXTENDED, PT_JOIN_REJECT, PT_INFO_REPLY_EXTENDED }, m_type)
 	    .transform([this]() { return &m_info; });
 }
 

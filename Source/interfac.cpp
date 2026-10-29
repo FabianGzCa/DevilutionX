@@ -35,8 +35,10 @@
 #include "headless_mode.hpp"
 #include "hwcursor.hpp"
 #include "loadsave.h"
+#include "msg.h"
 #include "multi.h"
 #include "pfile.h"
+#include "players/level_entry.hpp"
 #include "plrmsg.h"
 #include "utils/log.hpp"
 #include "utils/sdl_compat.h"
@@ -543,7 +545,10 @@ void ProgressEventHandler(const SDL_Event &event, uint16_t modState)
 		IsProgress = false;
 
 		const Player &myPlayer = *MyPlayer;
-		NetSendCmdLocParam2(true, CMD_PLAYER_JOINLEVEL, myPlayer.position.tile, myPlayer.plrlevel, myPlayer.plrIsOnSetLevel ? 1 : 0);
+		if (sgGameInitInfo.rules == ExtendedSessionRules)
+			BeginLevelEntry();
+		else
+			NetSendCmdLocParam2(true, CMD_PLAYER_JOINLEVEL, myPlayer.position.tile, myPlayer.plrlevel, myPlayer.plrIsOnSetLevel ? 1 : 0);
 		DelayPlrMessages(SDL_GetTicks() - ProgressEventHandlerState.loadStartedAt);
 
 		if (gbSomebodyWonGameKludge && myPlayer.isOnLevel(16)) {
@@ -643,6 +648,8 @@ void CompleteProgress()
 
 void ShowProgress(interface_mode uMsg)
 {
+	if (IsExtendedItemTransferSession())
+		gbBufferMsgs = 1;
 	IsProgress = true;
 	gbSomebodyWonGameKludge = false;
 
@@ -693,6 +700,8 @@ void ShowProgress(interface_mode uMsg)
 	while (HandleProgressBarUpdate()) { }
 	loadThread.join();
 #endif
+	if (IsExtendedItemTransferSession())
+		run_delta_info();
 }
 
 } // namespace devilution

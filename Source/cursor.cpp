@@ -35,6 +35,7 @@
 #include "inv.h"
 #include "levels/trigs.h"
 #include "missiles.h"
+#include "msg.h"
 #include "options.h"
 #include "qol/itemlabels.h"
 #include "qol/stash.h"
@@ -367,7 +368,7 @@ bool TrySelectPixelBased(Point tile)
 		}
 
 		uint8_t itemId = dItem[adjacentTile.x][adjacentTile.y];
-		if (itemId != 0) {
+		if (itemId != 0 && !Items[itemId - 1].pendingCreation) {
 			itemId = itemId - 1;
 			const Item &item = Items[itemId];
 			const ClxSprite sprite = item.AnimInfo.currentSprite();
@@ -582,6 +583,9 @@ void NewCursor(int cursId)
 	}
 
 	if (cursId < CURSOR_HOURGLASS && MyPlayer != nullptr) {
+		// An accepted drop is still owned until its local or distributed commit.
+		if (!MyPlayer->HoldItem.isEmpty() && IsItemTransferPending())
+			return;
 		MyPlayer->HoldItem.clear();
 	}
 	pcurs = cursId;

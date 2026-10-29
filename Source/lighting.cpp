@@ -29,6 +29,8 @@
 
 namespace devilution {
 
+static_assert(MAXVISION == PlayerStorageCapacity);
+
 std::array<bool, MAXVISION> VisionActive;
 Light VisionList[MAXVISION];
 Light Lights[MAXLIGHTS];
@@ -279,7 +281,7 @@ void AddUnLight(int i)
 	if (DisableLighting)
 		return;
 #endif
-	if (i == NO_LIGHT)
+	if (!IsValidLightId(i))
 		return;
 
 	Lights[i].isInvalid = true;
@@ -293,7 +295,7 @@ void ChangeLightRadius(int i, uint8_t radius)
 	if (DisableLighting)
 		return;
 #endif
-	if (i == NO_LIGHT)
+	if (!IsValidLightId(i))
 		return;
 
 	Light &light = Lights[i];
@@ -311,7 +313,7 @@ void ChangeLightXY(int i, Point position)
 	if (DisableLighting)
 		return;
 #endif
-	if (i == NO_LIGHT)
+	if (!IsValidLightId(i))
 		return;
 
 	Light &light = Lights[i];
@@ -329,7 +331,7 @@ void ChangeLightOffset(int i, DisplacementOf<int8_t> offset)
 	if (DisableLighting)
 		return;
 #endif
-	if (i == NO_LIGHT)
+	if (!IsValidLightId(i))
 		return;
 
 	Light &light = Lights[i];
@@ -350,7 +352,7 @@ void ChangeLight(int i, Point position, uint8_t radius)
 	if (DisableLighting)
 		return;
 #endif
-	if (i == NO_LIGHT)
+	if (!IsValidLightId(i))
 		return;
 
 	Light &light = Lights[i];
@@ -404,6 +406,9 @@ void SavePreLighting()
 
 void ActivateVision(Point position, int r, size_t id)
 {
+	if (id >= VisionActive.size())
+		return;
+
 	auto &vision = VisionList[id];
 	vision.position.tile = position;
 	vision.radius = r;
@@ -414,8 +419,27 @@ void ActivateVision(Point position, int r, size_t id)
 	UpdateVision = true;
 }
 
+void DeactivateVision(size_t id)
+{
+	if (id >= VisionActive.size() || !VisionActive[id])
+		return;
+
+	// Town stays fully lit and does not refresh dungeon vision after an admission or departure.
+	if (leveltype != DTYPE_TOWN) {
+		const Light &vision = VisionList[id];
+		DoUnVision(vision.position.tile, vision.radius);
+		if (vision.hasChanged)
+			DoUnVision(vision.position.old, vision.oldRadius);
+	}
+	VisionActive[id] = false;
+	UpdateVision = true;
+}
+
 void ChangeVisionRadius(size_t id, int r)
 {
+	if (id >= VisionActive.size())
+		return;
+
 	auto &vision = VisionList[id];
 	vision.hasChanged = true;
 	vision.position.old = vision.position.tile;
@@ -426,6 +450,9 @@ void ChangeVisionRadius(size_t id, int r)
 
 void ChangeVisionXY(size_t id, Point position)
 {
+	if (id >= VisionActive.size())
+		return;
+
 	auto &vision = VisionList[id];
 	vision.hasChanged = true;
 	vision.position.old = vision.position.tile;
@@ -443,11 +470,16 @@ void ProcessVisionList()
 
 	for (const Player &player : Players) {
 		const size_t id = player.getId();
+		if (id >= VisionActive.size())
+			continue;
 		if (!VisionActive[id])
 			continue;
 		Light &vision = VisionList[id];
 		if (!player.plractive || !player.isOnActiveLevel() || (player._pLvlChanging && &player != MyPlayer)) {
 			DoUnVision(vision.position.tile, vision.radius);
+			if (vision.hasChanged)
+				DoUnVision(vision.position.old, vision.oldRadius);
+			vision.hasChanged = false;
 			VisionActive[id] = false;
 			continue;
 		}
@@ -458,6 +490,8 @@ void ProcessVisionList()
 	}
 	for (const Player &player : Players) {
 		const size_t id = player.getId();
+		if (id >= VisionActive.size())
+			continue;
 		if (!VisionActive[id])
 			continue;
 		const Light &vision = VisionList[id];

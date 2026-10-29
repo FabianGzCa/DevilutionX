@@ -17,6 +17,7 @@
 #include "levels/setmaps.h"
 #include "options.h"
 #include "player.h"
+#include "player_visual_identity.hpp"
 #include "utils/attributes.h"
 #include "utils/enum_traits.h"
 #include "utils/format.hpp"
@@ -36,11 +37,6 @@ namespace {
 Point Automap;
 
 enum MapColors : uint8_t {
-	/** color used to draw the player's arrow */
-	MapColorsPlayer1 = (PAL8_ORANGE + 1),
-	MapColorsPlayer2 = (PAL8_YELLOW + 1),
-	MapColorsPlayer3 = (PAL8_RED + 1),
-	MapColorsPlayer4 = (PAL8_BLUE + 1),
 	/** color for bright map lines (doors, stairs etc.) */
 	MapColorsBright = PAL8_YELLOW,
 	/** color for dim map lines/dots */
@@ -1320,27 +1316,13 @@ void SearchAutomapItem(const Surface &out, const Displacement &myPlayerOffset, i
 	}
 }
 
-uint8_t GetPlayerMapColor(int id)
-{
-	static constexpr uint8_t PlayerMapColors[] = {
-		MapColorsPlayer1,
-		MapColorsPlayer2,
-		MapColorsPlayer3,
-		MapColorsPlayer4,
-	};
-
-	if (id < 0 || id >= static_cast<int>(SDL_arraysize(PlayerMapColors)))
-		return MapColorsPlayer1;
-
-	return PlayerMapColors[id];
-}
-
 /**
  * @brief Renders an arrow on the automap, centered on and facing the direction of the player.
  */
 void DrawAutomapPlr(const Surface &out, const Displacement &myPlayerOffset, const Player &player)
 {
-	const uint8_t playerColor = GetPlayerMapColor(player.getId());
+	const PlayerVisualIdentity &identity = GetConfiguredPlayerVisualIdentity(player.getId());
+	const uint8_t playerColor = identity.automapColor;
 
 	const Point tile = player.position.tile;
 
@@ -1419,6 +1401,7 @@ void DrawAutomapPlr(const Surface &out, const Displacement &myPlayerOffset, cons
 	case Direction::NoDirection:
 		break;
 	}
+	DrawAutomapPlayerIdentifier(out, base, player.getId());
 }
 
 /**
@@ -1544,6 +1527,11 @@ std::unique_ptr<AutomapTile[]> LoadAutomapData(size_t &tileCount)
 }
 
 } // namespace
+
+void DrawAutomapPlayerIdentifier(const Surface &out, Point center, int playerId)
+{
+	DrawPlayerNumber(out, center, playerId);
+}
 
 bool AutomapActive;
 AutomapType CurrentAutomapType = AutomapType::Opaque;

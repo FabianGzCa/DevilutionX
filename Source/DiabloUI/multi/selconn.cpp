@@ -120,15 +120,14 @@ void SelconnEsc()
 
 void SelconnFocus(size_t value)
 {
-	int players = MAX_PLRS;
+	// Network games are classic by default; an extended game can be selected when it is created.
+	int players = SessionPlayerCapacity(ExtendedSessionRules);
 	switch (vecConnItems[value]->m_value) {
 	case SELCONN_TCP:
 		CopyUtf8(selconn_Description, _("All computers must be connected to a TCP-compatible network."), sizeof(selconn_Description));
-		players = MAX_PLRS;
 		break;
 	case SELCONN_ZT:
 		CopyUtf8(selconn_Description, _("All computers must be connected to the internet."), sizeof(selconn_Description));
-		players = MAX_PLRS;
 		break;
 	case SELCONN_LOOPBACK:
 		CopyUtf8(selconn_Description, _("Play by yourself with no network exposure."), sizeof(selconn_Description));

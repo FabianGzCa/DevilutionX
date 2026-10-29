@@ -26,9 +26,9 @@
 namespace devilution {
 
 uint8_t sgbNetUpdateRate;
-size_t gdwMsgLenTbl[MAX_PLRS];
+size_t gdwMsgLenTbl[PlayerStorageCapacity];
 uint32_t gdwTurnsInTransit;
-uintptr_t glpMsgTbl[MAX_PLRS];
+uintptr_t glpMsgTbl[PlayerStorageCapacity];
 uint32_t gdwLargestMsgSize;
 uint32_t gdwNormalMsgSize;
 int last_tick;
@@ -119,7 +119,7 @@ bool nthread_recv_turns(bool *pfSendAsync)
 		last_tick += gnTickDelay;
 		return true;
 	}
-	if (!SNetReceiveTurns(MAX_PLRS, (char **)glpMsgTbl, gdwMsgLenTbl, &player_state[0])) {
+	if (!SNetReceiveTurns(PlayerStorageCapacity, (char **)glpMsgTbl, gdwMsgLenTbl, &player_state[0])) {
 		sgbTicsOutOfSync = false;
 		sgbSyncCountdown = 1;
 		sgbPacketCountdown = 1;
@@ -141,6 +141,13 @@ void nthread_set_turn_upper_bit()
 {
 	turn_upper_bit = 0x80000000;
 }
+
+#ifdef BUILD_TESTING
+bool TestTurnUpperBitArmed()
+{
+	return turn_upper_bit != 0;
+}
+#endif
 
 void nthread_start(bool setTurnUpperBit)
 {
@@ -169,8 +176,7 @@ void nthread_start(bool setTurnUpperBit)
 	gdwNormalMsgSize = caps.bytessec * sgbNetUpdateRate / 20;
 	gdwNormalMsgSize *= 3;
 	gdwNormalMsgSize >>= 2;
-	if (caps.maxplayers > MAX_PLRS)
-		caps.maxplayers = MAX_PLRS;
+	caps.maxplayers = std::clamp<uint32_t>(caps.maxplayers, 1, static_cast<uint32_t>(Players.size()));
 	gdwNormalMsgSize /= caps.maxplayers;
 	while (gdwNormalMsgSize < 0x80) {
 		gdwNormalMsgSize *= 2;

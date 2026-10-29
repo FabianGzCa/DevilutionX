@@ -3,8 +3,12 @@
 
 #include <ankerl/unordered_dense.h>
 
+#include "engine/assets.hpp"
 #include "engine/random.hpp"
+#include "headless_mode.hpp"
+#include "levels/dun_tile_data.hpp"
 #include "missiles.h"
+#include "monster.h"
 
 using namespace devilution;
 using ::testing::AllOf;
@@ -148,4 +152,63 @@ TEST(Missiles, GetDirection16)
 	EXPECT_EQ(Direction16::South_SouthEast, GetDirection16({ 2, 2 }, { 4, 3 }));
 
 	EXPECT_EQ(Direction16::South_SouthWest, GetDirection16({ 0, 0 }, { 0, 0 })) << "GetDirection16 is expected to default to Direction16::South_SouthWest when the points occupy the same tile";
+}
+
+namespace {
+
+void CheckHeadlessCharge(_monster_id type, MonsterGraphic graphic, MonsterAIID ai)
+{
+	ASSERT_TRUE(HeadlessMode);
+	LoadCoreArchives();
+	LoadMonsterData();
+	LoadMissileData();
+	Missiles.clear();
+	LevelMonsterTypes[0] = {};
+	LevelMonsterTypes[0].type = type;
+	auto &animation = LevelMonsterTypes[0].anims[static_cast<int>(graphic)];
+	animation.frames = MonstersData[type].frames[static_cast<int>(graphic)];
+	animation.rate = MonstersData[type].rate[static_cast<int>(graphic)];
+	animation.width = 128;
+	ASSERT_FALSE(animation.sprites.has_value());
+	Monster &monster = Monsters[4];
+	monster = {};
+	monster.levelType = 0;
+	monster.uniqueType = UniqueMonsterType::None;
+	monster.mode = MonsterMode::Charge;
+	monster.ai = ai;
+	monster.position.tile = { 40, 40 };
+	monster.position.future = monster.position.tile;
+	SOLData[1] = TileProperties::None;
+	for (int x = 36; x < 52; ++x) {
+		for (int y = 36; y < 52; ++y) {
+			dPiece[x][y] = 1;
+			dPlayer[x][y] = 0;
+			dMonster[x][y] = 0;
+			dObject[x][y] = 0;
+		}
+	}
+	Missile *missile = AddMissile({ 40, 40 }, { 46, 40 }, Direction::SouthEast, MissileID::Rhino, TARGET_PLAYERS, monster, 0, 0);
+	ASSERT_NE(missile, nullptr);
+	EXPECT_FALSE(missile->_miAnimData.has_value());
+	EXPECT_EQ(missile->_miAnimLen, animation.frames);
+	EXPECT_EQ(missile->_miAnimDelay, animation.rate);
+	const auto before = missile->position.traveled;
+	ProcessRhino(*missile);
+	EXPECT_NE(missile->position.traveled, before);
+	EXPECT_FALSE(missile->_miDelFlag);
+	Missiles.clear();
+	LevelMonsterTypes[0] = {};
+	monster = {};
+}
+
+} // namespace
+
+TEST(Missiles, SnakeChargeAdvancesWithoutGraphics)
+{
+	CheckHeadlessCharge(MT_NSNAKE, MonsterGraphic::Attack, MonsterAIID::Snake);
+}
+
+TEST(Missiles, HornedChargeAdvancesWithoutGraphics)
+{
+	CheckHeadlessCharge(MT_HORNED, MonsterGraphic::Special, MonsterAIID::Rhino);
 }

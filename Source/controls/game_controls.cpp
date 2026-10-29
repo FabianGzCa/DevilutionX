@@ -8,6 +8,7 @@
 #include <SDL.h>
 #endif
 
+#include "control/control_chat.hpp"
 #include "controls/control_mode.hpp"
 #include "controls/controller_motion.h"
 #ifndef USE_SDL1
@@ -387,12 +388,38 @@ bool HandleControllerButtonEvent(const SDL_Event &event, const ControllerButtonE
 
 	const ButtonReleaser buttonReleaser { ctrlEvent };
 	const bool isGamepadMotion = IsControllerMotion(event);
-	if (!isGamepadMotion) {
+	if (!isGamepadMotion && !IsChatActive()) {
 		SimulateRightStickWithPadmapper(ctrlEvent);
 	}
 	DetectInputMethod(event, ctrlEvent);
 	if (isGamepadMotion) {
 		return true;
+	}
+	if (IsChatActive()) {
+		switch (TranslateTo(GamepadType, ctrlEvent.button)) {
+		case ControllerButton_BUTTON_A:
+			action = GameAction { GameActionType_CHAT_RECIPIENT_TOGGLE };
+			break;
+		case ControllerButton_BUTTON_DPAD_UP:
+			action = GameAction { GameActionType_CHAT_RECIPIENT_UP };
+			break;
+		case ControllerButton_BUTTON_DPAD_DOWN:
+			action = GameAction { GameActionType_CHAT_RECIPIENT_DOWN };
+			break;
+		case ControllerButton_BUTTON_DPAD_LEFT:
+			action = GameAction { GameActionType_CHAT_RECIPIENT_PREVIOUS_PAGE };
+			break;
+		case ControllerButton_BUTTON_DPAD_RIGHT:
+			action = GameAction { GameActionType_CHAT_RECIPIENT_NEXT_PAGE };
+			break;
+		default:
+			break;
+		}
+		if (action.type != GameActionType_NONE) {
+			if (!ctrlEvent.up)
+				ProcessGameAction(action);
+			return true;
+		}
 	}
 
 	if (ctrlEvent.button != ControllerButton_NONE && ctrlEvent.button == SuppressedButton) {

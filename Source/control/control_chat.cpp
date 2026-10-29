@@ -2,24 +2,30 @@
 #include "control.hpp"
 #include "control_panel.hpp"
 
+#include <algorithm>
+#include <array>
+#include <span>
+#include <string>
+
+#include "control/chat_recipient_list.hpp"
 #include "control/control_chat_commands.hpp"
 #include "engine/backbuffer_state.hpp"
 #include "engine/render/clx_render.hpp"
 #include "options.h"
 #include "panels/console.hpp"
 #include "panels/mainpanel.hpp"
+#include "panels/partypanel_layout.hpp"
 #include "quick_messages.hpp"
 #include "utils/display.h"
 #include "utils/sdl_compat.h"
+#include "utils/static_vector.hpp"
 #include "utils/str_cat.hpp"
 
 namespace devilution {
 
 std::optional<TextInputState> ChatInputState;
 char TalkMessage[MAX_SEND_STR_LEN];
-bool TalkButtonsDown[3];
 int sgbPlrTalkTbl;
-bool WhisperList[MAX_PLRS];
 OptionalOwnedClxSpriteList talkButtons;
 
 namespace {
@@ -29,23 +35,115 @@ uint8_t TalkSaveIndex;
 uint8_t NextTalkSave;
 TextInputCursorState ChatCursor;
 
-int MuteButtons = 3;
-int MuteButtonPadding = 2;
-Rectangle MuteButtonRect { { 172, 69 }, { 61, 16 } };
+Rectangle ChatRecipientButtonRect { { 172, ChatRecipientFirstRowY }, { 61, ChatRecipientButtonHeight } };
+Rectangle PreviousRecipientPageRect { { 430, 51 }, { 14, 16 } };
+Rectangle NextRecipientPageRect { { 486, 51 }, { 14, 16 } };
+
+enum class ChatRecipientButtonType {
+	None,
+	Player,
+	PreviousPage,
+	NextPage,
+};
+
+constexpr int ChatRecipientNameWidth = 204;
+
+std::array<bool, PlayerStorageCapacity> ChatRecipientSelected;
+ChatRecipientButtonType PressedChatRecipientButton;
+std::optional<size_t> PressedChatRecipientPlayerId;
+std::optional<size_t> FocusedChatRecipientPlayerId;
+size_t ChatRecipientPage;
+
+using ChatRecipientPlayerIds = StaticVector<size_t, PlayerStorageCapacity>;
+
+void ResetInactiveChatRecipientSelections()
+{
+	for (size_t playerId = 0; playerId < std::min(Players.size(), ChatRecipientSelected.size()); playerId++) {
+		if (playerId != MyPlayerId && !Players[playerId].plractive)
+			ChatRecipientSelected[playerId] = true;
+	}
+}
+
+ChatRecipientPlayerIds GetActiveChatRecipientPlayerIds()
+{
+	ResetInactiveChatRecipientSelections();
+	ChatRecipientPlayerIds playerIds;
+	const size_t playerCount = std::min(Players.size(), ChatRecipientSelected.size());
+	for (size_t playerId = 0; playerId < playerCount; playerId++) {
+		if (playerId == MyPlayerId)
+			continue;
+		if (!Players[playerId].plractive)
+			continue;
+		playerIds.push_back(playerId);
+	}
+	return playerIds;
+}
+
+void ResetPressedChatRecipientButton()
+{
+	PressedChatRecipientButton = ChatRecipientButtonType::None;
+	PressedChatRecipientPlayerId.reset();
+}
+
+void NormalizeChatRecipientPage(const ChatRecipientPlayerIds &playerIds)
+{
+	ChatRecipientPage = ClampChatRecipientPage(ChatRecipientPage, playerIds.size());
+	if (playerIds.empty()) {
+		FocusedChatRecipientPlayerId.reset();
+		return;
+	}
+	const size_t pageStart = ChatRecipientPage * ChatRecipientRowsPerPage;
+	const size_t pageEnd = std::min(pageStart + ChatRecipientRowsPerPage, playerIds.size());
+	if (FocusedChatRecipientPlayerId && std::find(playerIds.begin() + pageStart, playerIds.begin() + pageEnd, *FocusedChatRecipientPlayerId) != playerIds.begin() + pageEnd)
+		return;
+	FocusedChatRecipientPlayerId = playerIds[pageStart];
+}
+
+std::optional<size_t> GetVisibleChatRecipientPlayerId(const ChatRecipientPlayerIds &playerIds, size_t row)
+{
+	return GetChatRecipientPlayerId(std::span<const size_t> { playerIds.data(), playerIds.size() }, ChatRecipientPage, row);
+}
+
+void ChangeChatRecipientPage(int direction, const ChatRecipientPlayerIds &playerIds)
+{
+	if (direction == 0 || playerIds.empty())
+		return;
+
+	const size_t pageCount = GetChatRecipientPageCount(playerIds.size());
+	const size_t currentPage = ClampChatRecipientPage(ChatRecipientPage, playerIds.size());
+	if (direction < 0) {
+		ChatRecipientPage = currentPage == 0 ? 0 : currentPage - 1;
+	} else {
+		ChatRecipientPage = std::min(currentPage + 1, pageCount - 1);
+	}
+	NormalizeChatRecipientPage(playerIds);
+	RedrawEverything();
+}
+
+std::optional<size_t> GetChatRecipientRowAtMousePosition(const ChatRecipientPlayerIds &playerIds, Point mousePosition)
+{
+	Rectangle buttons = ChatRecipientButtonRect;
+	SetPanelObjectPosition(UiPanels::Main, buttons);
+	buttons.size.height = static_cast<int>((ChatRecipientRowsPerPage - 1) * ChatRecipientRowHeight) + ChatRecipientButtonHeight;
+	if (!buttons.contains(mousePosition))
+		return std::nullopt;
+	return GetChatRecipientPlayerIdAtY(std::span<const size_t> { playerIds.data(), playerIds.size() }, ChatRecipientPage, mousePosition.y - GetMainPanel().position.y);
+}
 
 void ResetChatMessage()
 {
 	if (CheckChatCommand(TalkMessage))
 		return;
 
-	uint32_t pmask = 0;
+	PlayerRecipientMask recipients { 0 };
+	ResetInactiveChatRecipientSelections();
 
 	for (size_t i = 0; i < Players.size(); i++) {
-		if (WhisperList[i])
-			pmask |= 1 << i;
+		if (i < ChatRecipientSelected.size() && ChatRecipientSelected[i])
+			recipients = AddPlayerToRecipientMask(recipients, i);
 	}
 
-	NetSendCmdString(pmask, TalkMessage);
+	NetSendCmdString(recipients, TalkMessage);
 }
 
 void ControlPressEnter()
@@ -88,12 +186,83 @@ void ControlUpDown(int v)
 
 } // namespace
 
+void ResetChatRecipientSelection()
+{
+	ChatRecipientSelected.fill(true);
+	ChatRecipientPage = 0;
+	FocusedChatRecipientPlayerId.reset();
+	ResetPressedChatRecipientButton();
+}
+
+void ForgetChatRecipientSelection(size_t playerId)
+{
+	if (playerId >= ChatRecipientSelected.size())
+		return;
+	ChatRecipientSelected[playerId] = true;
+	if (PressedChatRecipientPlayerId == playerId)
+		ResetPressedChatRecipientButton();
+	if (FocusedChatRecipientPlayerId == playerId)
+		FocusedChatRecipientPlayerId.reset();
+}
+
+void ChangeChatRecipientPage(int direction)
+{
+	if (!ChatFlag)
+		return;
+	ChangeChatRecipientPage(direction, GetActiveChatRecipientPlayerIds());
+}
+
+void MoveChatRecipientFocus(int direction)
+{
+	if (!ChatFlag || direction == 0)
+		return;
+
+	const ChatRecipientPlayerIds playerIds = GetActiveChatRecipientPlayerIds();
+	NormalizeChatRecipientPage(playerIds);
+	if (playerIds.empty())
+		return;
+
+	auto focused = std::find(playerIds.begin(), playerIds.end(), *FocusedChatRecipientPlayerId);
+	size_t index = focused == playerIds.end() ? ChatRecipientPage * ChatRecipientRowsPerPage : static_cast<size_t>(focused - playerIds.begin());
+	if (direction < 0) {
+		if (index == 0)
+			return;
+		--index;
+	} else {
+		if (index + 1 >= playerIds.size())
+			return;
+		++index;
+	}
+
+	ChatRecipientPage = index / ChatRecipientRowsPerPage;
+	FocusedChatRecipientPlayerId = playerIds[index];
+	RedrawEverything();
+}
+
+void ToggleFocusedChatRecipient()
+{
+	if (!ChatFlag)
+		return;
+	const ChatRecipientPlayerIds playerIds = GetActiveChatRecipientPlayerIds();
+	NormalizeChatRecipientPage(playerIds);
+	if (!FocusedChatRecipientPlayerId || *FocusedChatRecipientPlayerId >= ChatRecipientSelected.size())
+		return;
+	if (std::find(playerIds.begin(), playerIds.end(), *FocusedChatRecipientPlayerId) == playerIds.end())
+		return;
+
+	ChatRecipientSelected[*FocusedChatRecipientPlayerId] = !ChatRecipientSelected[*FocusedChatRecipientPlayerId];
+	RedrawEverything();
+}
+
 void DrawChatBox(const Surface &out)
 {
 	if (!ChatFlag)
 		return;
 
 	const Point mainPanelPosition = GetMainPanel().position;
+	const ChatRecipientPlayerIds playerIds = GetActiveChatRecipientPlayerIds();
+	NormalizeChatRecipientPage(playerIds);
+	const size_t pageCount = GetChatRecipientPageCount(playerIds.size());
 
 	DrawPanelBox(out, MakeSdlRect(175, sgbPlrTalkTbl + 20, 294, 5), mainPanelPosition + Displacement { 175, 4 });
 	int off = 0;
@@ -120,93 +289,113 @@ void DrawChatBox(const Surface &out)
 	ChatInputState->truncate(len);
 
 	x += 46;
-	int talkBtn = 0;
-	for (size_t i = 0; i < Players.size(); i++) {
-		Player &player = Players[i];
-		if (&player == MyPlayer)
+	for (size_t row = 0; row < ChatRecipientRowsPerPage; row++) {
+		const std::optional<size_t> recipientId = GetVisibleChatRecipientPlayerId(playerIds, row);
+		if (!recipientId)
 			continue;
 
-		const UiFlags color = player.friendlyMode ? UiFlags::ColorWhitegold : UiFlags::ColorRed;
-		const Point talkPanPosition = mainPanelPosition + Displacement { 172, 84 + (18 * talkBtn) };
-		if (WhisperList[i]) {
-			// the normal (unpressed) voice button is pre-rendered on the panel, only need to draw over it when the button is held
-			if (TalkButtonsDown[talkBtn]) {
-				const unsigned spriteIndex = talkBtn == 0 ? 2 : 3; // the first button sprite includes a tip from the devils wing so is different to the rest.
+		Player &player = Players[*recipientId];
+		const bool selected = ChatRecipientSelected[*recipientId];
+		const bool isPressed = PressedChatRecipientPlayerId == recipientId;
+		const Point talkPanPosition = mainPanelPosition + Displacement { 172, ChatRecipientFirstRowY + ChatRecipientButtonHeight + (ChatRecipientRowHeight * static_cast<int>(row)) - 1 };
+		if (selected) {
+			// The selected-recipient button is pre-rendered on the panel, so only redraw it while held.
+			if (isPressed) {
+				const unsigned spriteIndex = row == 0 ? 2 : 3;
 				ClxDraw(out, talkPanPosition, (*talkButtons)[spriteIndex]);
-
-				// Draw the translated string over the top of the default (english) button. This graphic is inset to avoid overlapping the wingtip, letting
-				// the first button be treated the same as the other two further down the panel.
 				RenderClxSprite(out, (*TalkButton)[2], talkPanPosition + Displacement { 4, -15 });
 			}
 		} else {
-			unsigned spriteIndex = talkBtn == 0 ? 0 : 1; // the first button sprite includes a tip from the devils wing so is different to the rest.
-			if (TalkButtonsDown[talkBtn])
-				spriteIndex += 4; // held button sprites are at index 4 and 5 (with and without wingtip respectively)
+			unsigned spriteIndex = row == 0 ? 0 : 1;
+			if (isPressed)
+				spriteIndex += 4;
 			ClxDraw(out, talkPanPosition, (*talkButtons)[spriteIndex]);
-
-			// Draw the translated string over the top of the default (english) button. This graphic is inset to avoid overlapping the wingtip, letting
-			// the first button be treated the same as the other two further down the panel.
-			RenderClxSprite(out, (*TalkButton)[TalkButtonsDown[talkBtn] ? 1 : 0], talkPanPosition + Displacement { 4, -15 });
-		}
-		if (player.plractive) {
-			DrawString(out, player._pName, { { x, y + 60 + (talkBtn * 18) }, { 204, 0 } }, { .flags = color });
+			RenderClxSprite(out, (*TalkButton)[isPressed ? 1 : 0], talkPanPosition + Displacement { 4, -15 });
 		}
 
-		talkBtn++;
+		UiFlags color = player.friendlyMode ? UiFlags::ColorWhitegold : UiFlags::ColorRed;
+		if (FocusedChatRecipientPlayerId == recipientId)
+			color = UiFlags::ColorYellow;
+		const std::string playerName = TruncatePartyPanelName(player._pName, ChatRecipientNameWidth);
+		DrawString(out, playerName, { { x, y + 60 + (ChatRecipientRowHeight * static_cast<int>(row)) }, { ChatRecipientNameWidth, 16 } }, { .flags = color });
 	}
+
+	const std::string pageLabel = StrCat(pageCount == 0 ? 1 : ChatRecipientPage + 1, "/", pageCount == 0 ? 1 : pageCount);
+	DrawString(out, _("Send to:"), mainPanelPosition + Displacement { 246, 51 }, { .flags = UiFlags::ColorWhitegold });
+	DrawString(out, "<", mainPanelPosition + Displacement { PreviousRecipientPageRect.position.x + 3, PreviousRecipientPageRect.position.y }, { .flags = PressedChatRecipientButton == ChatRecipientButtonType::PreviousPage ? UiFlags::ColorYellow : UiFlags::ColorWhite });
+	DrawString(out, pageLabel, { mainPanelPosition + Displacement { 446, 51 }, { 38, 16 } }, { .flags = UiFlags::ColorWhitegold });
+	DrawString(out, ">", mainPanelPosition + Displacement { NextRecipientPageRect.position.x + 3, NextRecipientPageRect.position.y }, { .flags = PressedChatRecipientButton == ChatRecipientButtonType::NextPage ? UiFlags::ColorYellow : UiFlags::ColorWhite });
 }
 
-bool CheckMuteButton()
+bool CheckChatRecipientButton()
 {
 	if (!ChatFlag)
 		return false;
 
-	Rectangle buttons = MuteButtonRect;
+	ResetPressedChatRecipientButton();
+	const ChatRecipientPlayerIds playerIds = GetActiveChatRecipientPlayerIds();
+	NormalizeChatRecipientPage(playerIds);
 
+	Rectangle previousPageButton = PreviousRecipientPageRect;
+	SetPanelObjectPosition(UiPanels::Main, previousPageButton);
+	if (previousPageButton.contains(MousePosition)) {
+		if (GetChatRecipientPageCount(playerIds.size()) > 1)
+			PressedChatRecipientButton = ChatRecipientButtonType::PreviousPage;
+		return true;
+	}
+
+	Rectangle nextPageButton = NextRecipientPageRect;
+	SetPanelObjectPosition(UiPanels::Main, nextPageButton);
+	if (nextPageButton.contains(MousePosition)) {
+		if (GetChatRecipientPageCount(playerIds.size()) > 1)
+			PressedChatRecipientButton = ChatRecipientButtonType::NextPage;
+		return true;
+	}
+
+	Rectangle buttons = ChatRecipientButtonRect;
 	SetPanelObjectPosition(UiPanels::Main, buttons);
-
-	buttons.size.height = (MuteButtons * buttons.size.height) + ((MuteButtons - 1) * MuteButtonPadding);
-
+	buttons.size.height = static_cast<int>((ChatRecipientRowsPerPage - 1) * ChatRecipientRowHeight) + ChatRecipientButtonHeight;
 	if (!buttons.contains(MousePosition))
 		return false;
 
-	for (bool &talkButtonDown : TalkButtonsDown) {
-		talkButtonDown = false;
+	const std::optional<size_t> recipientId = GetChatRecipientRowAtMousePosition(playerIds, MousePosition);
+	if (recipientId) {
+		PressedChatRecipientButton = ChatRecipientButtonType::Player;
+		PressedChatRecipientPlayerId = recipientId;
+		FocusedChatRecipientPlayerId = recipientId;
 	}
-
-	const Point mainPanelPosition = GetMainPanel().position;
-
-	TalkButtonsDown[(MousePosition.y - (69 + mainPanelPosition.y)) / 18] = true;
-
 	return true;
 }
 
-void CheckMuteButtonUp()
+void CheckChatRecipientButtonUp()
 {
-	if (!ChatFlag)
+	if (!ChatFlag) {
+		ResetPressedChatRecipientButton();
 		return;
-
-	for (bool &talkButtonDown : TalkButtonsDown)
-		talkButtonDown = false;
-
-	Rectangle buttons = MuteButtonRect;
-
-	SetPanelObjectPosition(UiPanels::Main, buttons);
-
-	buttons.size.height = (MuteButtons * buttons.size.height) + ((MuteButtons - 1) * MuteButtonPadding);
-
-	if (!buttons.contains(MousePosition))
-		return;
-
-	int off = (MousePosition.y - buttons.position.y) / (MuteButtonRect.size.height + MuteButtonPadding);
-
-	size_t playerId = 0;
-	for (; playerId < Players.size() && off != -1; ++playerId) {
-		if (playerId != MyPlayerId)
-			off--;
 	}
-	if (playerId > 0 && playerId <= Players.size())
-		WhisperList[playerId - 1] = !WhisperList[playerId - 1];
+
+	const ChatRecipientButtonType pressedButton = PressedChatRecipientButton;
+	const std::optional<size_t> pressedPlayerId = PressedChatRecipientPlayerId;
+	ResetPressedChatRecipientButton();
+	const ChatRecipientPlayerIds playerIds = GetActiveChatRecipientPlayerIds();
+	NormalizeChatRecipientPage(playerIds);
+
+	if (pressedButton == ChatRecipientButtonType::PreviousPage || pressedButton == ChatRecipientButtonType::NextPage) {
+		Rectangle button = pressedButton == ChatRecipientButtonType::PreviousPage ? PreviousRecipientPageRect : NextRecipientPageRect;
+		SetPanelObjectPosition(UiPanels::Main, button);
+		if (button.contains(MousePosition))
+			ChangeChatRecipientPage(pressedButton == ChatRecipientButtonType::PreviousPage ? -1 : 1, playerIds);
+		return;
+	}
+	if (pressedButton != ChatRecipientButtonType::Player || !pressedPlayerId || *pressedPlayerId >= ChatRecipientSelected.size())
+		return;
+
+	const std::optional<size_t> releasedPlayerId = GetChatRecipientRowAtMousePosition(playerIds, MousePosition);
+	if (releasedPlayerId == pressedPlayerId) {
+		ChatRecipientSelected[*pressedPlayerId] = !ChatRecipientSelected[*pressedPlayerId];
+		FocusedChatRecipientPlayerId = pressedPlayerId;
+		RedrawEverything();
+	}
 }
 
 void TypeChatMessage()
@@ -215,14 +404,14 @@ void TypeChatMessage()
 		return;
 
 	ChatFlag = true;
+	ChatRecipientPage = 0;
+	ResetPressedChatRecipientButton();
+	NormalizeChatRecipientPage(GetActiveChatRecipientPlayerIds());
 	TalkMessage[0] = '\0';
 	ChatInputState.emplace(TextInputState::Options {
 	    .value = TalkMessage,
 	    .cursor = &ChatCursor,
 	    .maxLength = sizeof(TalkMessage) - 1 });
-	for (bool &talkButtonDown : TalkButtonsDown) {
-		talkButtonDown = false;
-	}
 	sgbPlrTalkTbl = GetMainPanel().size.height + PanelPaddingHeight;
 	RedrawEverything();
 	TalkSaveIndex = NextTalkSave;
@@ -235,6 +424,7 @@ void TypeChatMessage()
 void ResetChat()
 {
 	ChatFlag = false;
+	ResetPressedChatRecipientButton();
 	SDLC_StopTextInput(ghMainWnd);
 	ChatCursor = {};
 	ChatInputState = std::nullopt;
@@ -267,6 +457,12 @@ bool CheckKeypress(SDL_Keycode vkey)
 	case SDLK_RETURN:
 	case SDLK_KP_ENTER:
 		ControlPressEnter();
+		return true;
+	case SDLK_PAGEUP:
+		ChangeChatRecipientPage(-1);
+		return true;
+	case SDLK_PAGEDOWN:
+		ChangeChatRecipientPage(1);
 		return true;
 	case SDLK_DOWN:
 		ControlUpDown(1);
@@ -302,7 +498,7 @@ void DiabloHotkeyMsg(uint32_t dwMsg)
 #endif
 		char charMsg[MAX_SEND_STR_LEN];
 		CopyUtf8(charMsg, msg, sizeof(charMsg));
-		NetSendCmdString(0xFFFFFF, charMsg);
+		NetSendCmdString(AllPlayerRecipients(), charMsg);
 	}
 }
 

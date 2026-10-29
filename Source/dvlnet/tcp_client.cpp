@@ -17,6 +17,7 @@
 
 #include <asio/connect.hpp>
 
+#include "dvlnet/session.hpp"
 #include "options.h"
 #include "utils/language.h"
 #include "utils/str_cat.hpp"
@@ -26,13 +27,34 @@ namespace devilution::net {
 
 int tcp_client::create(std::string_view addrstr)
 {
+	if (const auto info = DecodeGameData(game_init_info); !info.has_value()) {
+		const auto message = GameDataErrorMessage(info.error());
+		SDL_SetError("%.*s", static_cast<int>(message.size()), message.data());
+		return -1;
+	}
 	auto port = *GetOptions().Network.port;
-	local_server = std::make_unique<tcp_server>(ioc, std::string(addrstr), port, *pktfty);
+	local_server = std::make_unique<tcp_server>(ioc, std::string(addrstr), port, *pktfty, game_init_info);
 	return join(local_server->LocalhostSelf());
 }
 
 int tcp_client::join(std::string_view addrstr)
 {
+	const int player = Join(addrstr);
+	if (player < 0) {
+		CloseConnection();
+		if (local_server != nullptr)
+			local_server->Close();
+	}
+	return player;
+}
+
+int tcp_client::Join(std::string_view addrstr)
+{
+	if (const auto info = DecodeGameData(game_init_info); !info.has_value()) {
+		const auto message = GameDataErrorMessage(info.error());
+		SDL_SetError("%.*s", static_cast<int>(message.size()), message.data());
+		return -1;
+	}
 	constexpr int MsSleep = 10;
 	constexpr int NoSleep = 250;
 
@@ -43,8 +65,12 @@ int tcp_client::join(std::string_view addrstr)
 		// Assume IPv6 address in square brackets, followed by port
 		// Example: [::1]:6113
 		size_t pos = addrstr.find(']', 1);
-		pos = pos != std::string::npos ? pos + 1 : addrstr.length();
-		host = addrstr.substr(0, pos);
+		if (pos == std::string_view::npos) {
+			SDL_SetError("Invalid hostname: missing closing square bracket");
+			return -1;
+		}
+		host = addrstr.substr(1, pos - 1);
+		++pos;
 
 		if (pos != addrstr.length()) {
 			if (addrstr[pos] != ':') {
@@ -92,8 +118,7 @@ int tcp_client::join(std::string_view addrstr)
 	{
 		cookie_self = packet_out::GenerateCookie();
 		std::expected<std::unique_ptr<packet>, PacketError> pkt
-		    = pktfty->make_packet<PT_JOIN_REQUEST>(
-		        PLR_BROADCAST, PLR_MASTER, cookie_self, game_init_info);
+		    = MakeJoinRequest(*pktfty, cookie_self, game_init_info);
 		if (!pkt.has_value()) {
 			const std::string_view message = pkt.error().what();
 			SDL_SetError("make_packet: %.*s", static_cast<int>(message.size()), message.data());
@@ -134,7 +159,7 @@ bool tcp_client::IsGameHost()
 std::expected<void, PacketError> tcp_client::poll()
 {
 	while (ioc.poll_one() > 0) {
-		if (IsGameHost()) {
+		if (local_server != nullptr) {
 			std::expected<void, PacketError> serverResult = local_server->CheckIoHandlerError();
 			if (!serverResult.has_value())
 				return serverResult;
@@ -161,7 +186,10 @@ void tcp_client::HandleReceive(const asio::error_code &error, size_t bytesRead)
 		return;
 	}
 	recv_buffer.resize(bytesRead);
-	recv_queue.Write(std::move(recv_buffer));
+	if (auto result = recv_queue.Write(std::move(recv_buffer)); !result.has_value()) {
+		RaiseIoHandlerError(result.error());
+		return;
+	}
 	recv_buffer.resize(frame_queue::max_frame_size);
 	while (true) {
 		std::expected<bool, PacketError> ready = recv_queue.PacketReady();
@@ -196,8 +224,22 @@ void tcp_client::StartReceive()
 
 void tcp_client::HandleSend(const asio::error_code &error, size_t /*bytesSent*/)
 {
-	if (error)
+	if (closed_)
+		return;
+	if (error) {
 		RaiseIoHandlerError(error.message());
+		return;
+	}
+	outgoing_.Pop();
+	if (!outgoing_.Empty())
+		WriteNext();
+}
+
+void tcp_client::WriteNext()
+{
+	const auto frame = outgoing_.Front();
+	asio::async_write(sock, asio::buffer(*frame),
+	    [this, frame](const asio::error_code &error, size_t bytesSent) { HandleSend(error, bytesSent); });
 }
 
 void tcp_client::HandleTcpErrorCode()
@@ -223,14 +265,18 @@ void tcp_client::HandleTcpErrorCode()
 
 std::expected<void, PacketError> tcp_client::send(packet &pkt)
 {
-	std::expected<buffer_t, PacketError> frame = frame_queue::MakeFrame(pkt.Data());
+	// After a lost connection, sends are discarded as the original client did: the game notices
+	// the silent peers through its turn timeouts instead of failing fatally on the next send.
+	if (closed_)
+		return {};
+	auto frame = frame_queue::MakeFrame(pkt.Data());
 	if (!frame.has_value())
 		return std::unexpected(frame.error());
-	std::unique_ptr<buffer_t> framePtr = std::make_unique<buffer_t>(*frame);
-	const asio::mutable_buffer buf = asio::buffer(*framePtr);
-	asio::async_write(sock, buf, [this, frame = std::move(framePtr)](const asio::error_code &error, size_t bytesSent) {
-		HandleSend(error, bytesSent);
-	});
+	const bool idle = outgoing_.Empty();
+	if (auto result = outgoing_.Push(std::move(*frame)); !result.has_value())
+		return result;
+	if (idle)
+		WriteNext();
 	return {};
 }
 
@@ -246,7 +292,7 @@ bool tcp_client::SNetLeaveGame(net::leaveinfo_t type)
 	process_network_packets();
 	if (local_server != nullptr)
 		local_server->Close();
-	sock.close();
+	CloseConnection();
 	return ret;
 }
 
@@ -258,6 +304,24 @@ std::string tcp_client::make_default_gamename()
 void tcp_client::RaiseIoHandlerError(const PacketError &error)
 {
 	ioHandlerResult.emplace(error);
+	// Keep the local player and the session state, so the game can drop the remote players.
+	CloseSocket();
+}
+
+void tcp_client::CloseSocket()
+{
+	closed_ = true;
+	outgoing_.Clear();
+	asio::error_code ignored;
+	sock.close(ignored);
+}
+
+void tcp_client::CloseConnection()
+{
+	CloseSocket();
+	plr_self = PLR_BROADCAST;
+	for (plr_t player = 0; player < player_limit_; ++player)
+		ResetPlayerState(player);
 }
 
 tcp_client::~tcp_client()

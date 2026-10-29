@@ -103,8 +103,8 @@ void AutoPickup(const Player &player)
 			const int itemIndex = dItem[tile.x][tile.y] - 1;
 			auto &item = Items[itemIndex];
 			if (DoPickup(item)) {
-				NetSendCmdGItem(true, CMD_REQUESTAGITEM, player, itemIndex);
-				item._iRequest = true;
+				if (NetSendCmdGItem(true, CMD_REQUESTAGITEM, player, itemIndex))
+					item._iRequest = true;
 			}
 		}
 	}

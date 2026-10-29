@@ -12,6 +12,7 @@
 #include "dvlnet/base.h"
 #include "dvlnet/frame_queue.h"
 #include "dvlnet/packet.h"
+#include "dvlnet/send_queue.hpp"
 #include "dvlnet/tcp_server.h"
 
 namespace devilution::net {
@@ -36,6 +37,8 @@ protected:
 
 private:
 	frame_queue recv_queue;
+	send_queue outgoing_;
+	bool closed_ = false;
 	buffer_t recv_buffer = buffer_t(frame_queue::max_frame_size);
 
 	asio::io_context ioc;
@@ -45,8 +48,12 @@ private:
 
 	std::optional<PacketError> ioHandlerResult;
 
+	int Join(std::string_view addrstr);
+	void CloseSocket();
+	void CloseConnection();
 	void HandleReceive(const asio::error_code &error, size_t bytesRead);
 	void StartReceive();
+	void WriteNext();
 	void HandleSend(const asio::error_code &error, size_t bytesSent);
 	void HandleTcpErrorCode();
 

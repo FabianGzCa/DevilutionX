@@ -6,6 +6,7 @@
 #include <expected>
 #include <vector>
 
+#include "dvlnet/limits.hpp"
 #include "dvlnet/packet.h"
 
 namespace devilution {
@@ -13,6 +14,8 @@ namespace net {
 
 typedef std::vector<unsigned char> buffer_t;
 typedef uint32_t framesize_t;
+
+constexpr uint16_t TcpErrorCodeFlags = 0x8000;
 
 class frame_queue {
 public:
@@ -31,7 +34,7 @@ public:
 	std::expected<bool, PacketError> PacketReady();
 	uint16_t ReadPacketFlags();
 	std::expected<buffer_t, PacketError> ReadPacket();
-	void Write(buffer_t buf);
+	std::expected<void, PacketError> Write(buffer_t buf);
 
 	static std::expected<buffer_t, PacketError> MakeFrame(buffer_t packetbuf, uint16_t flags = 0);
 };

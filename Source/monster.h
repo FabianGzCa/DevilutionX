@@ -24,6 +24,7 @@
 #include "engine/world_tile.hpp"
 #include "game_mode.hpp"
 #include "levels/dun_tile.hpp"
+#include "player_mask.hpp"
 #include "tables/misdat.h"
 #include "tables/monstdat.h"
 #include "tables/spelldat.h"
@@ -36,7 +37,16 @@ namespace devilution {
 struct Missile;
 struct Player;
 
+// The classic monster table and disk format retain 200 entries.
 constexpr size_t MaxMonsters = 200;
+constexpr size_t MonsterStorageCapacity = MaxMonsters + ExtendedSessionRules.maxPlayers - 4;
+static_assert(MonsterStorageCapacity + ExtendedSessionRules.maxPlayers <= 256);
+/** Negotiated live monster IDs; classic player-enemy codes still start at 200. */
+size_t MonsterLimit();
+/** Free entries in the original enemy pool, excluding the additional summon pool. */
+size_t AvailableMonsterSlots();
+// Zhar uses a fixed classic monster slot independent of player capacity.
+constexpr size_t ZharMonsterIndex = 4;
 constexpr size_t MaxLvlMTypes = 24;
 
 enum monster_flag : uint16_t {
@@ -209,7 +219,7 @@ struct CMonster {
 	}
 };
 
-extern CMonster LevelMonsterTypes[MaxLvlMTypes];
+extern DVL_API_FOR_TEST CMonster LevelMonsterTypes[MaxLvlMTypes];
 
 struct Monster { // note: missing field _mAFNum
 	std::unique_ptr<uint8_t[]> uniqueMonsterTRN;
@@ -274,7 +284,14 @@ struct Monster { // note: missing field _mAFNum
 	UniqueMonsterType uniqueType;
 	uint8_t uniqTrans;
 	int8_t corpseId;
-	int8_t whoHit;
+	PlayerExperienceMask whoHit;
+	/** Session-only extended balance state, never written to classic saves. */
+	Fixed26_6 partyNativeMax = Fixed26_6::fromInt(0);
+	Fixed26_6 partyLastHitPoints = Fixed26_6::fromInt(0);
+	uint64_t partyGeneration = 0;
+	uint8_t partyParticipants = 1;
+	bool partyDeathStarted = false;
+
 	uint8_t minDamage;
 	uint8_t maxDamage;
 	uint8_t minDamageSpecial;
@@ -492,9 +509,9 @@ struct Monster { // note: missing field _mAFNum
 };
 
 extern size_t LevelMonsterTypeCount;
-extern Monster Monsters[MaxMonsters];
-extern unsigned ActiveMonsters[MaxMonsters];
-extern size_t ActiveMonsterCount;
+extern DVL_API_FOR_TEST Monster Monsters[MonsterStorageCapacity];
+extern DVL_API_FOR_TEST unsigned ActiveMonsters[MonsterStorageCapacity];
+extern DVL_API_FOR_TEST size_t ActiveMonsterCount;
 extern int MonsterKillCounts[NUM_MAX_MTYPES];
 extern bool sgbSaveSoundOn;
 
@@ -529,7 +546,7 @@ void LoadDeltaSpawnedMonster(size_t typeIndex, size_t monsterId, uint32_t seed, 
  */
 void InitializeSpawnedMonster(Point position, Direction dir, size_t typeIndex, size_t monsterId, uint32_t seed, uint8_t golemOwnerPlayerId, int16_t golemSpellLevel);
 void AddDoppelganger(Monster &monster);
-void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage);
+void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage, bool playerDamage = true);
 void MonsterReducePlayerAttribute(Monster &monster, Player &player);
 bool M_Talker(const Monster &monster);
 void M_StartStand(Monster &monster, Direction md);
@@ -541,6 +558,14 @@ void StartMonsterDeath(Monster &monster, const Player &player, bool sendmsg);
 void MonsterDeath(Monster &monster, Direction md, bool sendmsg);
 void KillGolem(Monster &golem);
 void M_StartKill(Monster &monster, const Player &player);
+void StartPartyMonsterDeath(Monster &monster, const Player &player);
+void FinalizePartyMonsterReward(Monster &monster, bool sendmsg, uint8_t participants, uint8_t extraRolls);
+#ifdef BUILD_TESTING
+/** Observes each monster reward before its native loot is spawned. */
+extern DVL_API_FOR_TEST void (*TestMonsterRewardObserver)(const Monster &monster);
+#endif
+bool IsPartyRandomLoot(uint16_t type, uint8_t unique);
+
 void M_SyncStartKill(Monster &monster, Point position, const Player &player);
 void M_UpdateRelations(const Monster &monster);
 void DoEnding();

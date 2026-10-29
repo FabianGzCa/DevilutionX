@@ -5,13 +5,16 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "dvlnet/leaveinfo.hpp"
 #include "engine/point.hpp"
 #include "items.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "objects.h"
+#include "player_mask.hpp"
 #include "portal.h"
 #include "quests.h"
 
@@ -424,6 +427,14 @@ enum _cmd_id : uint8_t {
 	//
 	// body (TFakeDropPlr)
 	FAKE_CMD_DROPID,
+	// Coordinated level admission, extended sessions only. Appended to preserve classic IDs.
+	CMD_LEVELENTRY,
+	CMD_GOLEMFAILED,
+	CMD_ITEMTRANSFER,
+	CMD_PARTYMONSTDAMAGE,
+	CMD_PARTYSYNCDATA,
+	CMD_PARTYSPAWN,
+	CMD_PARTYREWARD,
 	NUM_CMDS,
 	CMD_INVALID = 0xFF,
 };
@@ -513,6 +524,11 @@ struct TCmdSpawnMonster {
 	uint32_t seed;
 	uint8_t golemOwnerPlayerId;
 	uint8_t golemSpellLevel;
+};
+struct TCmdPartySpawn {
+	TCmdSpawnMonster native;
+	uint64_t generation;
+	uint32_t epoch;
 };
 
 struct TCmdQuest {
@@ -688,8 +704,21 @@ struct TSyncMonster {
 	uint8_t _menemy;
 	uint8_t _mdelta;
 	int32_t _mhitpoints;
-	int8_t mWhoHit;
+	PlayerExperienceMask mWhoHit;
 };
+
+struct TSyncPartyHeader {
+	TSyncHeader native;
+	uint8_t participants;
+	uint32_t epoch;
+	uint32_t membership;
+};
+struct TSyncPartyMonster {
+	TSyncMonster native;
+	PartyMonsterWire party;
+};
+static_assert(sizeof(TSyncMonster) == 10);
+static_assert(offsetof(TSyncMonster, mWhoHit) == 9);
 
 struct TPktHdr {
 	uint8_t px;
@@ -714,19 +743,63 @@ struct TPkt {
 };
 #pragma pack(pop)
 
-extern uint8_t gbBufferMsgs;
+extern DVL_API_FOR_TEST uint8_t gbBufferMsgs;
 extern int dwRecCount;
 
 void PrepareItemForNetwork(const Item &item, TItem &messageItem);
 void PrepareEarForNetwork(const Item &item, TEar &ear);
 void RecreateItem(const Player &player, const TItem &messageItem, Item &item);
 void msg_send_drop_pkt(uint8_t pnum, leaveinfo_t reason);
+/** Begin buffering player commands while receiving a fresh world snapshot. */
+void msg_start_resync();
 bool msg_wait_resync();
 void run_delta_info();
 void DeltaExportData(uint8_t pnum);
 void DeltaSyncJunk();
 void delta_init();
+/** Initialize the negotiated extended item protocol after network admission. */
+void InitItemTransfers();
+struct PartyLevelState;
+struct PartyDamageMessage;
+struct PartyMonsterReward;
+PartyLevelState &GetPartyLevelState(uint8_t level);
+/** Like GetPartyLevelState, without creating a delta for a level nobody recorded. */
+PartyLevelState *FindPartyLevelState(uint8_t level);
+uint32_t MultiplayerSlotEpoch(uint8_t player);
+uint32_t MultiplayerMembershipDigest();
+void SyncPartyMonsterDelta(uint8_t level, size_t monster);
+void NetSendPartyDamage(PartyDamageMessage message);
+void NetSendPartyReward(uint8_t level, PartyMonsterReward reward);
+bool HasLocalPartyRewardTransfer();
+void ClearPartyContributor(uint8_t player);
+
+bool IsExtendedItemTransferSession();
+bool StageGeneratedItem(Item &item);
+bool QueueDeathItemDrop(const Item &item, Point position);
+void QueueDeathGoldDrop(int amount, Point position);
+bool IsItemTransferPending();
+bool HasUnresolvedItemTransfers();
+bool HasWorldItemSpace();
+bool IsItemTileReserved(Point position);
+void ProcessItemTransfers();
+void LeaveItemTransfers(uint8_t player);
+void FinishItemTransfers();
+
+/** Discard an incomplete snapshot when its donor disconnects. */
+void delta_reset_transfer();
+/** Clear damage contributions before a player slot can be reused. */
+void delta_remove_player(uint8_t playerId);
 void DeltaClearLevel(uint8_t level);
+/** Number of item records in the negotiated level delta format. */
+size_t ItemDeltaCapacity();
+/** Check whether a dropped item can be recorded without exhausting the level delta. */
+bool CanDeltaPutItem(const TCmdPItem &message, const Player &player);
+/** Check an inventory item's drop capacity without reserving a delta slot. */
+bool CanDeltaPutItem(const Item &item, const Player &player);
+/** Record a dropped item in the level delta; returns false if no safe slot is available. */
+bool DeltaPutItem(const TCmdPItem &message, Point position, const Player &player);
+/** Serialize and record an item before placing a death drop on the level. */
+bool DeltaStoreDroppedItem(const Item &item, Point position, const Player &player);
 void delta_kill_monster(const Monster &monster, Point position, const Player &player);
 void delta_monster_hp(const Monster &monster, const Player &player);
 void delta_sync_monster(const TSyncMonster &monsterSync, uint8_t level);
@@ -749,8 +822,9 @@ void NetSendCmdParam1(bool bHiPri, _cmd_id bCmd, uint16_t wParam1);
 void NetSendCmdParam2(bool bHiPri, _cmd_id bCmd, uint16_t wParam1, uint16_t wParam2);
 void NetSendCmdParam4(bool bHiPri, _cmd_id bCmd, uint16_t wParam1, uint16_t wParam2, uint16_t wParam3, uint16_t wParam4);
 void NetSendCmdQuest(bool bHiPri, const Quest &quest);
-void NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii);
-void NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item);
+bool NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii);
+/** Return false when a manual drop cannot currently fit on the floor or in its delta. */
+bool NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item);
 void NetSyncInvItem(const Player &player, int invListIndex);
 void NetSendCmdChItem(bool bHiPri, uint8_t bLoc, bool forceSpellChange = false);
 void NetSendCmdDelItem(bool bHiPri, uint8_t bLoc);
@@ -758,9 +832,15 @@ void NetSendCmdChInvItem(bool bHiPri, int invGridIndex);
 void NetSendCmdChBeltItem(bool bHiPri, int beltIndex);
 void NetSendCmdDamage(bool bHiPri, const Player &player, uint32_t dwDam, DamageType damageType);
 void NetSendCmdMonDmg(bool bHiPri, uint16_t wMon, uint32_t dwDam);
-void NetSendCmdString(uint32_t pmask, const char *pszStr);
+void NetSendCmdString(PlayerRecipientMask recipients, const char *pszStr);
 void delta_close_portal(const Player &player);
 bool ValidateCmdSize(size_t requiredCmdSize, size_t maxCmdSize, size_t playerId);
 size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize);
+
+#ifdef BUILD_TESTING
+bool TestHasCompleteDelta();
+/** One update of the join progress dialog; 100 closes it. */
+int TestWaitForTurns();
+#endif
 
 } // namespace devilution

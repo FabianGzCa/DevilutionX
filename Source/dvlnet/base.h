@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <ankerl/unordered_dense.h>
@@ -42,12 +43,16 @@ public:
 	void clear_password() override;
 
 	DvlNetLatencies get_latencies(uint8_t playerid) override;
+	std::optional<GameDataError> get_join_rejection() override;
 
 	~base() override = default;
 
 protected:
 	ankerl::unordered_dense::map<event_type, SEVTHANDLER> registered_handlers;
 	buffer_t game_init_info;
+	uint8_t player_limit_ = ClassicPlayerLimit;
+	std::optional<PacketError> joinError_;
+	std::optional<GameDataError> joinRejection_;
 
 	struct message_t {
 		uint8_t sender;
@@ -82,6 +87,7 @@ protected:
 	std::unique_ptr<packet_factory> pktfty;
 
 	std::expected<void, PacketError> Connect(plr_t player);
+	void ResetPlayerState(plr_t player);
 	std::expected<void, PacketError> RecvLocal(packet &pkt);
 	void RunEventHandler(_SNETEVENT &ev);
 	std::expected<void, PacketError> SendEchoRequest(plr_t player);
@@ -90,9 +96,11 @@ protected:
 	virtual bool IsGameHost() = 0;
 
 private:
-	std::array<PlayerState, MAX_PLRS> playerStateTable_;
+	std::array<PlayerState, PlayerStorageCapacity> playerStateTable_;
 	bool awaitingSequenceNumber_ = true;
 	uint32_t lastEchoTime = 0;
+	size_t messageQueueBytes_ = 0;
+	std::expected<void, PacketError> EnqueueMessage(plr_t sender, const buffer_t &message);
 
 	plr_t GetOwner();
 	bool AllTurnsArrived();
@@ -102,6 +110,7 @@ private:
 	void ClearMsg(plr_t plr);
 
 	std::expected<void, PacketError> HandleAccept(packet &pkt);
+	std::expected<void, PacketError> HandleReject(packet &pkt);
 	std::expected<void, PacketError> HandleConnect(packet &pkt);
 	std::expected<void, PacketError> HandleTurn(packet &pkt);
 	std::expected<void, PacketError> HandleDisconnect(packet &pkt);

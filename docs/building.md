@@ -5,6 +5,8 @@ all the dependencies that must be vendored, the version information, and `devilu
 This is the version most appropriate for packaging DevilutionX for Linux distributions.
 For other use cases, use the git repository.
 
+For repeatable game, test, and sanitizer builds, see [Classic regression testing](testing-classic.md). Multiplayer integration and fault tests are described in [Multiplayer integration testing](multiplayer-testing.md).
+
 <details><summary>Linux</summary>
 
 Note that ```pkg-config``` is an optional dependency for finding libsodium, although we have a fallback if necessary.
@@ -32,6 +34,15 @@ sudo apt-get install smpq
 ```
 sudo dnf install cmake gcc-c++ glibc-devel libstdc++-static SDL2-devel SDL2_image-devel libsodium-devel libpng-devel bzip2-devel gmock-devel gtest-devel google-benchmark-devel libasan libubsan libpfm-devel
 ```
+
+### Installing dependencies on Arch Linux
+
+```
+sudo pacman -S --needed cmake gcc ninja sdl2-compat sdl2_image libsodium libpng bzip2 gtest benchmark
+```
+
+`sdl2-compat` provides SDL2 on current Arch. For translations also install `gettext`; `smpq` is
+available from the AUR.
 
 ### Compiling
 

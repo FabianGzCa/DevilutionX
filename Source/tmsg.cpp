@@ -1,7 +1,7 @@
 /**
  * @file tmsg.cpp
  *
- * Implementation of functionality transmitting chat messages.
+ * Implementation of delayed network message processing.
  */
 #include <cstdint>
 #include <list>
@@ -21,11 +21,13 @@ namespace {
 
 struct TMsg {
 	uint32_t time;
+	uint8_t playerId;
 	std::unique_ptr<std::byte[]> body;
 	uint8_t len;
 
-	TMsg(uint32_t time, const std::byte *data, uint8_t len)
+	TMsg(uint32_t time, uint8_t playerId, const std::byte *data, uint8_t len)
 	    : time(time)
+	    , playerId(playerId)
 	    , body(new std::byte[len])
 	    , len(len)
 	{
@@ -37,7 +39,7 @@ std::list<TMsg> TimedMsgList;
 
 } // namespace
 
-uint8_t tmsg_get(std::unique_ptr<std::byte[]> *msg)
+uint8_t tmsg_get(uint8_t *playerId, std::unique_ptr<std::byte[]> *msg)
 {
 	if (TimedMsgList.empty())
 		return 0;
@@ -47,15 +49,16 @@ uint8_t tmsg_get(std::unique_ptr<std::byte[]> *msg)
 		return 0;
 
 	const uint8_t len = head.len;
+	*playerId = head.playerId;
 	*msg = std::move(head.body);
 	TimedMsgList.pop_front();
 	return len;
 }
 
-void tmsg_add(const std::byte *msg, uint8_t len)
+void tmsg_add(uint8_t playerId, const std::byte *msg, uint8_t len)
 {
 	const uint32_t time = SDL_GetTicks() + (gnTickDelay * 10);
-	TimedMsgList.emplace_back(time, msg, len);
+	TimedMsgList.emplace_back(time, playerId, msg, len);
 }
 
 void tmsg_start()

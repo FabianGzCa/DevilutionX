@@ -1,5 +1,6 @@
 #include "dvlnet/protocol_zt.h"
 
+#include <chrono>
 #include <optional>
 #include <random>
 
@@ -146,12 +147,18 @@ std::expected<void, PacketError> protocol_zt::send(const endpoint &peer, const b
 	std::expected<buffer_t, PacketError> frame = frame_queue::MakeFrame(data);
 	if (!frame.has_value())
 		return std::unexpected(frame.error());
-	peer_list[peer].send_queue.push_back(*frame);
-	return {};
+	if (!peer_list.contains(peer) && peer_list.size() >= MaxPendingPeers)
+		return std::unexpected("Too many pending network peers");
+	auto &state = peer_list[peer];
+	if (state.lastActivity == 0)
+		state.lastActivity = current_ms();
+	return state.outgoing.Push(std::move(*frame));
 }
 
 bool protocol_zt::send_oob(const endpoint &peer, const buffer_t &data) const
 {
+	if (data.empty() || data.size() > frame_queue::max_frame_size)
+		return false;
 	struct sockaddr_in6 in6 {
 	};
 	in6.sin6_port = htons(default_port);
@@ -182,21 +189,28 @@ std::expected<bool, PacketError> protocol_zt::send_queued_peer(const endpoint &p
 		std::copy(peer.addr.begin(), peer.addr.end(), in6.sin6_addr.s6_addr);
 		lwip_connect(state.fd, (const struct sockaddr *)&in6, sizeof(in6));
 	}
-	while (!state.send_queue.empty()) {
-		auto len = state.send_queue.front().size();
-		auto r = lwip_send(state.fd, state.send_queue.front().data(), len, 0);
+	while (!state.outgoing.Empty()) {
+		const auto frame = state.outgoing.Front();
+		auto len = frame->size() - state.sentBytes;
+		auto r = lwip_send(state.fd, frame->data() + state.sentBytes, len, 0);
 		if (r < 0) {
-			// handle error
-			return false;
+			const int error = errno;
+			const bool retry = error == EAGAIN || error == EWOULDBLOCK || error == EINPROGRESS;
+			if (!retry)
+				LogVerbose("ZeroTier stream {} send failed: {} ({})", state.fd, strerror(error), error);
+			return retry;
 		}
+		if (r == 0)
+			return false;
+		state.lastActivity = current_ms();
 		if (decltype(len)(r) < len) {
 			// partial send
-			auto it = state.send_queue.front().begin();
-			state.send_queue.front().erase(it, it + r);
+			state.sentBytes += r;
 			return true;
 		}
 		if (decltype(len)(r) == len) {
-			state.send_queue.pop_front();
+			state.outgoing.Pop();
+			state.sentBytes = 0;
 		} else {
 			std::string_view format = "Impossible number of bytes sent: {} available, {} sent";
 			PacketError error = ProtocolError(format, len, decltype(len)(r));
@@ -212,10 +226,20 @@ bool protocol_zt::recv_peer(const endpoint &peer)
 	peer_state &state = peer_list[peer];
 	while (true) {
 		auto len = lwip_recv(state.fd, buf, sizeof(buf), 0);
-		if (len >= 0) {
-			state.recv_queue.Write(buffer_t(buf, buf + len));
+		if (len == 0) {
+			LogVerbose("ZeroTier stream {} closed by its peer", state.fd);
+			return false;
+		}
+		if (len > 0) {
+			state.lastActivity = current_ms();
+			if (!state.recv_queue.Write(buffer_t(buf, buf + len)).has_value())
+				return false;
 		} else {
-			return errno == EAGAIN || errno == EWOULDBLOCK;
+			const int error = errno;
+			const bool retry = error == EAGAIN || error == EWOULDBLOCK;
+			if (!retry)
+				LogVerbose("ZeroTier stream {} receive failed: {} ({})", state.fd, strerror(error), error);
+			return retry;
 		}
 	}
 }
@@ -226,11 +250,11 @@ bool protocol_zt::send_queued_all()
 		std::expected<bool, PacketError> result = send_queued_peer(endpoint);
 		if (!result.has_value()) {
 			LogError("send_queued_peer: {}", result.error().what());
+			MarkDisconnected(endpoint);
 			continue;
 		}
-		if (!*result) {
-			// handle error?
-		}
+		if (!*result)
+			MarkDisconnected(endpoint);
 	}
 	return true;
 }
@@ -238,11 +262,8 @@ bool protocol_zt::send_queued_all()
 bool protocol_zt::recv_from_peers()
 {
 	for (const auto &[endpoint, state] : peer_list) {
-		if (state.fd != -1) {
-			if (!recv_peer(endpoint)) {
-				disconnect_queue.push_back(endpoint);
-			}
-		}
+		if (current_ms() - state.lastActivity > 60000 || (state.fd != -1 && !recv_peer(endpoint)))
+			MarkDisconnected(endpoint);
 	}
 	return true;
 }
@@ -259,7 +280,10 @@ bool protocol_zt::recv_from_udp()
 	buffer_t data(buf, buf + len);
 	endpoint ep;
 	std::copy(in6.sin6_addr.s6_addr, in6.sin6_addr.s6_addr + 16, ep.addr.begin());
-	oob_recv_queue.emplace_back(ep, std::move(data));
+	if (oob_recv_queue.size() < MaxQueuedPackets && data.size() <= MaxQueuedBytes - oobQueueBytes_) {
+		oobQueueBytes_ += data.size();
+		oob_recv_queue.emplace_back(ep, std::move(data));
+	}
 	return true;
 }
 
@@ -274,16 +298,30 @@ bool protocol_zt::accept_all()
 			break;
 		endpoint ep;
 		std::copy(in6.sin6_addr.s6_addr, in6.sin6_addr.s6_addr + 16, ep.addr.begin());
-		peer_state &state = peer_list[ep];
-		if (state.fd != -1) {
-			Log("protocol_zt::accept_all: WARNING: overwriting connection");
-			SDL_SetError("protocol_zt::accept_all: WARNING: overwriting connection");
-			lwip_close(state.fd);
+		if ((!peer_list.contains(ep) && peer_list.size() >= MaxPendingPeers)
+		    || (peer_list.contains(ep) && peer_list[ep].fd != -1)) {
+			LogVerbose("ZeroTier stream {} rejected: duplicate endpoint or pending-peer limit", newfd);
+			lwip_close(newfd);
+			continue;
 		}
+		peer_state &state = peer_list[ep];
+		state.lastActivity = current_ms();
 		set_nonblock(newfd);
 		set_nodelay(newfd);
 		state.fd = newfd;
 	}
+	return true;
+}
+
+bool protocol_zt::recv_oob(endpoint &peer, buffer_t &data)
+{
+	recv_from_udp();
+	if (oob_recv_queue.empty())
+		return false;
+	peer = oob_recv_queue.front().first;
+	oobQueueBytes_ -= oob_recv_queue.front().second.size();
+	data = std::move(oob_recv_queue.front().second);
+	oob_recv_queue.pop_front();
 	return true;
 }
 
@@ -292,23 +330,20 @@ bool protocol_zt::recv(endpoint &peer, buffer_t &data)
 	accept_all();
 	send_queued_all();
 	recv_from_peers();
-	recv_from_udp();
-
-	if (!oob_recv_queue.empty()) {
-		peer = oob_recv_queue.front().first;
-		data = oob_recv_queue.front().second;
-		oob_recv_queue.pop_front();
-		return true;
-	}
 
 	for (auto &p : peer_list) {
 		std::expected<bool, PacketError> ready = p.second.recv_queue.PacketReady();
 		if (!ready.has_value()) {
 			LogError("PacketReady: {}", ready.error().what());
+			MarkDisconnected(p.first);
 			continue;
 		}
 		if (!*ready)
 			continue;
+		if (p.second.recv_queue.ReadPacketFlags() != 0) {
+			MarkDisconnected(p.first);
+			continue;
+		}
 		std::expected<buffer_t, PacketError> packet = p.second.recv_queue.ReadPacket();
 		if (!packet.has_value()) {
 			LogError("Failed reading packet data from peer: {}", packet.error().what());
@@ -321,11 +356,18 @@ bool protocol_zt::recv(endpoint &peer, buffer_t &data)
 	return false;
 }
 
+void protocol_zt::MarkDisconnected(const endpoint &peer)
+{
+	if (std::find(disconnect_queue.begin(), disconnect_queue.end(), peer) == disconnect_queue.end())
+		disconnect_queue.push_back(peer);
+}
+
 bool protocol_zt::get_disconnected(endpoint &peer)
 {
 	if (!disconnect_queue.empty()) {
 		peer = disconnect_queue.front();
 		disconnect_queue.pop_front();
+		disconnect(peer);
 		return true;
 	}
 	return false;
@@ -333,6 +375,7 @@ bool protocol_zt::get_disconnected(endpoint &peer)
 
 void protocol_zt::disconnect(const endpoint &peer)
 {
+	std::erase(disconnect_queue, peer);
 	const auto it = peer_list.find(peer);
 	if (it != peer_list.end()) {
 		if (it->second.fd != -1) {
@@ -380,7 +423,7 @@ void protocol_zt::endpoint::from_string(const std::string &str)
 
 uint64_t protocol_zt::current_ms()
 {
-	return 0;
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 bool protocol_zt::is_peer_connected(endpoint &peer)

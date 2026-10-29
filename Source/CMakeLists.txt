@@ -26,6 +26,7 @@ set(libdevilutionx_SRCS
   msg.cpp
   nthread.cpp
   pfile.cpp
+  player_visual_identity.cpp
   plrmsg.cpp
   portal.cpp
   restrict.cpp
@@ -134,6 +135,7 @@ set(libdevilutionx_SRCS
 
   platform/locale.cpp
 
+  players/level_entry.cpp
   players/validation.cpp
 
   portals/validation.cpp
@@ -563,6 +565,7 @@ target_link_dependencies(libdevilutionx_logged_fstream PUBLIC
 add_devilutionx_object_library(libdevilutionx_items
   tables/itemdat.cpp
   items.cpp
+  items/item_transfer.cpp
 )
 target_link_dependencies(libdevilutionx_items
   PUBLIC
@@ -626,6 +629,8 @@ target_link_dependencies(libdevilutionx_level_objects PUBLIC
 )
 
 add_devilutionx_object_library(libdevilutionx_monster
+  monsters/party_scaling.cpp
+  monsters/party_balance.cpp
   tables/monstdat.cpp
   monster.cpp
 )

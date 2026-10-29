@@ -6,6 +6,7 @@
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_rect.h>
 #include <SDL3/SDL_surface.h>
+#include <SDL3/SDL_timer.h>
 #else
 #include <SDL.h>
 #endif
@@ -21,6 +22,7 @@
 #include "engine/point.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/surface.hpp"
+#include "headless_mode.hpp"
 #include "utils/display.h"
 #include "utils/is_of.hpp"
 #include "utils/language.h"
@@ -105,6 +107,17 @@ void ProgressRenderForeground(int progress)
 
 bool UiProgressDialog(int (*fnfunc)())
 {
+	if (HeadlessMode) {
+		// Nothing to draw: run the same work until it completes. The short delay stands in for the
+		// frame pacing of the drawn dialog and leaves the network thread room to send turns.
+		int progress = 0;
+		while (progress < 100) {
+			progress = fnfunc();
+			SDL_Delay(10);
+		}
+		return true;
+	}
+
 	// Blit the background once and then free it.
 	ProgressLoadBackground();
 

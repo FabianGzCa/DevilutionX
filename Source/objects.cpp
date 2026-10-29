@@ -1926,7 +1926,7 @@ void OperateBook(Player &player, Object &book, bool sendmsg)
 
 void OperateBookLever(Object &questBook, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 	if (questBook.canInteractWith() && !qtextflag) {
@@ -2075,7 +2075,7 @@ void OperateChest(const Player &player, Object &chest, bool sendLootMsg)
 
 void OperateMushroomPatch(const Player &player, Object &mushroomPatch)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 
@@ -2106,7 +2106,7 @@ void OperateMushroomPatch(const Player &player, Object &mushroomPatch)
 
 void OperateInnSignChest(const Player &player, Object &questContainer, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 
@@ -2209,7 +2209,7 @@ void OperateSarcophagus(Object &sarcophagus, bool sendMsg, bool sendLootMsg)
 
 void OperatePedestal(Player &player, Object &pedestal, bool sendmsg)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 
@@ -3141,13 +3141,13 @@ void OperateBookcase(Object &bookcase, bool sendmsg, bool sendLootMsg)
 	CreateTypeItem(bookcase.position, false, ItemType::Misc, IMISC_BOOK, sendLootMsg, false);
 
 	if (Quests[Q_ZHAR].IsAvailable()) {
-		Monster &zhar = Monsters[MAX_PLRS];
+		Monster &zhar = Monsters[ZharMonsterIndex];
 		if (zhar.mode == MonsterMode::Stand // prevents playing the "angry" message for the second time if zhar got aggroed by losing vision and talking again
 		    && zhar.uniqueType == UniqueMonsterType::Zhar
 		    && zhar.activeForTicks == UINT8_MAX
 		    && zhar.hitPoints > 0) {
 			zhar.talkMsg = TEXT_ZHAR2;
-			M_StartStand(zhar, zhar.direction); // BUGFIX: first parameter in call to M_StartStand should be MAX_PLRS, not 0. (fixed)
+			M_StartStand(zhar, zhar.direction); // BUGFIX: Start Zhar in its reserved slot, not monster 0. (fixed)
 			zhar.goal = MonsterGoal::Attack;
 			if (sendmsg)
 				zhar.mode = MonsterMode::Talk;
@@ -3399,7 +3399,7 @@ void OperateStoryBook(Object &storyBook)
 
 void OperateLazStand(Object &stand)
 {
-	if (ActiveItemCount >= MAXITEMS) {
+	if (!HasWorldItemSpace()) {
 		return;
 	}
 

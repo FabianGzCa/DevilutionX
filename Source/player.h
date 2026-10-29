@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -27,6 +28,7 @@
 #include "levels/dun_tile.hpp"
 #include "levels/gendung.h"
 #include "multi.h"
+#include "player_mask.hpp"
 #include "tables/playerdat.hpp"
 #include "tables/spelldat.h"
 #include "utils/attributes.h"
@@ -917,8 +919,10 @@ public:
 extern DVL_API_FOR_TEST uint8_t MyPlayerId;
 extern DVL_API_FOR_TEST Player *MyPlayer;
 extern DVL_API_FOR_TEST std::vector<Player> Players;
+/** Resizes session slots after reserving storage for the engine player capacity. */
+DVL_API_FOR_TEST void ResizePlayersForSession(size_t count);
 /** @brief What Player items and stats should be displayed? Normally this is identical to MyPlayer but can differ when /inspect was used. */
-extern Player *InspectPlayer;
+extern DVL_API_FOR_TEST Player *InspectPlayer;
 /** @brief Do we currently inspect a remote player (/inspect was used)? In this case the (remote) players items and stats can't be modified. */
 inline bool IsInspectingPlayer()
 {
@@ -957,7 +961,7 @@ int CalcStatDiff(Player &player);
 #ifdef _DEBUG
 void NextPlrLevel(Player &player);
 #endif
-void AddPlrMonstExper(int lvl, unsigned int exp, char pmask);
+void AddPlrMonstExper(int lvl, unsigned int exp, PlayerExperienceMask contributors);
 void ApplyPlrDamage(DamageType damageType, Player &player, Fixed26_6 dam, int minHP = 0, DeathReason deathReason = DeathReason::MonsterOrTrap);
 void InitPlayer(Player &player, bool FirstTime);
 void InitMultiView();

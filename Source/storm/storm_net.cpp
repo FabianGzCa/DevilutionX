@@ -54,8 +54,10 @@ bool SNetReceiveTurns(int arraysize, char **arraydata, size_t *arraydatabytes, u
 #ifndef NONET
 	std::lock_guard<SdlMutex> lg(storm_net_mutex);
 #endif
-	if (arraysize != MAX_PLRS)
-		UNIMPLEMENTED();
+	_SNETCAPS caps {};
+	dvlnet_inst->SNetGetProviderCaps(&caps);
+	if (arraysize < static_cast<int>(caps.maxplayers))
+		return false;
 	return dvlnet_inst->SNetReceiveTurns(arraydata, arraydatabytes, arrayplayerstatus);
 }
 
@@ -197,9 +199,28 @@ bool SNetJoinGame(char *pszGameName, char *pszGamePassword, int *playerID)
 		DvlNet_SetPassword(pszGamePassword);
 	else
 		DvlNet_ClearPassword();
-	const int joinedPlayerId = dvlnet_inst->join(pszGameName);
+	const auto join = [&](const GameData &game) {
+		GameData localGame = game;
+		SwapGameDataLE(localGame);
+		const auto *bytes = reinterpret_cast<const unsigned char *>(&localGame);
+		dvlnet_inst->setup_gameinfo(net::buffer_t(bytes, bytes + sizeof(localGame)));
+		return dvlnet_inst->join(pszGameName);
+	};
+	GameData requested = sgGameInitInfo;
+	int joinedPlayerId = join(requested);
+	// A direct join cannot know the host's mode in advance. Only new hosts report a mismatch;
+	// original hosts receive the classic request first.
+	if (joinedPlayerId == -1 && dvlnet_inst->get_join_rejection() == GameDataError::SessionMismatch) {
+		if (const auto alternate = AlternateSessionRules(requested.rules)) {
+			LogVerbose("Host uses the other multiplayer mode; retrying the join");
+			SetSessionRules(requested, *alternate);
+			joinedPlayerId = join(requested);
+		}
+	}
 	if (joinedPlayerId == -1)
 		return false;
+	// Acceptance normally publishes the host descriptor; keep the admitted mode if it was identical.
+	SetSessionRules(sgGameInitInfo, requested.rules);
 	*playerID = joinedPlayerId;
 	// Join message with seed will be logged in NetInit after game data is synchronized
 	return true;

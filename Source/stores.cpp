@@ -2672,6 +2672,8 @@ void TakePlrsMoney(int cost)
 
 void StoreEnter()
 {
+	if (IsItemTransferPending())
+		return;
 	if (qtextflag) {
 		qtextflag = false;
 		if (leveltype == DTYPE_TOWN)

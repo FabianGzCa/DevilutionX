@@ -235,7 +235,7 @@ public:
 	}
 };
 
-extern std::list<Missile> Missiles;
+extern DVL_API_FOR_TEST std::list<Missile> Missiles;
 extern bool MissilePreFlag;
 
 struct DamageRange {
@@ -490,6 +490,7 @@ void SetUpMissileAnimationData();
 void RedoMissileFlags();
 
 #ifdef BUILD_TESTING
+bool TestPlayerMissileHit(const Player &player, Player &target);
 void TestRotateBlockedMissile(Missile &missile);
 #endif
 

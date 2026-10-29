@@ -88,6 +88,7 @@
 #include "panels/spell_book.hpp"
 #include "panels/spell_list.hpp"
 #include "pfile.h"
+#include "players/level_entry.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
 #include "qol/floatingnumbers.h"
@@ -139,6 +140,9 @@ bool gbRunGameResult;
 bool ReturnToMainMenu;
 /** Enable updating of player character, set to false once Diablo dies */
 bool gbProcessPlayers;
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST void (*TestGameLogicHook)(bool before) = nullptr;
+#endif
 bool gbLoadGame;
 bool cineflag;
 int PauseMode;
@@ -221,7 +225,7 @@ void FreeGame()
 
 bool ProcessInput()
 {
-	if (PauseMode == 2) {
+	if (PauseMode == 2 || ShouldWaitForLevelEntry()) {
 		return false;
 	}
 
@@ -316,6 +320,8 @@ void LeftMouseCmd(bool bShift)
 
 bool TryOpenDungeonWithMouse()
 {
+	if (IsItemTransferPending())
+		return false;
 	if (leveltype != DTYPE_TOWN)
 		return false;
 
@@ -338,7 +344,7 @@ void LeftMouseDown(uint16_t modState)
 	if (gmenu_left_mouse(true))
 		return;
 
-	if (CheckMuteButton())
+	if (CheckChatRecipientButton())
 		return;
 
 	if (sgnTimeoutCurs != CURSOR_NONE)
@@ -399,8 +405,7 @@ void LeftMouseDown(uint16_t modState)
 				if (!TryOpenDungeonWithMouse()) {
 					const Point currentPosition = MyPlayer->position.tile;
 					std::optional<Point> itemTile = FindAdjacentPositionForItem(currentPosition, GetDirection(currentPosition, cursPosition));
-					if (itemTile) {
-						NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, MyPlayer->HoldItem);
+					if (itemTile && NetSendCmdPItem(true, CMD_PUTITEM, *itemTile, MyPlayer->HoldItem) && !IsItemTransferPending()) {
 						NewCursor(CURSOR_HAND);
 					}
 				}
@@ -423,7 +428,7 @@ void LeftMouseDown(uint16_t modState)
 void LeftMouseUp(uint16_t modState)
 {
 	gmenu_left_mouse(false);
-	CheckMuteButtonUp();
+	CheckChatRecipientButtonUp();
 	if (MainPanelButtonDown)
 		CheckMainPanelButtonUp();
 	CheckStashButtonRelease(MousePosition);
@@ -872,6 +877,8 @@ void RunGameLoop(interface_mode uMsg)
 	StartGame(uMsg);
 	assert(HeadlessMode || ghMainWnd);
 	EventHandler previousHandler = SetEventHandler(GameEventHandler);
+	if (gbIsMultiplayer && (!gbVanilla || IsExtendedItemTransferSession()) && LoadHeldItem(*MyPlayer))
+		NewCursor(MyPlayer->HoldItem);
 	run_delta_info();
 	gbRunGame = true;
 	gbProcessPlayers = IsDiabloAlive(true);
@@ -955,6 +962,7 @@ void RunGameLoop(interface_mode uMsg)
 	demo::NotifyGameLoopEnd();
 
 	if (gbIsMultiplayer) {
+		FinishItemTransfers();
 		pfile_write_hero(/*writeGameData=*/false);
 		sfile_write_stash();
 	}
@@ -1506,7 +1514,7 @@ void UpdateMonsterLights()
 			monster.lightId = AddLight(monster.position.tile, lightRadius);
 		}
 
-		if (monster.lightId != NO_LIGHT) {
+		if (IsValidLightId(monster.lightId)) {
 			if (monster.lightId == MyPlayer->lightId) { // Fix old saves where some monsters had 0 instead of NO_LIGHT
 				monster.lightId = NO_LIGHT;
 				continue;
@@ -1522,9 +1530,18 @@ void UpdateMonsterLights()
 
 void GameLogic()
 {
+	ProcessLevelEntries();
+	if (ShouldWaitForLevelEntry()) {
+		RedrawViewport();
+		return;
+	}
 	if (!ProcessInput()) {
 		return;
 	}
+#ifdef BUILD_TESTING
+	if (TestGameLogicHook != nullptr)
+		TestGameLogicHook(true);
+#endif
 	if (gbProcessPlayers) {
 		gGameLogicStep = GameLogicStep::ProcessPlayers;
 		ProcessPlayers();
@@ -1566,6 +1583,10 @@ void GameLogic()
 	pfile_update(false);
 
 	plrctrls_after_game_logic();
+#ifdef BUILD_TESTING
+	if (TestGameLogicHook != nullptr)
+		TestGameLogicHook(false);
+#endif
 }
 
 void TimeoutCursor(bool bTimeout)

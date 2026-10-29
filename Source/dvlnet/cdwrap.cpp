@@ -25,7 +25,6 @@ int cdwrap::create(std::string_view addrstr)
 
 int cdwrap::join(std::string_view addrstr)
 {
-	game_init_info = buffer_t();
 	reset();
 	return dvlnet_wrap->join(addrstr);
 }
@@ -138,6 +137,11 @@ void cdwrap::clear_password()
 DvlNetLatencies cdwrap::get_latencies(uint8_t playerid)
 {
 	return dvlnet_wrap->get_latencies(playerid);
+}
+
+std::optional<GameDataError> cdwrap::get_join_rejection()
+{
+	return dvlnet_wrap->get_join_rejection();
 }
 
 } // namespace devilution::net

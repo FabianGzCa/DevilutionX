@@ -58,6 +58,7 @@
 #include "panels/partypanel.hpp"
 #include "panels/quest_log.hpp"
 #include "panels/spell_list.hpp"
+#include "player_visual_identity.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
 #include "qol/floatingnumbers.h"
@@ -91,10 +92,6 @@
 namespace devilution {
 
 enum OutlineColors : uint8_t {
-	OutlineColorsPlayer1 = (PAL16_ORANGE + 7),
-	OutlineColorsPlayer2 = (PAL16_YELLOW + 7),
-	OutlineColorsPlayer3 = (PAL16_RED + 7),
-	OutlineColorsPlayer4 = (PAL16_BLUE + 7),
 	OutlineColorsObject = (PAL16_YELLOW + 2),
 	OutlineColorsTowner = (PAL16_BEIGE + 6),
 	OutlineColorsMonster = (PAL16_RED + 9),
@@ -443,21 +440,6 @@ void DrawPlayerIcons(const Surface &out, const Player &player, Point position, b
 		DrawPlayerIconHelper(out, MissileGraphicID::Reflect, position + Displacement { 0, 16 }, player, infraVision, lightTableIndex);
 }
 
-uint8_t GetPlayerOutlineColor(int id)
-{
-	static constexpr uint8_t PlayerOutlineColors[] = {
-		OutlineColorsPlayer1,
-		OutlineColorsPlayer2,
-		OutlineColorsPlayer3,
-		OutlineColorsPlayer4,
-	};
-
-	if (id < 0 || id >= static_cast<int>(SDL_arraysize(PlayerOutlineColors)))
-		return OutlineColorsPlayer1;
-
-	return PlayerOutlineColors[id];
-}
-
 /**
  * @brief Render a player sprite
  * @param out Output buffer
@@ -475,7 +457,7 @@ void DrawPlayer(const Surface &out, const Player &player, Point tilePosition, Po
 	const Point spriteBufferPosition = targetBufferPosition + player.getRenderingOffset(sprite);
 
 	if (&player == PlayerUnderCursor)
-		ClxDrawOutlineSkipColorZero(out, GetPlayerOutlineColor(player.getId()), spriteBufferPosition, sprite);
+		ClxDrawOutlineSkipColorZero(out, GetConfiguredPlayerVisualIdentity(player.getId()).outlineColor, spriteBufferPosition, sprite);
 
 	if (&player == MyPlayer && IsNoneOf(leveltype, DTYPE_NEST, DTYPE_CRYPT)) {
 		ClxDraw(out, spriteBufferPosition, sprite);
@@ -714,6 +696,8 @@ void DrawFloorTile(const Surface &out, const Lightmap &lightmap, Point tilePosit
 void DrawItem(const Surface &out, int8_t itemIndex, Point targetBufferPosition, int lightTableIndex)
 {
 	const Item &item = Items[itemIndex];
+	if (item.pendingCreation)
+		return;
 	const ClxSprite sprite = item.AnimInfo.currentSprite();
 	const Point position = targetBufferPosition + item.getRenderingOffset(sprite);
 	if (!IsPlayerInStore() && (itemIndex == pcursitem || AutoMapShowItems)) {
@@ -751,7 +735,7 @@ void DrawMonsterHelper(const Surface &out, Point tilePosition, Point targetBuffe
 		return;
 	}
 
-	if (static_cast<size_t>(mi) >= MaxMonsters) {
+	if (static_cast<size_t>(mi) >= MonsterLimit()) {
 		Log("Draw Monster: tried to draw illegal monster {}", mi);
 		return;
 	}
@@ -827,7 +811,7 @@ void DrawDungeon(const Surface &out, const Lightmap &lightmap, Point tilePositio
 	Player *player = PlayerAtPosition(tilePosition);
 	if (player != nullptr) {
 		const uint8_t pid = player->getId();
-		assert(pid < MAX_PLRS);
+		assert(pid < Players.size());
 		int playerId = static_cast<int>(pid) + 1;
 		// If sprite is moving southwards or east, we want to draw it offset from the tile it's moving to, so we need negative ID
 		// This respests the order that tiles are drawn. By using the negative id, we ensure that the sprite is drawn with priority
@@ -864,7 +848,7 @@ void DrawDungeon(const Surface &out, const Lightmap &lightmap, Point tilePositio
 	Monster *monster = FindMonsterAtPosition(tilePosition);
 	if (monster != nullptr) {
 		auto mid = monster->getId();
-		assert(mid < MaxMonsters);
+		assert(mid < MonsterLimit());
 		int monsterId = static_cast<int>(mid) + 1;
 		// If sprite is moving southwards or east, we want to draw it offset from the tile it's moving to, so we need negative ID
 		// This respests the order that tiles are drawn. By using the negative id, we ensure that the sprite is drawn with priority

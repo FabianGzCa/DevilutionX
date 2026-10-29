@@ -4,6 +4,8 @@
  * Implementation of monster functionality, AI, actions, spawning, loading, etc.
  */
 #include "monster.h"
+#include "monsters/party_balance.hpp"
+#include "monsters/party_scaling.hpp"
 
 #include <algorithm>
 #include <array>
@@ -107,11 +109,14 @@
 #endif
 
 namespace devilution {
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST void (*TestMonsterRewardObserver)(const Monster &) = nullptr;
+#endif
 
 CMonster LevelMonsterTypes[MaxLvlMTypes];
 size_t LevelMonsterTypeCount;
-Monster Monsters[MaxMonsters];
-unsigned ActiveMonsters[MaxMonsters];
+Monster Monsters[MonsterStorageCapacity];
+unsigned ActiveMonsters[MonsterStorageCapacity];
 size_t ActiveMonsterCount;
 /** Tracks the total number of monsters killed per monster_id. */
 int MonsterKillCounts[NUM_MAX_MTYPES];
@@ -226,7 +231,7 @@ void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point positio
 	monster.lightId = NO_LIGHT;
 	monster.rndItemSeed = AdvanceRndSeed();
 	monster.aiSeed = AdvanceRndSeed();
-	monster.whoHit = 0;
+	monster.whoHit = {};
 	monster.minDamage = monster.data().minDamage;
 	monster.maxDamage = monster.data().maxDamage;
 	monster.minDamageSpecial = monster.data().minDamageSpecial;
@@ -277,6 +282,7 @@ void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point positio
 		monster.armorClass += HellAcBonus;
 		monster.resistance = monster.data().resistanceHell;
 	}
+	InitializePartyMonster(monster);
 }
 
 bool CanPlaceMonster(Point position)
@@ -350,7 +356,12 @@ void PlaceGroup(size_t typeIndex, size_t num, Monster *leader = nullptr, bool le
 			if (leader != nullptr) {
 				Monster &minion = Monsters[ActiveMonsterCount];
 				minion.maxHitPoints *= 2;
+				minion.partyNativeMax *= 2;
 				minion.hitPoints = minion.maxHitPoints;
+				if (IsPartyBalanceEnabled()) {
+					minion.maxHitPoints = minion.hitPoints = minion.partyNativeMax;
+					InitializePartyMonster(minion);
+				}
 				minion.intelligence = leader->intelligence;
 
 				if (leashed) {
@@ -482,7 +493,8 @@ void ClearMVars(Monster &monster)
 
 void ClrAllMonsters()
 {
-	for (auto &monster : Monsters) {
+	for (size_t i = 0; i < MaxMonsters; ++i) {
+		Monster &monster = Monsters[i];
 		ClearMVars(monster);
 		monster.goal = MonsterGoal::None;
 		monster.mode = MonsterMode::Stand;
@@ -641,6 +653,8 @@ void DeleteMonster(size_t activeIndex)
 
 	ActiveMonsterCount--;
 	std::swap(ActiveMonsters[activeIndex], ActiveMonsters[ActiveMonsterCount]); // This ensures alive monsters are before ActiveMonsterCount in the array and any deleted monster after
+	if (sgGameInitInfo.rules == ExtendedSessionRules)
+		std::sort(ActiveMonsters, ActiveMonsters + ActiveMonsterCount);
 
 	for (size_t i = 0; i < ActiveMonsterCount; i++) {
 		Monster &activeMonster = Monsters[ActiveMonsters[i]];
@@ -910,6 +924,10 @@ void DiabloDeath(Monster &diablo, bool sendmsg)
 
 void SpawnLoot(Monster &monster, bool sendmsg)
 {
+#ifdef BUILD_TESTING
+	if (TestMonsterRewardObserver != nullptr)
+		TestMonsterRewardObserver(monster);
+#endif
 	if (monster.type().type == MT_HORKSPWN) {
 		return;
 	}
@@ -1123,7 +1141,8 @@ void MonsterAttackMonster(Monster &attacker, Monster &target, int hper, int mind
 		return;
 
 	const int dam = RandomIntBetween(mind, maxd) << 6;
-	ApplyMonsterDamage(DamageType::Physical, target, Fixed26_6::fromRaw(dam));
+	if (IsPartyDamageAuthority(&attacker))
+		ApplyMonsterDamage(DamageType::Physical, target, Fixed26_6::fromRaw(dam), attacker.isPlayerMinion());
 
 	if (attacker.isPlayerMinion()) {
 		const auto playerId = static_cast<size_t>(attacker.goalVar3);
@@ -2407,7 +2426,7 @@ void LeoricAi(Monster &monster)
 		    && ((distanceToEnemy >= 3 && v < 4 * monster.intelligence + 35) || v < 6)
 		    && LineClearMissile(monster.position.tile, monster.enemyPosition)) {
 			const Point newPosition = monster.position.tile + md;
-			if (IsTileAvailable(monster, newPosition) && ActiveMonsterCount < MaxMonsters) {
+			if (IsTileAvailable(monster, newPosition) && AvailableMonsterSlots() != 0) {
 				auto typeIndex = GetRandomSkeletonTypeIndex();
 				if (typeIndex) {
 					SpawnMonster(newPosition, md, *typeIndex);
@@ -3043,7 +3062,7 @@ void HorkDemonAi(Monster &monster)
 	if (monster.goal == MonsterGoal::Normal) {
 		if ((distanceToEnemy >= 3) && v < 2 * monster.intelligence + 43) {
 			const Point position = monster.position.tile + monster.direction;
-			if (IsTileAvailable(monster, position) && ActiveMonsterCount < MaxMonsters) {
+			if (IsTileAvailable(monster, position) && AvailableMonsterSlots() != 0) {
 				StartRangedSpecialAttack(monster, MissileID::HorkSpawn, 0);
 			}
 		} else if (distanceToEnemy < 2) {
@@ -3251,8 +3270,8 @@ MonsterSpritesData LoadMonsterSpritesData(const MonsterData &monsterData)
 
 void EnsureMonsterIndexIsActive(size_t monsterId)
 {
-	assert(monsterId < MaxMonsters);
-	for (size_t index = 0; index < MaxMonsters; index++) {
+	assert(monsterId < MonsterLimit());
+	for (size_t index = 0; index < MonsterLimit(); index++) {
 		if (ActiveMonsters[index] != monsterId)
 			continue;
 		if (index < ActiveMonsterCount)
@@ -3261,6 +3280,9 @@ void EnsureMonsterIndexIsActive(size_t monsterId)
 		ActiveMonsters[ActiveMonsterCount] = static_cast<unsigned>(monsterId);
 		ActiveMonsters[index] = oldId;
 		ActiveMonsterCount += 1;
+		if (sgGameInitInfo.rules == ExtendedSessionRules)
+			std::sort(ActiveMonsters, ActiveMonsters + ActiveMonsterCount);
+		return;
 	}
 }
 
@@ -3276,6 +3298,7 @@ void InitGolem(devilution::Monster &monster, uint8_t golemOwnerPlayerId, int16_t
 	monster.minDamage = 2 * (golemSpellLevel + 4);
 	monster.maxDamage = 2 * (golemSpellLevel + 8);
 	UpdateEnemy(monster);
+	InitializePartyMonster(monster);
 }
 
 bool PosOkMissile(Point position)
@@ -3289,6 +3312,18 @@ bool PosOkMovingMissile(Point position)
 }
 
 } // namespace
+
+size_t MonsterLimit()
+{
+	return sgGameInitInfo.rules == ExtendedSessionRules ? MonsterStorageCapacity : MaxMonsters;
+}
+
+size_t AvailableMonsterSlots()
+{
+	if (sgGameInitInfo.rules != ExtendedSessionRules)
+		return MaxMonsters - ActiveMonsterCount;
+	return std::count_if(ActiveMonsters + ActiveMonsterCount, ActiveMonsters + MonsterLimit(), [](unsigned id) { return id < MaxMonsters; });
+}
 
 std::expected<size_t, std::string> AddMonsterType(_monster_id type, placeflag placeflag)
 {
@@ -3413,6 +3448,7 @@ std::expected<void, std::string> PrepareUniqueMonst(Monster &monster, UniqueMons
 		monster.flags &= ~MFLAG_ALLOW_SPECIAL;
 		monster.mode = MonsterMode::Stand;
 	}
+	InitializePartyMonster(monster);
 	return {};
 }
 
@@ -3426,6 +3462,8 @@ void InitLevelMonsters()
 	}
 
 	ClrAllMonsters();
+	for (size_t i = MaxMonsters; i < MonsterStorageCapacity; ++i)
+		Monsters[i] = {};
 	ActiveMonsterCount = 0;
 	totalmonsters = MaxMonsters;
 
@@ -3673,10 +3711,18 @@ void WeakenNaKrul()
 	Monster &monster = Monsters[UberDiabloMonsterIndex];
 	PlayEffect(monster, MonsterSound::Death);
 	monster.armorClass -= 50;
-	const Fixed26_6 hp = monster.maxHitPoints / 2;
+	const Fixed26_6 hp = (IsPartyBalanceEnabled() ? monster.partyNativeMax : monster.maxHitPoints) / 2;
 	monster.resistance = 0;
 	monster.hitPoints = hp;
 	monster.maxHitPoints = hp;
+	if (IsPartyBalanceEnabled()) {
+		monster.partyNativeMax = hp;
+		monster.partyLastHitPoints = hp;
+		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
+		state.nativeMax = hp.raw();
+		state.damage = 0;
+		RestorePartyMonsters();
+	}
 }
 
 void InitGolems()
@@ -3781,30 +3827,32 @@ std::expected<void, std::string> SetMapMonsters(const uint16_t *dunData, Point s
 
 Monster *AddMonster(Point position, Direction dir, size_t typeIndex, bool inMap)
 {
-	if (ActiveMonsterCount < MaxMonsters) {
-		Monster &monster = Monsters[ActiveMonsters[ActiveMonsterCount++]];
-		if (inMap)
-			monster.occupyTile(position, false);
-		InitMonster(monster, dir, typeIndex, position);
-		return &monster;
-	}
-
-	return nullptr;
+	const auto end = ActiveMonsters + MonsterLimit();
+	const auto slot = std::find_if(ActiveMonsters + ActiveMonsterCount, end, [](unsigned id) { return id < MaxMonsters; });
+	if (slot == end)
+		return nullptr;
+	const unsigned id = *slot;
+	EnsureMonsterIndexIsActive(id);
+	Monster &monster = Monsters[id];
+	if (inMap)
+		monster.occupyTile(position, false);
+	InitMonster(monster, dir, typeIndex, position);
+	return &monster;
 }
 
 void SpawnMonster(Point position, Direction dir, size_t typeIndex)
 {
-	if (ActiveMonsterCount >= MaxMonsters)
+	if (AvailableMonsterSlots() == 0)
 		return;
 
-	// The command is only executed for the level owner, to prevent desyncs in multiplayer.
+	// Only the level owner allocates IDs and broadcasts the resulting spawn.
 	if (!MyPlayer->isLevelOwnedByLocalClient())
 		return;
 
-	const size_t monsterIndex = ActiveMonsters[ActiveMonsterCount];
-	ActiveMonsterCount += 1;
+	const auto slot = std::find_if(ActiveMonsters + ActiveMonsterCount, ActiveMonsters + MonsterLimit(), [](unsigned id) { return id < MaxMonsters; });
+	const unsigned monsterIndex = *slot;
+	EnsureMonsterIndexIsActive(monsterIndex);
 	const uint32_t seed = GetLCGEngineState();
-	// Update local state immediately to increase ActiveMonsterCount instantly (this allows multiple monsters to be spawned in one game tick)
 	InitializeSpawnedMonster(position, dir, typeIndex, monsterIndex, seed, 0, 0);
 	NetSendCmdSpawnMonster(position, dir, static_cast<uint16_t>(typeIndex), static_cast<uint16_t>(monsterIndex), seed, 0, 0);
 }
@@ -3870,9 +3918,11 @@ void AddDoppelganger(Monster &monster)
 	}
 }
 
-void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage)
+void ApplyMonsterDamage(DamageType damageType, Monster &monster, Fixed26_6 damage, bool playerDamage)
 {
 	lua::OnMonsterTakeDamage(&monster, damage.raw(), static_cast<int>(damageType));
+	if (ApplyPartyMonsterDamage(monster, damage, playerDamage))
+		return;
 
 	monster.hitPoints -= damage;
 
@@ -4002,7 +4052,30 @@ void M_StartHit(Monster &monster, const Player &player, int dam)
 
 void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 {
-	if (!monster.isPlayerMinion())
+	const bool party = IsPartyBalanceEnabled() && !monster.isPlayerMinion();
+	if (IsPartyBalanceEnabled() && monster.isPlayerMinion()) {
+		if (monster.partyDeathStarted)
+			return;
+		ReconcilePartyMonster(monster);
+		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
+		state.flags |= PartyMonsterDead | PartyMonsterRewarded;
+		state.deathParticipants = std::max<uint8_t>(1, GetPartyLevelState(CurrentPartyLevel()).participants);
+		monster.partyDeathStarted = true;
+		SyncPartyMonsterDelta(CurrentPartyLevel(), monster.getId());
+	}
+	if (party) {
+		if (monster.partyDeathStarted)
+			return;
+		ReconcilePartyMonster(monster);
+		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
+		if ((state.flags & PartyMonsterDead) == 0) {
+			state.flags |= PartyMonsterDead;
+			state.killer = MyPlayerId;
+			state.deathParticipants = std::max<uint8_t>(1, GetPartyLevelState(CurrentPartyLevel()).participants);
+		}
+		monster.partyDeathStarted = true;
+	}
+	if (!party && !monster.isPlayerMinion())
 		AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), monster.exp(sgGameInitInfo.nDifficulty), monster.whoHit);
 
 	MonsterKillCounts[monster.type().type]++;
@@ -4012,11 +4085,13 @@ void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 	monster.flags &= ~MFLAG_HIDDEN;
 	SetRndSeed(monster.rndItemSeed);
 
-	SpawnLoot(monster, sendmsg);
+	if (!party)
+		SpawnLoot(monster, sendmsg);
 
-	if (monster.type().type == MT_DIABLO)
-		DiabloDeath(monster, true);
-	else
+	if (monster.type().type == MT_DIABLO) {
+		if (!party)
+			DiabloDeath(monster, true);
+	} else
 		PlayEffect(monster, MonsterSound::Death);
 
 	if (monster.mode != MonsterMode::Petrified) {
@@ -4033,7 +4108,8 @@ void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 	monster.position.future = monster.position.old;
 	M_ClearSquares(monster);
 	monster.occupyTile(monster.position.tile, false);
-	CheckQuestKill(monster, sendmsg);
+	if (!party)
+		CheckQuestKill(monster, sendmsg);
 	M_FallenFear(monster.position.tile);
 	if (IsAnyOf(monster.type().type, MT_NACID, MT_RACID, MT_BACID, MT_XACID, MT_SPIDLORD))
 		AddMissile(monster.position.tile, { 0, 0 }, Direction::South, MissileID::AcidPuddle, TARGET_PLAYERS, monster, monster.intelligence + 1, 0);
@@ -4048,9 +4124,50 @@ void StartMonsterDeath(Monster &monster, const Player &player, bool sendmsg)
 
 void KillGolem(Monster &golem)
 {
+	if (IsPartyBalanceEnabled()) {
+		ApplyMonsterDamage(DamageType::Physical, golem, golem.hitPoints);
+		if (!golem.partyDeathStarted)
+			M_StartKill(golem, *MyPlayer);
+		return;
+	}
 	delta_kill_monster(golem, golem.position.tile, *MyPlayer);
 	NetSendCmdLocParam1(false, CMD_MONSTDEATH, golem.position.tile, static_cast<uint16_t>(golem.getId()));
 	M_StartKill(golem, *MyPlayer);
+}
+
+bool IsPartyRandomLoot(uint16_t type, uint8_t unique)
+{
+	if (type >= MonstersData.size() || type == MT_HORKSPWN || type == MT_NAKRUL)
+		return false;
+	if (unique == static_cast<uint8_t>(UniqueMonsterType::Garbud) || unique == static_cast<uint8_t>(UniqueMonsterType::Defiler) || unique == static_cast<uint8_t>(UniqueMonsterType::HorkDemon))
+		return false;
+	const auto treasure = MonstersData[type].treasure;
+	return (treasure & T_NODROP) == 0 && ((treasure & T_UNIQ) == 0 || UseMultiplayerQuests());
+}
+void FinalizePartyMonsterReward(Monster &monster, bool sendmsg, uint8_t participants, uint8_t extraRolls)
+{
+	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, participants);
+	if (!scale || monster.isPlayerMinion())
+		return;
+	AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), scale->Experience(monster.exp(sgGameInitInfo.nDifficulty), false, monster.type().type == MT_DIABLO), monster.whoHit);
+	const uint32_t previousSeed = GetLCGEngineState();
+	SetRndSeed(monster.rndItemSeed);
+	SpawnLoot(monster, sendmsg);
+	const uint32_t nativeSeed = GetLCGEngineState();
+	if (extraRolls != 0 && IsPartyRandomLoot(monster.type().type, static_cast<uint8_t>(monster.uniqueType))) {
+		for (uint8_t roll = 0; roll < extraRolls; ++roll)
+			SpawnItem(monster, monster.position.tile, sendmsg);
+		SetRndSeed(nativeSeed);
+	}
+	CheckQuestKill(monster, sendmsg);
+	if (monster.type().type == MT_DIABLO)
+		DiabloDeath(monster, true);
+	SetRndSeed(previousSeed);
+}
+
+void StartPartyMonsterDeath(Monster &monster, const Player &player)
+{
+	MonsterDeath(monster, GetDirection(monster.position.tile, player.position.tile), false);
 }
 
 void M_StartKill(Monster &monster, const Player &player)
@@ -4239,7 +4356,7 @@ void DeleteMonsterList()
 	}
 
 	for (size_t i = ReservedMonsterSlotsForGolems; i < ActiveMonsterCount;) {
-		if (Monsters[ActiveMonsters[i]].isInvalid) {
+		if (Monsters[ActiveMonsters[i]].isInvalid && !IsPartyMonsterRewardPending(Monsters[ActiveMonsters[i]])) {
 			if (pcursmonst == static_cast<int>(ActiveMonsters[i])) // Unselect monster if player highlighted it
 				pcursmonst = -1;
 			DeleteMonster(i);
@@ -4267,7 +4384,7 @@ void ProcessMonsters()
 {
 	DeleteMonsterList();
 
-	assert(ActiveMonsterCount <= MaxMonsters);
+	assert(ActiveMonsterCount <= MonsterLimit());
 	for (size_t i = 0; i < ActiveMonsterCount; i++) {
 		Monster &monster = Monsters[ActiveMonsters[i]];
 		FollowTheLeader(monster);
@@ -4306,11 +4423,11 @@ void ProcessMonsters()
 
 		if ((monster.flags & MFLAG_NO_ENEMY) == 0) {
 			if ((monster.flags & MFLAG_TARGETS_MONSTER) != 0) {
-				assert(monster.enemy >= 0 && monster.enemy < MaxMonsters);
+				assert(monster.enemy >= 0 && monster.enemy < MonsterLimit());
 				monster.position.last = Monsters[monster.enemy].position.future;
 				monster.enemyPosition = monster.position.last;
 			} else {
-				assert(monster.enemy >= 0 && monster.enemy < MAX_PLRS);
+				assert(monster.enemy >= 0 && static_cast<size_t>(monster.enemy) < Players.size());
 				const Player &player = Players[monster.enemy];
 				monster.enemyPosition = player.position.future;
 				if (isMonsterVisible) {
@@ -4588,7 +4705,7 @@ void PlayEffect(Monster &monster, MonsterSound mode)
 
 void MissToMonst(Missile &missile, Point position)
 {
-	assert(static_cast<size_t>(missile._misource) < MaxMonsters);
+	assert(static_cast<size_t>(missile._misource) < MonsterLimit());
 	Monster &monster = Monsters[missile._misource];
 
 	const Point oldPosition = missile.position.tile;
@@ -4815,40 +4932,67 @@ void TalktoMonster(Player &player, Monster &monster)
 
 void SpawnGolem(const Player &player, Point position, uint8_t spellLevel)
 {
-	// Search monster index to use for the new golem
-	Monster *golem = nullptr;
-	// 1. Prefer MonsterIndex = PlayerIndex for vanilla compatibility
-	if (player.getId() < ReservedMonsterSlotsForGolems) {
-		Monster &reservedGolem = Monsters[player.getId()];
-		if (reservedGolem.position.tile == GolemHoldingCell || reservedGolem.hitPoints == 0)
-			golem = &reservedGolem;
+	const bool extended = sgGameInitInfo.rules == ExtendedSessionRules;
+	const auto failed = [&] {
+		if (extended)
+			NetSendCmdParam1(true, CMD_GOLEMFAILED, static_cast<uint16_t>(player.getId()));
+	};
+	if (extended) {
+		if (FindGolemForPlayer(player) != nullptr)
+			return; // Repeated requests must not create multiple living summons.
+		const auto available = Crawl(0, MaxCrawlRadius, [&](Displacement offset) -> std::optional<Point> {
+			const Point candidate = position + offset;
+			return IsTileAvailable(candidate) ? std::optional<Point>(candidate) : std::nullopt;
+		});
+		if (!available) {
+			failed();
+			return;
+		}
+		position = *available;
 	}
-	// 2. Use reserved slots, so additional Monsters can spawn
-	if (golem == nullptr) {
-		for (int i = 0; i < ReservedMonsterSlotsForGolems; i++) {
-			Monster &reservedGolem = Monsters[i];
-			if (reservedGolem.position.tile == GolemHoldingCell || reservedGolem.hitPoints == 0) {
-				golem = &reservedGolem;
+	Monster *golem = nullptr;
+	// Reuse a dead dynamic summon before allocating another entry.
+	if (extended) {
+		for (size_t i = 0; i < ActiveMonsterCount; ++i) {
+			Monster &candidate = Monsters[ActiveMonsters[i]];
+			if (candidate.type().type == MT_GOLEM && candidate.goalVar3 == player.getId() && candidate.hitPoints == 0) {
+				golem = &candidate;
 				break;
 			}
 		}
 	}
-	// 3. Use normal monster slot
-	if (golem == nullptr) {
-		if (ActiveMonsterCount >= MaxMonsters)
-			return;
-		const size_t monsterIndex = ActiveMonsters[ActiveMonsterCount];
-		ActiveMonsterCount += 1;
-		golem = &Monsters[monsterIndex];
+	// Retain the four classic placeholders and their original preference.
+	if (golem == nullptr && player.getId() < ReservedMonsterSlotsForGolems) {
+		Monster &reserved = Monsters[player.getId()];
+		if (reserved.position.tile == GolemHoldingCell || reserved.hitPoints == 0)
+			golem = &reserved;
 	}
-
-	if (golem == nullptr)
-		return;
-
+	if (golem == nullptr) {
+		for (int i = 0; i < ReservedMonsterSlotsForGolems; ++i) {
+			Monster &reserved = Monsters[i];
+			if (reserved.position.tile == GolemHoldingCell || reserved.hitPoints == 0) {
+				golem = &reserved;
+				break;
+			}
+		}
+	}
+	if (golem == nullptr) {
+		if (extended) {
+			const auto end = ActiveMonsters + MonsterLimit();
+			const auto slot = std::find_if(ActiveMonsters + ActiveMonsterCount, end, [](unsigned id) { return id >= MaxMonsters; });
+			if (slot == end) {
+				failed();
+				return;
+			}
+			golem = &Monsters[*slot];
+		} else {
+			if (ActiveMonsterCount >= MaxMonsters)
+				return;
+			golem = &Monsters[ActiveMonsters[ActiveMonsterCount++]];
+		}
+	}
 	const size_t monsterIndex = golem->getId();
 	const uint32_t seed = GetLCGEngineState();
-
-	// Update local state immediately to increase ActiveMonsterCount instantly (this allows multiple monsters to be spawned in one game tick)
 	InitializeSpawnedMonster(position, Direction::South, 0, monsterIndex, seed, player.getId(), spellLevel);
 	NetSendCmdSpawnMonster(position, Direction::South, 0, static_cast<uint16_t>(monsterIndex), seed, player.getId(), spellLevel);
 }
@@ -4863,13 +5007,13 @@ uint8_t encode_enemy(Monster &monster)
 	if ((monster.flags & MFLAG_TARGETS_MONSTER) != 0)
 		return monster.enemy;
 
-	return monster.enemy + MaxMonsters;
+	return monster.enemy + MonsterLimit();
 }
 
 void decode_enemy(Monster &monster, uint8_t enemyId)
 {
-	if (enemyId >= MaxMonsters) {
-		enemyId -= MaxMonsters;
+	if (enemyId >= MonsterLimit()) {
+		enemyId -= MonsterLimit();
 		monster.flags &= ~MFLAG_TARGETS_MONSTER;
 		monster.enemy = enemyId;
 		monster.enemyPosition = Players[enemyId].position.future;
@@ -4980,7 +5124,7 @@ bool Monster::isPossibleToHit() const
 
 void Monster::tag(const Player &tagger)
 {
-	whoHit |= 1 << tagger.getId();
+	whoHit = AddPlayerToExperienceMask(whoHit, tagger.getId());
 }
 
 bool Monster::tryLiftGargoyle()

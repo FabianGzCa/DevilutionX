@@ -4,6 +4,7 @@
 #include "DiabloUI/text_input.hpp"
 #include "engine/render/clx_render.hpp"
 #include "inv.h"
+#include "msg.h"
 #include "utils/display.h"
 #include "utils/format.hpp"
 #include "utils/format_int.hpp"
@@ -86,7 +87,7 @@ void control_drop_gold(SDL_Keycode vkey)
 {
 	Player &myPlayer = *MyPlayer;
 
-	if (myPlayer.hasNoLife()) {
+	if (myPlayer.hasNoLife() || IsItemTransferPending()) {
 		CloseGoldDrop();
 		return;
 	}
@@ -109,6 +110,8 @@ void control_drop_gold(SDL_Keycode vkey)
 
 void OpenGoldDrop(int8_t invIndex, int max)
 {
+	if (IsItemTransferPending())
+		return;
 	DropGoldFlag = true;
 	GoldDropInvIndex = invIndex;
 	GoldDropText[0] = '\0';

@@ -22,19 +22,24 @@
 #include <config.h>
 
 #include "DiabloUI/diabloui.h"
+#include "control/control_chat.hpp"
+#include "cursor.h"
 #include "diablo.h"
 #include "engine/demomode.h"
 #include "engine/point.hpp"
 #include "engine/random.hpp"
 #include "engine/world_tile.hpp"
 #include "game_mode.hpp"
+#include "lighting.h"
 #include "menu.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "msg.h"
 #include "nthread.h"
 #include "options.h"
 #include "pfile.h"
 #include "player.h"
+#include "players/level_entry.hpp"
 #include "players/validation.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
@@ -52,16 +57,21 @@
 namespace devilution {
 
 bool gbSomebodyWonGameKludge;
-uint16_t sgwPackPlrOffsetTbl[MAX_PLRS];
-bool sgbPlayerTurnBitTbl[MAX_PLRS];
-bool sgbPlayerLeftGameTbl[MAX_PLRS];
+uint16_t sgwPackPlrOffsetTbl[PlayerStorageCapacity];
+bool sgbPlayerTurnBitTbl[PlayerStorageCapacity];
+bool sgbPlayerLeftGameTbl[PlayerStorageCapacity];
 bool shareNextHighPriorityMessage;
 uint8_t gbActivePlayers;
 bool gbGameDestroyed;
-bool sgbSendDeltaTbl[MAX_PLRS];
+bool sgbSendDeltaTbl[PlayerStorageCapacity];
+/**
+ * Extended joiners repeat their snapshot request until it starts, so a donor answers it once.
+ * Any departure can change a joiner's donor and its retry must then be answered again.
+ */
+bool sgbDeltaSentTbl[PlayerStorageCapacity];
 bool gbSelectProvider;
 int sglTimeoutStart;
-leaveinfo_t sgdwPlayerLeftReasonTbl[MAX_PLRS];
+leaveinfo_t sgdwPlayerLeftReasonTbl[PlayerStorageCapacity];
 uint32_t sgdwGameLoops;
 bool sgbTimeout;
 std::string GameName;
@@ -69,8 +79,8 @@ std::string GamePassword;
 bool PublicGame;
 uint8_t gbDeltaSender;
 bool sgbNetInited;
-uint32_t player_state[MAX_PLRS];
-Uint32 playerInfoTimers[MAX_PLRS];
+uint32_t player_state[PlayerStorageCapacity];
+Uint32 playerInfoTimers[PlayerStorageCapacity];
 bool IsLoopback;
 
 /**
@@ -226,7 +236,7 @@ void MonsterSeeds()
 {
 	sgdwGameLoops++;
 	const uint32_t seed = (sgdwGameLoops >> 8) | (sgdwGameLoops << 24);
-	for (uint32_t i = 0; i < MaxMonsters; i++)
+	for (uint32_t i = 0; i < MonsterLimit(); i++)
 		Monsters[i].aiSeed = seed + i;
 }
 
@@ -240,9 +250,10 @@ void HandleTurnUpperBit(uint8_t pnum)
 	}
 
 	if (MyPlayerId == i) {
-		sgbSendDeltaTbl[pnum] = true;
+		if (sgGameInitInfo.rules != ExtendedSessionRules || !sgbDeltaSentTbl[pnum])
+			sgbSendDeltaTbl[pnum] = true;
 	} else if (pnum == MyPlayerId) {
-		gbDeltaSender = i;
+		gbDeltaSender = i < Players.size() ? i : NoDeltaSender;
 	}
 }
 
@@ -263,16 +274,29 @@ void PlayerLeftMsg(Player &player, bool left)
 {
 	if (&player == InspectPlayer)
 		InspectPlayer = MyPlayer;
+	if (&player == PlayerUnderCursor)
+		PlayerUnderCursor = nullptr;
 
 	if (&player == MyPlayer)
 		return;
-	if (!player.plractive)
-		return;
-
-	FixPlrWalkTags(player);
+	if (left) {
+		// Native leave events and replayed drop messages share this cleanup.
+		CancelLevelEntry(static_cast<uint8_t>(player.getId()), true);
+		ForgetChatRecipientSelection(player.getId());
+	}
+	DeactivateVision(player.getId());
 	RemovePortalMissile(player);
 	DeactivatePortal(player);
 	delta_close_portal(player);
+	// Refreshing player information does not replace the connected slot.
+	if (left && player.plractive)
+		LeaveItemTransfers(static_cast<uint8_t>(player.getId()));
+	if (!player.plractive) {
+		player = {};
+		return;
+	}
+
+	FixPlrWalkTags(player);
 	RemoveEnemyReferences(player);
 	RemovePlrMissiles(player);
 	if (left) {
@@ -293,26 +317,36 @@ void PlayerLeftMsg(Player &player, bool left)
 		if (!IsLoopback) {
 			const uint8_t remainingPlayers = gbActivePlayers > 0 ? gbActivePlayers - 1 : 0;
 			if (player._pName[0] != '\0')
-				LogInfo("Player '{}' left the {} game ({}, {}/{} players)", player._pName, ConnectionNames[provider], reasonDescription, remainingPlayers, MAX_PLRS);
+				LogInfo("Player '{}' left the {} game ({}, {}/{} players)", player._pName, ConnectionNames[provider], reasonDescription, remainingPlayers, Players.size());
 			else
-				LogInfo("Player left the {} game ({}, {}/{} players)", ConnectionNames[provider], reasonDescription, remainingPlayers, MAX_PLRS);
+				LogInfo("Player left the {} game ({}, {}/{} players)", ConnectionNames[provider], reasonDescription, remainingPlayers, Players.size());
 		}
 		EventPlrMsg(FormatRuntime(pszFmt, player._pName));
 	}
-	player.plractive = false;
-	player._pName[0] = '\0';
-	ResetPlayerGFX(player);
+	player = {};
 	gbActivePlayers--;
 }
 
-void ClearPlayerLeftState()
+void ClearPlayerLeftState(std::optional<uint8_t> only = std::nullopt)
 {
 	for (uint8_t i = 0; i < Players.size(); i++) {
+		if (only && i != *only)
+			continue;
 		if (sgbPlayerLeftGameTbl[i]) {
 			if (gbBufferMsgs == 1)
 				msg_send_drop_pkt(i, sgdwPlayerLeftReasonTbl[i]);
-			else
+			else {
 				PlayerLeftMsg(Players[i], true);
+				sgwPackPlrOffsetTbl[i] = 0;
+				playerInfoTimers[i] = 0;
+				player_state[i] = 0;
+				gdwMsgLenTbl[i] = 0;
+				glpMsgTbl[i] = 0;
+				// Preserve classic XP divisors, including departed contributors.
+				if (sgGameInitInfo.rules == ExtendedSessionRules)
+					delta_remove_player(i);
+				LeavePartyBalance(i);
+			}
 
 			sgbPlayerLeftGameTbl[i] = false;
 			sgdwPlayerLeftReasonTbl[i] = static_cast<leaveinfo_t>(0);
@@ -367,7 +401,7 @@ void SyncPacketHeaderData(Player &player, const TPktHdr &pkt)
 		player._pBaseMag = pkt.bmag;
 		player._pBaseDex = pkt.bdex;
 
-		if (!cond && player.plractive && !player.hasNoLife()) {
+		if (!cond && player.plractive && !player.hasNoLife() && !IsLevelEntryResolving() && !IsLevelEntryPending(static_cast<uint8_t>(player.getId()))) {
 			if (player.isOnActiveLevel() && !player._pLvlChanging) {
 				const uint8_t rawDir = pkt.pdir;
 				if (rawDir <= static_cast<uint8_t>(Direction::SouthEast)) {
@@ -421,11 +455,12 @@ void ProcessTmsgs()
 {
 	while (true) {
 		std::unique_ptr<std::byte[]> msg;
-		const uint8_t size = tmsg_get(&msg);
+		uint8_t playerId = std::numeric_limits<uint8_t>::max();
+		const uint8_t size = tmsg_get(&playerId, &msg);
 		if (size == 0)
 			break;
 
-		HandleAllPackets(MyPlayerId, msg.get(), size);
+		HandleAllPackets(playerId, msg.get(), size);
 	}
 }
 
@@ -462,16 +497,27 @@ void HandleEvents(_SNETEVENT *pEvt)
 	switch (pEvt->eventid) {
 	case EVENT_TYPE_PLAYER_CREATE_GAME: {
 		GameData gameData;
-		if (pEvt->databytes < sizeof(GameData))
-			app_fatal(StrCat("Invalid packet size (<sizeof(GameData)): ", pEvt->databytes));
+		if (pEvt->data == nullptr || pEvt->databytes != sizeof(GameData) || playerId >= PlayerStorageCapacity) {
+			LogError("Invalid game creation event");
+			return;
+		}
 		std::memcpy(&gameData, pEvt->data, sizeof(gameData));
 		SwapGameDataLE(gameData);
-		if (gameData.size != sizeof(GameData))
-			app_fatal(StrCat("Invalid size of game data: ", gameData.size));
+		if (auto error = ValidateGameData(gameData)) {
+			LogError("{}", GameDataErrorMessage(*error));
+			return;
+		}
+		const size_t capacity = gameData.rules == ExtendedSessionRules ? PlayerStorageCapacity : ClassicPlayerLimit;
+		if (playerId >= capacity) {
+			LogError("Player ID exceeds session capacity");
+			return;
+		}
 		sgGameInitInfo = gameData;
 		sgbPlayerTurnBitTbl[playerId] = true;
 	} break;
 	case EVENT_TYPE_PLAYER_LEAVE_GAME: {
+		if (playerId >= Players.size())
+			return;
 		sgbPlayerLeftGameTbl[playerId] = true;
 		sgbPlayerTurnBitTbl[playerId] = false;
 
@@ -486,9 +532,10 @@ void HandleEvents(_SNETEVENT *pEvt)
 			gbSomebodyWonGameKludge = true;
 
 		sgbSendDeltaTbl[playerId] = false;
+		memset(sgbDeltaSentTbl, 0, sizeof(sgbDeltaSentTbl));
 
 		if (gbDeltaSender == playerId)
-			gbDeltaSender = MAX_PLRS;
+			delta_reset_transfer();
 	} break;
 	case EVENT_TYPE_PLAYER_MESSAGE: {
 		std::string_view data(static_cast<const char *>(pEvt->data), pEvt->databytes);
@@ -518,7 +565,7 @@ void UnregisterNetEventHandlers()
 
 bool InitSingle(GameData *gameData)
 {
-	Players.resize(1);
+	ResizePlayersForSession(1);
 
 	if (!SNetInitializeProvider(SELCONN_LOOPBACK, gameData)) {
 		return false;
@@ -543,11 +590,18 @@ bool InitSingle(GameData *gameData)
 
 bool InitMulti(GameData *gameData)
 {
-	Players.resize(MAX_PLRS);
+	ResizePlayersForSession(SessionPlayerLimit);
 
 	int playerId;
 
 	while (true) {
+#ifdef BUILD_TESTING
+		if (TestSelectMultiplayerGame != nullptr) {
+			if (!TestSelectMultiplayerGame(gameData, &playerId))
+				return false;
+			break;
+		}
+#endif
 		if (gbSelectProvider && !UiSelectProvider(gameData)) {
 			return false;
 		}
@@ -559,6 +613,7 @@ bool InitMulti(GameData *gameData)
 		gbSelectProvider = true;
 	}
 
+	ResizePlayersForSession(sgGameInitInfo.rules == ExtendedSessionRules ? PlayerStorageCapacity : ClassicPlayerLimit);
 	if (static_cast<size_t>(playerId) >= Players.size()) {
 		return false;
 	}
@@ -596,11 +651,14 @@ std::string FormatGameSeed(const uint32_t gameSeed[4])
 
 void InitGameInfo()
 {
+	ResetLevelEntries();
 	const xoshiro128plusplus gameGenerator = ReserveSeedSequence();
 	gameGenerator.save(sgGameInitInfo.gameSeed);
 
 	sgGameInitInfo.size = sizeof(sgGameInitInfo);
 	sgGameInitInfo.isSpawn = gbIsSpawn ? 1 : 0;
+	SetSessionRules(sgGameInitInfo, ClassicSessionRules);
+	sgGameInitInfo.reserved = 0;
 	sgGameInitInfo.programid = GetGameId();
 	sgGameInitInfo.versionMajor = PROJECT_VERSION_MAJOR;
 	sgGameInitInfo.versionMinor = PROJECT_VERSION_MINOR;
@@ -644,16 +702,23 @@ void NetSendHiPri(uint8_t playerId, const std::byte *data, size_t size)
 	}
 }
 
-void multi_send_msg_packet(uint32_t pmask, const std::byte *data, size_t size)
+void FlushNetMessageBuffers()
+{
+	while (highPriorityBuffer.dwNextWriteOffset != 0 || lowPriorityBuffer.dwNextWriteOffset != 0) {
+		shareNextHighPriorityMessage = true;
+		NetSendHiPri(MyPlayerId, nullptr, 0);
+	}
+}
+
+void multi_send_msg_packet(PlayerRecipientMask recipients, const std::byte *data, size_t size)
 {
 	TPkt pkt;
 	NetReceivePlayerData(&pkt);
 	const size_t len = size + sizeof(pkt.hdr);
 	pkt.hdr.wLen = Swap16LE(static_cast<uint16_t>(len));
 	memcpy(pkt.body, data, size);
-	uint8_t playerID = 0;
-	for (uint32_t v = 1; playerID < Players.size(); playerID++, v <<= 1) {
-		if ((v & pmask) != 0) {
+	for (uint8_t playerID = 0; playerID < Players.size(); playerID++) {
+		if (IsPlayerInRecipientMask(recipients, playerID)) {
 			if (!SNetSendMessage(playerID, &pkt.hdr, len)) {
 				nthread_terminate_game("SNetSendMessage");
 				return;
@@ -666,15 +731,25 @@ void multi_msg_countdown()
 {
 	for (uint8_t i = 0; i < Players.size(); i++) {
 		if ((player_state[i] & PS_TURN_ARRIVED) != 0) {
-			if (gdwMsgLenTbl[i] == sizeof(int32_t))
-				ParseTurn(i, *(int32_t *)glpMsgTbl[i]);
+			if (gdwMsgLenTbl[i] == sizeof(uint32_t) && glpMsgTbl[i] != 0) {
+				uint32_t turn;
+				memcpy(&turn, reinterpret_cast<const void *>(glpMsgTbl[i]), sizeof(turn));
+				ParseTurn(i, turn);
+			}
 		}
 	}
 }
 
 void multi_player_left(uint8_t pnum, leaveinfo_t reason)
 {
+	if (pnum >= Players.size() || pnum == MyPlayerId)
+		return;
 	sgbPlayerLeftGameTbl[pnum] = true;
+	sgbPlayerTurnBitTbl[pnum] = false;
+	sgbSendDeltaTbl[pnum] = false;
+	memset(sgbDeltaSentTbl, 0, sizeof(sgbDeltaSentTbl));
+	if (gbDeltaSender == pnum)
+		delta_reset_transfer();
 	sgdwPlayerLeftReasonTbl[pnum] = reason;
 	ClearPlayerLeftState();
 }
@@ -695,7 +770,11 @@ bool multi_handle_delta()
 	for (uint8_t i = 0; i < Players.size(); i++) {
 		if (sgbSendDeltaTbl[i]) {
 			sgbSendDeltaTbl[i] = false;
+			sgbDeltaSentTbl[i] = true;
 			DeltaExportData(i);
+			// Let the transport drain between large snapshots for concurrent joins.
+			if (sgGameInitInfo.rules == ExtendedSessionRules)
+				break;
 		}
 	}
 
@@ -728,7 +807,8 @@ bool multi_handle_delta()
 
 void ProcessGameMessagePackets()
 {
-	ClearPlayerLeftState();
+	if (!IsExtendedItemTransferSession())
+		ClearPlayerLeftState();
 	ProcessTmsgs();
 
 	uint8_t playerId = std::numeric_limits<uint8_t>::max();
@@ -736,7 +816,8 @@ void ProcessGameMessagePackets()
 	size_t totalPacketSize = 0;
 	while (SNetReceiveMessage(&playerId, (void **)&pkt, &totalPacketSize)) {
 		dwRecCount++;
-		ClearPlayerLeftState();
+		if (!IsExtendedItemTransferSession())
+			ClearPlayerLeftState();
 		if (totalPacketSize < sizeof(TPktHdr))
 			continue;
 		if (playerId >= Players.size())
@@ -745,6 +826,14 @@ void ProcessGameMessagePackets()
 			continue;
 		if (Swap16LE(pkt->wLen) != totalPacketSize)
 			continue;
+
+		// Drain final item acknowledgements before applying a departure. Player
+		// info marks the boundary when the transport reuses a departed slot.
+		if (IsExtendedItemTransferSession() && sgbPlayerLeftGameTbl[playerId] && totalPacketSize > sizeof(TPktHdr)) {
+			const auto command = static_cast<_cmd_id>(reinterpret_cast<const std::byte *>(pkt + 1)[0]);
+			if (IsAnyOf(command, CMD_SEND_PLRINFO, CMD_ACK_PLRINFO))
+				ClearPlayerLeftState(playerId);
+		}
 
 		// Distrust all messages until player info is received
 		Player &player = Players[playerId];
@@ -770,7 +859,9 @@ void ProcessGameMessagePackets()
 
 		HandleAllPackets(playerId, message, messageSize);
 	}
+	ClearPlayerLeftState();
 	CheckPlayerInfoTimeouts();
+	ProcessItemTransfers();
 }
 
 void multi_send_zero_packet(uint8_t pnum, _cmd_id bCmd, const std::byte *data, size_t size)
@@ -778,6 +869,10 @@ void multi_send_zero_packet(uint8_t pnum, _cmd_id bCmd, const std::byte *data, s
 	assert(pnum != MyPlayerId);
 	assert(data != nullptr);
 	assert(size <= 0x0ffff);
+	if (size > 0x0ffff || gdwLargestMsgSize <= sizeof(TPktHdr) + sizeof(TCmdPlrInfoHdr) || gdwLargestMsgSize > sizeof(TPkt)) {
+		nthread_terminate_game("Invalid fragment size");
+		return;
+	}
 
 	for (size_t offset = 0; offset < size;) {
 		TPkt pkt {};
@@ -823,8 +918,29 @@ void NetClose()
 	if (!demo::IsRunning()) {
 		Players.clear();
 		MyPlayer = nullptr;
+		InspectPlayer = nullptr;
+		PlayerUnderCursor = nullptr;
 	}
 }
+
+#ifdef BUILD_TESTING
+DVL_API_FOR_TEST bool (*TestSelectMultiplayerGame)(GameData *gameData, int *playerId) = nullptr;
+
+DVL_API_FOR_TEST void TestRegisterNetEventHandlers()
+{
+	RegisterNetEventHandlers();
+}
+
+DVL_API_FOR_TEST bool TestDeltaRequested(uint8_t player)
+{
+	return sgbSendDeltaTbl[player];
+}
+
+DVL_API_FOR_TEST void TestCheckDropPlayer()
+{
+	CheckDropPlayer();
+}
+#endif
 
 bool NetInit(bool bSinglePlayer)
 {
@@ -836,9 +952,16 @@ bool NetInit(bool bSinglePlayer)
 		memset(sgbPlayerLeftGameTbl, 0, sizeof(sgbPlayerLeftGameTbl));
 		memset(sgdwPlayerLeftReasonTbl, 0, sizeof(sgdwPlayerLeftReasonTbl));
 		memset(sgbSendDeltaTbl, 0, sizeof(sgbSendDeltaTbl));
+		memset(sgbDeltaSentTbl, 0, sizeof(sgbDeltaSentTbl));
 		Players.clear();
 		MyPlayer = nullptr;
+		InspectPlayer = nullptr;
+		PlayerUnderCursor = nullptr;
 		memset(sgwPackPlrOffsetTbl, 0, sizeof(sgwPackPlrOffsetTbl));
+		memset(player_state, 0, sizeof(player_state));
+		memset(playerInfoTimers, 0, sizeof(playerInfoTimers));
+		memset(gdwMsgLenTbl, 0, sizeof(gdwMsgLenTbl));
+		memset(glpMsgTbl, 0, sizeof(glpMsgTbl));
 		SNetSetBasePlayer(0);
 		if (bSinglePlayer) {
 			if (!InitSingle(&sgGameInitInfo))
@@ -869,6 +992,7 @@ bool NetInit(bool bSinglePlayer)
 		ResetPlayerGFX(myPlayer);
 		myPlayer.plractive = true;
 		gbActivePlayers = 1;
+		InitItemTransfers();
 
 		if (!sgbPlayerTurnBitTbl[MyPlayerId] || msg_wait_resync())
 			break;
@@ -906,13 +1030,20 @@ bool NetInit(bool bSinglePlayer)
 
 void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 {
-	static PlayerNetPack PackedPlayerBuffer[MAX_PLRS];
+	static PlayerNetPack PackedPlayerBuffer[PlayerStorageCapacity];
 
 	if (&player == MyPlayer) {
 		return;
 	}
 	const uint8_t pnum = player.getId();
 	auto &packedPlayer = PackedPlayerBuffer[pnum];
+	const size_t offset = Swap16LE(header.wOffset);
+	const size_t bytes = Swap16LE(header.wBytes);
+	if (bytes == 0 || offset > sizeof(packedPlayer) || bytes > sizeof(packedPlayer) - offset) {
+		sgwPackPlrOffsetTbl[pnum] = 0;
+		SNetDropPlayer(pnum, leaveinfo_t::LEAVE_DROP);
+		return;
+	}
 
 	if (sgwPackPlrOffsetTbl[pnum] != Swap16LE(header.wOffset)) {
 		sgwPackPlrOffsetTbl[pnum] = 0;
@@ -924,6 +1055,8 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 		SendPlayerInfo(pnum, CMD_ACK_PLRINFO);
 	}
 
+	if (offset == 0)
+		packedPlayer = {};
 	memcpy(reinterpret_cast<uint8_t *>(&packedPlayer) + Swap16LE(header.wOffset), reinterpret_cast<const uint8_t *>(&header) + sizeof(header), Swap16LE(header.wBytes));
 
 	sgwPackPlrOffsetTbl[pnum] += Swap16LE(header.wBytes);
@@ -932,6 +1065,7 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	}
 	sgwPackPlrOffsetTbl[pnum] = 0;
 
+	const bool wasKnown = IsNetPlayerValid(player);
 	PlayerLeftMsg(player, false);
 	if (!UnPackNetPlayer(packedPlayer, player)) {
 		player = {};
@@ -939,29 +1073,42 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 		return;
 	}
 
+	// Player info can finish after an admission packet from another sender.
+	const bool restoredAdmission = (!wasKnown || IsLevelEntryPending(pnum)) && RestoreLevelEntryPlayerInfo(player);
 	if (!recv) {
 		return;
 	}
 
 	ResetPlayerGFX(player);
-	player.plractive = true;
-	gbActivePlayers++;
+	if (!player.plractive) {
+		player.plractive = true;
+		gbActivePlayers++;
+	}
 
 	std::string_view szEvent;
 	if (sgbPlayerTurnBitTbl[pnum]) {
 		szEvent = _("Player '{:s}' (level {:d}) just joined the game");
 		if (!IsLoopback)
-			LogInfo("Player '{}' joined the {} game (level {}, {}/{} players)", player._pName, ConnectionNames[provider], player.getCharacterLevel(), gbActivePlayers, MAX_PLRS);
+			LogInfo("Player '{}' joined the {} game (level {}, {}/{} players)", player._pName, ConnectionNames[provider], player.getCharacterLevel(), gbActivePlayers, Players.size());
 	} else {
 		szEvent = _("Player '{:s}' (level {:d}) is already in the game");
 	}
 	EventPlrMsg(FormatRuntime(szEvent, player._pName, player.getCharacterLevel()));
 
+	if (sgGameInitInfo.rules == ExtendedSessionRules && !restoredAdmission && (sgbPlayerTurnBitTbl[pnum] || IsLevelEntryPending(pnum)))
+		player._pLvlChanging = true;
 	SyncInitPlr(player);
 
 	if (!player.isOnActiveLevel()) {
 		return;
 	}
+	if (sgGameInitInfo.rules == ExtendedSessionRules && player._pLvlChanging) {
+		player._pmode = PM_NEWLVL;
+		PrepareLevelEntrantGraphics(player);
+		return;
+	}
+	if (restoredAdmission)
+		ActivateVision(player.position.tile, player._pLightRad, player.getId());
 
 	if (!player.hasNoLife()) {
 		StartStand(player, player._pdir);

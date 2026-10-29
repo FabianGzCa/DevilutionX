@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <optional>
 
 #include "pfile.h"
 #include "player.h"
@@ -25,6 +26,10 @@ _item_indexes RemapItemIdxToSpawn(_item_indexes i);
 bool IsHeaderValid(uint32_t magicNumber);
 void LoadHotkeys();
 void LoadHeroItems(Player &player);
+/** Restore the cursor item after startup has initialized the cursor. */
+bool LoadHeldItem(Player &player);
+bool LoadHeldItem(std::optional<SaveReader> archive, Player &player);
+void SaveHeldItem(SaveWriter &saveWriter, const Player &player);
 /**
  * @brief Remove invalid inventory items from the inventory grid
  * @param player The player to remove invalid items from

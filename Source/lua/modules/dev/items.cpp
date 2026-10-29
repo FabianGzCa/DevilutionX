@@ -74,7 +74,7 @@ std::string DebugCmdItemInfo()
 std::mt19937 BetterRng;
 std::string DebugSpawnItem(std::string itemName)
 {
-	if (ActiveItemCount >= MAXITEMS) return "No space to generate the item!";
+	if (!HasWorldItemSpace()) return "No space to generate the item!";
 
 	const int max_time = 3000;
 	const int max_iter = 1000000;
@@ -122,7 +122,7 @@ std::string DebugSpawnItem(std::string itemName)
 
 std::string DebugSpawnUniqueItem(std::string itemName)
 {
-	if (ActiveItemCount >= MAXITEMS) return "No space to generate the item!";
+	if (!HasWorldItemSpace()) return "No space to generate the item!";
 
 	AsciiStrToLower(itemName);
 	UniqueItem uniqueItem;

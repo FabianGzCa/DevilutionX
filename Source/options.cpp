@@ -860,6 +860,7 @@ GameplayOptions::GameplayOptions()
               { PartyPortraits::Summons, N_("Summons") },
               { PartyPortraits::PlayersAndSummons, N_("Players and summons") },
           })
+    , showPlayerIdentifiers("Player Identifiers", OptionEntryFlags::None, N_("Player Identifiers"), N_("Add player numbers to the automap, party portraits, and monster health bar, and use distinct automap and selection colors for eight players. Only affects your screen; character colors are unchanged."), false)
     , enemyHealthBar("Enemy Health Bar", OptionEntryFlags::None, N_("Enemy Health Bar"), N_("Enemy Health Bar is displayed at the top of the screen."), false)
     , floatingInfoBox("Floating Item Info Box", OptionEntryFlags::None, N_("Floating Item Info Box"), N_("Displays item info in a floating box when hovering over an item."), false)
     , autoGoldPickup("Auto Gold Pickup", OptionEntryFlags::None, N_("Auto Gold Pickup"), N_("Gold is automatically collected when in close proximity to the player."), false)
@@ -912,6 +913,7 @@ std::vector<OptionEntryBase *> GameplayOptions::GetEntries()
 		&showHealthValues,
 		&showManaValues,
 		&showMultiplayerPartyInfo,
+		&showPlayerIdentifiers,
 		&enemyHealthBar,
 		&showMonsterType,
 		&showItemLabels,

@@ -17,6 +17,7 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "appfat.h"
 #include "control/control.hpp"
@@ -65,6 +66,7 @@
 #include "levels/trigs.h"
 #include "lighting.h"
 #include "monster.h"
+#include "monsters/party_balance.hpp"
 #include "utils/is_of.hpp"
 #include "utils/str_cat.hpp"
 
@@ -849,6 +851,12 @@ void SpawnLightning(Missile &missile, int dam)
 } // namespace
 
 #ifdef BUILD_TESTING
+bool TestPlayerMissileHit(const Player &player, Player &target)
+{
+	bool blocked = false;
+	return Plr2PlrMHit(player, target, 2, 2, 0, MissileID::Firebolt, DamageType::Fire, false, &blocked);
+}
+
 void TestRotateBlockedMissile(Missile &missile)
 {
 	RotateBlockedMissile(missile);
@@ -1043,7 +1051,8 @@ bool MonsterTrapHit(Monster &monster, int mindam, int maxdam, int dist, MissileI
 		dam <<= 6;
 	if (resist)
 		dam /= 4;
-	ApplyMonsterDamage(damageType, monster, Fixed26_6::fromRaw(dam));
+	if (IsPartyDamageAuthority())
+		ApplyMonsterDamage(damageType, monster, Fixed26_6::fromRaw(dam), false);
 #ifdef _DEBUG
 	if (DebugGodMode)
 		monster.hitPoints = Fixed26_6::fromInt(0);
@@ -1921,13 +1930,45 @@ void AddMagmaBall(Missile &missile, AddMissileParameter &parameter)
 	}
 }
 
+bool IsTeleportDestinationValid(const Player &player, Point target)
+{
+	if (!PosOkPlayer(player, target))
+		return false;
+	if (sgGameInitInfo.rules != ExtendedSessionRules)
+		return true;
+	if (target.x <= 0 || target.y <= 0 || target.x >= MAXDUNX - 1 || target.y >= MAXDUNY - 1)
+		return false;
+	if (!std::any_of(std::begin(PathDirs), std::end(PathDirs), [&](Displacement offset) {
+		    const Point exit = target + offset;
+		    return PosOkPlayer(player, exit) && CanStep(target, exit);
+	    }))
+		return false;
+	for (const Player &resident : Players) {
+		if (&resident == &player || !resident.plractive || !resident.isOnActiveLevel() || resident._pLvlChanging || resident.hasNoLife())
+			continue;
+		bool hadExit = false;
+		bool keepsExit = false;
+		for (const Displacement offset : PathDirs) {
+			const Point exit = resident.position.tile + offset;
+			if (!CanStep(resident.position.tile, exit))
+				continue;
+			const bool available = PosOkPlayer(resident, exit);
+			hadExit |= available;
+			keepsExit |= exit != target && (available || exit == player.position.tile);
+		}
+		if (hadExit && !keepsExit)
+			return false;
+	}
+	return true;
+}
+
 void AddTeleport(Missile &missile, AddMissileParameter &parameter)
 {
 	Player &player = Players[missile._misource];
 
 	std::optional<Point> teleportDestination = FindClosestValidPosition(
 	    [&player](Point target) {
-		    return PosOkPlayer(player, target);
+		    return IsTeleportDestinationValid(player, target);
 	    },
 	    parameter.dst, 0, 5);
 
@@ -2239,9 +2280,12 @@ void InitMissileAnimationFromMonster(Missile &mis, Direction midir, const Monste
 	const AnimStruct &anim = mon.type().getAnimData(graphic);
 	mis.setDirection(midir);
 	mis._miAnimFlags = MissileGraphicsFlags::None;
-	const ClxSpriteList sprites = *anim.spritesForDirection(midir);
-	const uint16_t width = sprites[0].width();
-	mis._miAnimData.emplace(sprites);
+	uint16_t width = anim.width;
+	if (!HeadlessMode) {
+		const ClxSpriteList sprites = *anim.spritesForDirection(midir);
+		width = sprites[0].width();
+		mis._miAnimData.emplace(sprites);
+	}
 	mis._miAnimDelay = anim.rate;
 	mis._miAnimLen = anim.frames;
 	mis._miAnimWidth = width;
@@ -3659,7 +3703,7 @@ void ProcessTeleport(Missile &missile)
 
 	std::optional<Point> teleportDestination = FindClosestValidPosition(
 	    [&player](Point target) {
-		    return PosOkPlayer(player, target);
+		    return IsTeleportDestinationValid(player, target);
 	    },
 	    missile.position.tile, 0, 5);
 
@@ -4213,9 +4257,23 @@ void ProcessMissiles()
 
 	MissilePreFlag = false;
 
+	// Extended teleports reserve destinations in player-ID order, independent
+	// of missile insertion order. Other effects keep their relative order.
+	const bool extended = sgGameInitInfo.rules == ExtendedSessionRules;
+	if (extended) {
+		std::vector<Missile *> teleports;
+		for (Missile &missile : Missiles) {
+			if (GetMissileData(missile._mitype).processFn == &ProcessTeleport)
+				teleports.push_back(&missile);
+		}
+		std::stable_sort(teleports.begin(), teleports.end(), [](const Missile *a, const Missile *b) { return a->_misource < b->_misource; });
+		for (Missile *missile : teleports)
+			ProcessTeleport(*missile);
+	}
+
 	for (auto &missile : Missiles) {
 		const MissileData &missileData = GetMissileData(missile._mitype);
-		if (missileData.processFn != nullptr)
+		if (missileData.processFn != nullptr && (!extended || missileData.processFn != &ProcessTeleport))
 			missileData.processFn(missile);
 		if (missile._miAnimFlags == MissileGraphicsFlags::NotAnimated)
 			continue;

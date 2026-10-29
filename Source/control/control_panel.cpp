@@ -387,10 +387,7 @@ std::expected<void, std::string> InitMainPanel()
 		}
 		sgbPlrTalkTbl = 0;
 		TalkMessage[0] = '\0';
-		for (bool &whisper : WhisperList)
-			whisper = true;
-		for (bool &talkButtonDown : TalkButtonsDown)
-			talkButtonDown = false;
+		ResetChatRecipientSelection();
 	}
 	MainPanelFlag = false;
 	LevelButtonDown = false;

@@ -50,10 +50,15 @@ std::expected<buffer_t, PacketError> frame_queue::Read(framesize_t s)
 	return ret;
 }
 
-void frame_queue::Write(buffer_t buf)
+std::expected<void, PacketError> frame_queue::Write(buffer_t buf)
 {
+	if (buf.empty())
+		return {};
+	if (buf.size() > MaxQueuedBytes - current_size || buffer_deque.size() >= MaxQueuedPackets)
+		return std::unexpected("Network receive queue is full");
 	current_size += static_cast<framesize_t>(buf.size());
 	buffer_deque.push_back(std::move(buf));
+	return {};
 }
 
 std::expected<bool, PacketError> frame_queue::PacketReady()
@@ -65,7 +70,7 @@ std::expected<bool, PacketError> frame_queue::PacketReady()
 		if (!szbuf.has_value())
 			return std::unexpected(szbuf.error());
 		nextsize = LoadLE32(szbuf->data());
-		if (nextsize == 0)
+		if ((nextsize & frame_size_mask) == 0 || (nextsize >> 16 & ~TcpErrorCodeFlags) != 0)
 			return std::unexpected(FrameQueueError());
 	}
 	return Size() >= (nextsize & frame_size_mask);
@@ -90,9 +95,9 @@ std::expected<buffer_t, PacketError> frame_queue::ReadPacket()
 std::expected<buffer_t, PacketError> frame_queue::MakeFrame(buffer_t packetbuf, uint16_t flags)
 {
 	buffer_t ret;
+	if (packetbuf.empty() || packetbuf.size() > max_frame_size || (flags & ~TcpErrorCodeFlags) != 0)
+		return std::unexpected("Invalid frame size or flags");
 	const auto size = static_cast<framesize_t>(packetbuf.size());
-	if (size > max_frame_size)
-		return std::unexpected("Buffer exceeds maximum frame size");
 	static_assert(sizeof(size) == 4, "framesize_t is not 4 bytes");
 	unsigned char sizeBuf[4];
 	WriteLE32(sizeBuf, size | (static_cast<framesize_t>(flags) << 16));

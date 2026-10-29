@@ -238,6 +238,8 @@ struct Item {
 	int16_t _iPLLight = 0;
 	int8_t _iSplLvlAdd = 0;
 	bool _iRequest = false;
+	/** A generated candidate is invisible until extended admission commits it. */
+	bool pendingCreation = false;
 	/** Unique item ID, used as an index into UniqueItemList */
 	int _iUid = 0;
 	int16_t _iFMinDam = 0;
@@ -485,11 +487,11 @@ struct CornerStoneStruct {
 };
 
 /** Contains the items on ground in the current game. */
-extern Item Items[MAXITEMS + 1];
-extern uint8_t ActiveItems[MAXITEMS];
-extern uint8_t ActiveItemCount;
+extern DVL_API_FOR_TEST Item Items[MAXITEMS + 1];
+extern DVL_API_FOR_TEST uint8_t ActiveItems[MAXITEMS];
+extern DVL_API_FOR_TEST uint8_t ActiveItemCount;
 /** Contains the location of dropped items. */
-extern int8_t dItem[MAXDUNX][MAXDUNY];
+extern DVL_API_FOR_TEST int8_t dItem[MAXDUNX][MAXDUNY];
 extern bool ShowUniqueItemInfoBox;
 extern CornerStoneStruct CornerStone;
 extern DVL_API_FOR_TEST bool UniqueItemFlags[128];
@@ -529,6 +531,10 @@ _item_indexes RndItemForMonsterLevel(int8_t monsterLevel);
 void SetupAllItems(const Player &player, Item &item, _item_indexes idx, uint32_t iseed, int lvl, int uper, bool onlygood, bool pregen, int uidOffset = 0, bool forceNotUnique = false);
 void TryRandomUniqueItem(Item &item, _item_indexes idx, int8_t mLevel, int uper, bool onlygood, bool pregen);
 void SpawnItem(Monster &monster, Point position, bool sendmsg, bool spawn = false);
+#ifdef BUILD_TESTING
+/** Observes each random monster drop; the item is null when the level had no room for it. */
+extern DVL_API_FOR_TEST void (*TestMonsterLootObserver)(const Monster &monster, const Item *item);
+#endif
 void CreateRndItem(Point position, bool onlygood, bool sendmsg, bool delta);
 void CreateRndUseful(Point position, bool sendmsg);
 void CreateTypeItem(Point position, bool onlygood, ItemType itemType, int imisc, bool sendmsg, bool delta, bool spawn = false);
@@ -589,7 +595,7 @@ void UpdateHellfireFlag(Item &item, const char *identifiedItemName);
 
 /* data */
 
-extern int MaxGold;
+extern DVL_API_FOR_TEST int MaxGold;
 
 extern int8_t ItemCAnimTbl[];
 extern SfxID ItemInvSnds[];

@@ -2274,7 +2274,7 @@ TEST_F(MultiplayerSyncTest, DonorDepartureDiscardsPartialDataAndAllowsSlotReuse)
 	}
 }
 
-TEST_F(MultiplayerSyncTest, PartySnapshotRetainsLocalFutureDamageUntilItsScaleCommits)
+TEST_F(MultiplayerSyncTest, PartySnapshotRetainsLocalFutureDamageUntilItsSpawnArrives)
 {
 	LoadMonsterData();
 	Players[7].plractive = true;
@@ -2288,8 +2288,10 @@ TEST_F(MultiplayerSyncTest, PartySnapshotRetainsLocalFutureDamageUntilItsScaleCo
 	monster.flags = PartyMonsterKnown;
 	monster.x = monster.y = 40;
 	const auto snapshot = Export();
-	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 2, 6, 0, 1, 4, 128,
-		monster.generation, monster.nativeMax, monster.type, monster.unique, 40, 40 };
+	// Player 7 already hit a monster it spawned in the same slot, which this peer has not seen yet.
+	const uint64_t spawn = (static_cast<uint64_t>(MultiplayerSlotEpoch(7)) << 32) | (1U << 3) | 7U;
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 2, 6, MultiplayerSlotEpoch(7), 1, 4, 128,
+		spawn, monster.nativeMax, monster.type, monster.unique, 40, 40 };
 	ReceivePartyMonsterDamage(7, damage);
 	ASSERT_EQ(level.pending.size(), 1U);
 	msg_start_resync();
@@ -2299,10 +2301,12 @@ TEST_F(MultiplayerSyncTest, PartySnapshotRetainsLocalFutureDamageUntilItsScaleCo
 	ASSERT_TRUE(TestHasCompleteDelta());
 	gbBufferMsgs = 0;
 	EXPECT_EQ(GetPartyLevelState(2).pending.size(), 1U);
+	ASSERT_TRUE(ResetPartyMonster(2, 4, spawn));
 	CommitPartyLevel(2, 6, 0, 0, 8);
 	EXPECT_TRUE(GetPartyLevelState(2).pending.empty());
+	EXPECT_EQ(GetPartyLevelState(2).monsters[4].generation, spawn);
 	EXPECT_EQ(GetPartyLevelState(2).monsters[4].receipts[7], 1U);
-	EXPECT_EQ(GetPartyLevelState(2).monsters[4].damage, 128 * (3360 / 6));
+	EXPECT_EQ(GetPartyLevelState(2).monsters[4].damage, 128 * (2 * PartyDamageUnits / 7));
 }
 
 TEST_F(MultiplayerSyncTest, PlayerInfoRefreshPreservesTheConnectedPeersDamageEpoch)

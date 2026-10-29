@@ -18,16 +18,16 @@ TEST_P(PartyScalingTest, MatchesGoldenHealthAndExperienceTablesAfterNativeDiffic
 {
 	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, GetParam());
 	ASSERT_TRUE(scale);
-	const unsigned index = GetParam() <= 4 ? 0 : GetParam() - 4;
-	constexpr int32_t Health[3][5] = {
-		{ 6464, 8080, 9696, 11312, 12928 },
-		{ 25792, 32240, 38688, 45136, 51584 },
-		{ 38656, 48320, 57984, 67648, 77312 },
+	const unsigned index = GetParam() - 1;
+	constexpr int32_t Health[3][8] = {
+		{ 6464, 9696, 12928, 16160, 19392, 22624, 25856, 29088 },
+		{ 25792, 38688, 51584, 64480, 77376, 90272, 103168, 116064 },
+		{ 38656, 57984, 77312, 96640, 115968, 135296, 154624, 173952 },
 	};
-	constexpr uint32_t Experience[3][5] = {
-		{ 1003, 1253, 1504, 1755, 2006 },
-		{ 4006, 5007, 6009, 7010, 8012 },
-		{ 8012, 10015, 12018, 14021, 16024 },
+	constexpr uint32_t Experience[3][8] = {
+		{ 1003, 1504, 2006, 2507, 3009, 3510, 4012, 4513 },
+		{ 4006, 6009, 8012, 10015, 12018, 14021, 16024, 18027 },
+		{ 8012, 12018, 16024, 20030, 24036, 28042, 32048, 36054 },
 	};
 	for (unsigned difficulty = 0; difficulty < 3; ++difficulty) {
 		SCOPED_TRACE(difficulty);
@@ -42,9 +42,9 @@ TEST_P(PartyScalingTest, RoundsHealthUpExperienceDownAndSaturatesWithoutWrapping
 {
 	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, GetParam());
 	ASSERT_TRUE(scale);
-	constexpr int32_t Health[] = { 5, 7, 8, 9, 10 };
-	constexpr uint32_t Experience[] = { 5, 6, 7, 8, 10 };
-	const unsigned index = GetParam() <= 4 ? 0 : GetParam() - 4;
+	constexpr int32_t Health[] = { 5, 8, 10, 13, 15, 18, 20, 23 };
+	constexpr uint32_t Experience[] = { 5, 7, 10, 12, 15, 17, 20, 22 };
+	const unsigned index = GetParam() - 1;
 	EXPECT_EQ(scale->HitPoints(Fixed26_6::fromRaw(5)).raw(), Health[index]);
 	EXPECT_EQ(scale->Experience(5), Experience[index]);
 	for (int32_t hp : { -64, -1, 0 })
@@ -70,26 +70,44 @@ TEST_P(PartyScalingTest, LootCreditsConserveExpectedRollsAndExcludeFixedRewards)
 		ASSERT_TRUE(randomLoot);
 		extra += randomLoot->extraRolls;
 		remainder = randomLoot->remainder;
-		EXPECT_LE(randomLoot->extraRolls, 1);
-		EXPECT_LT(remainder, 4);
+		EXPECT_LE(randomLoot->extraRolls, GetParam() / 2);
+		EXPECT_LT(remainder, 2);
 	}
-	EXPECT_EQ(extra, GetParam() <= 4 ? 0 : 250 * (GetParam() - 4));
+	// (N + 1) / 2 rolls per kill: the native one plus (N - 1) / 2 extra.
+	EXPECT_EQ(extra, 500 * (GetParam() - 1));
 	EXPECT_EQ(remainder, 0);
-	EXPECT_FALSE(scale->LootRoll(4, true));
+	EXPECT_FALSE(scale->LootRoll(2, true));
 	EXPECT_FALSE(scale->LootRoll(255, false));
 }
 
-TEST(PartyScalingRules, NativeFirstFourCountsRemainExactAtEveryRemainder)
+TEST_P(PartyScalingTest, DiabloScalesWithEveryPlayerSoTheFinalFightLastsAsLongAsAlone)
+{
+	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, GetParam());
+	ASSERT_TRUE(scale);
+	EXPECT_EQ(scale->HitPoints(Fixed26_6::fromRaw(1000), false, true).raw(), 1000 * static_cast<int32_t>(GetParam()));
+	EXPECT_EQ(scale->Experience(1001, false, true), 1001 * GetParam());
+	EXPECT_EQ(scale->HitPoints(Fixed26_6::fromRaw(1000), true, true).raw(), 1000);
+	if (GetParam() <= 4) {
+		const auto classic = PartyScaling::ForSession(ClassicSessionRules, GetParam());
+		ASSERT_TRUE(classic);
+		EXPECT_EQ(classic->HitPoints(Fixed26_6::fromRaw(1000), false, true).raw(), 1000);
+		EXPECT_EQ(classic->Experience(1001, false, true), 1001U);
+	}
+}
+
+TEST(PartyScalingRules, ClassicSessionsAndLonePlayersKeepNativeBalanceAtEveryRemainder)
 {
 	for (unsigned count = 1; count <= 4; ++count) {
 		for (SessionRules rules : { ClassicSessionRules, ExtendedSessionRules }) {
+			if (rules == ExtendedSessionRules && count != 1)
+				continue;
 			const auto scale = PartyScaling::ForSession(rules, count);
 			ASSERT_TRUE(scale);
 			for (int32_t hp : { 1, 5, 64, 867, std::numeric_limits<int32_t>::max() })
 				EXPECT_EQ(scale->HitPoints(Fixed26_6::fromRaw(hp)).raw(), hp);
 			for (uint32_t xp : { 0U, 1U, 1003U, std::numeric_limits<uint32_t>::max() })
 				EXPECT_EQ(scale->Experience(xp), xp);
-			for (uint8_t credit = 0; credit < 4; ++credit) {
+			for (uint8_t credit = 0; credit < 2; ++credit) {
 				const auto loot = scale->LootRoll(credit, true);
 				ASSERT_TRUE(loot);
 				EXPECT_EQ(loot->extraRolls, 0);
@@ -107,30 +125,28 @@ TEST(PartyScalingRules, RejectsInvalidCountsAndUnsupportedNegotiatedRules)
 		EXPECT_FALSE(PartyScaling::ForSession(ExtendedSessionRules, count));
 	for (unsigned count = 5; count <= 8; ++count)
 		EXPECT_FALSE(PartyScaling::ForSession(ClassicSessionRules, count));
-	EXPECT_FALSE(PartyScaling::ForSession(ExtendedSessionRules, 4, 9));
-	EXPECT_FALSE(PartyScaling::ForSession(ClassicSessionRules, 1, 8));
+	EXPECT_FALSE(PartyScaling::ForSession(ClassicSessionRules, 0));
 	auto unsupported = ExtendedSessionRules;
 	++unsupported.balanceRevision;
+	EXPECT_FALSE(PartyScaling::ForSession(unsupported, 8));
+	unsupported = ExtendedSessionRules;
+	--unsupported.balanceRevision;
 	EXPECT_FALSE(PartyScaling::ForSession(unsupported, 8));
 	unsupported = ExtendedSessionRules;
 	++unsupported.protocolRevision;
 	EXPECT_FALSE(PartyScaling::ForSession(unsupported, 8));
 }
 
-TEST(PartyScalingRules, LevelHighWaterCountNeverDropsWhenThePartyShrinksOrLeaves)
+TEST(PartyScalingRules, ScaleFollowsThePlayersPresentWhenThePartyShrinks)
 {
-	constexpr unsigned Present[] = { 4, 5, 4, 7, 8, 1, 0 };
-	constexpr unsigned Expected[] = { 4, 5, 5, 7, 8, 8, 8 };
-	unsigned previous = 0;
+	constexpr unsigned Present[] = { 1, 4, 8, 5, 2, 1 };
+	constexpr int32_t Health[] = { 1000, 2500, 4500, 3000, 1500, 1000 };
 	for (unsigned i = 0; i < std::size(Present); ++i) {
-		const auto scale = PartyScaling::ForSession(ExtendedSessionRules, Present[i], previous);
+		const auto scale = PartyScaling::ForSession(ExtendedSessionRules, Present[i]);
 		ASSERT_TRUE(scale);
-		EXPECT_EQ(scale->Participants(), Expected[i]);
-		previous = scale->Participants();
+		EXPECT_EQ(scale->Participants(), Present[i]);
+		EXPECT_EQ(scale->HitPoints(Fixed26_6::fromRaw(1000)).raw(), Health[i]);
 	}
-	const auto otherLevel = PartyScaling::ForSession(ExtendedSessionRules, 3);
-	ASSERT_TRUE(otherLevel);
-	EXPECT_EQ(otherLevel->Numerator(), 4);
 }
 
 TEST(PartyScalingRules, CountsHumanSlotsByLevelRegardlessOfClassLifeOrLoadingState)
@@ -158,13 +174,19 @@ TEST(PartyScalingRules, CountsHumanSlotsByLevelRegardlessOfClassLifeOrLoadingSta
 	EXPECT_EQ(CountLevelParticipants({}, 1), 0U);
 }
 
-TEST(PartyScalingRules, ReinforcementsPreserveFractionalProgressAndDoNotReviveCorpses)
+TEST(PartyScalingRules, RescalingPreservesFractionalProgressAndNeverRevivesOrKills)
 {
 	const auto oldMax = Fixed26_6::fromInt(100);
 	const auto nextMax = Fixed26_6::fromInt(125);
 	const auto rebased = RebaseMonsterHitPoints(Fixed26_6::fromInt(30), oldMax, nextMax);
 	ASSERT_TRUE(rebased);
 	EXPECT_EQ(rebased->raw(), 2400); // 37.5 / 125 == 30 / 100.
+	const auto shrunk = RebaseMonsterHitPoints(Fixed26_6::fromInt(75), nextMax, oldMax);
+	ASSERT_TRUE(shrunk);
+	EXPECT_EQ(shrunk->raw(), Fixed26_6::fromInt(60).raw());
+	const auto lastPoint = RebaseMonsterHitPoints(Fixed26_6::fromInt(1), Fixed26_6::fromInt(450), oldMax);
+	ASSERT_TRUE(lastPoint);
+	EXPECT_EQ(lastPoint->raw(), Fixed26_6::fromInt(1).raw());
 	for (int32_t hp : { -64, -1, 0, 1, 32, 63 }) {
 		const auto corpse = RebaseMonsterHitPoints(Fixed26_6::fromRaw(hp), oldMax, nextMax);
 		ASSERT_TRUE(corpse);
@@ -186,7 +208,7 @@ TEST(PartyScalingRules, RebaseRejectsInvalidInputsAndHandlesTheLargestHealthValu
 	EXPECT_EQ(full->raw(), maximum.raw());
 	EXPECT_FALSE(RebaseMonsterHitPoints(Fixed26_6::fromInt(1), Fixed26_6::fromInt(0), maximum));
 	EXPECT_FALSE(RebaseMonsterHitPoints(Fixed26_6::fromInt(2), Fixed26_6::fromInt(1), maximum));
-	EXPECT_FALSE(RebaseMonsterHitPoints(Fixed26_6::fromInt(1), Fixed26_6::fromInt(2), Fixed26_6::fromInt(1)));
+	EXPECT_FALSE(RebaseMonsterHitPoints(Fixed26_6::fromInt(1), Fixed26_6::fromInt(2), Fixed26_6::fromInt(0)));
 }
 
 } // namespace

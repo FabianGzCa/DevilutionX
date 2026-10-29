@@ -513,55 +513,74 @@ TEST_F(MonsterSummonsTest, NativeLootRollsDoNotIncreaseWithMultiplayerParticipan
 	std::memset(dItem, 0, sizeof(dItem));
 }
 
-TEST_F(MonsterSummonsTest, FixedDamageBenchmarkPreservesFourPlayerKillTimeAndExperienceForFiveThroughEight)
+TEST_F(MonsterSummonsTest, FixedDamageBenchmarkKeepsEachPlayersSoloExperiencePaceAndDiablosSoloKillTime)
 {
 	ASSERT_TRUE(AddMonsterType(MT_DIABLO, PLACE_SPECIAL));
 	for (auto difficulty : { DIFF_NORMAL, DIFF_NIGHTMARE, DIFF_HELL }) {
 		sgGameInitInfo.nDifficulty = difficulty;
-		unsigned referenceTurns = 0;
-		uint32_t referenceShare = 0;
-		for (unsigned count = 1; count <= 8; ++count) {
-			gbActivePlayers = count;
-			const auto scale = PartyScaling::ForSession(ExtendedSessionRules, count);
-			ASSERT_TRUE(scale);
-			Monster *monster = AddMonster({ 40, 40 }, Direction::South, 2, false);
-			ASSERT_NE(monster, nullptr);
-			const auto native = monster->maxHitPoints;
-			monster->maxHitPoints = scale->HitPoints(native);
-			monster->hitPoints = monster->maxHitPoints;
-			unsigned turns = 0;
-			while (!monster->hasNoLife() && turns < 10000) {
-				++turns;
-				for (unsigned attacker = 0; attacker < count && !monster->hasNoLife(); ++attacker)
-					ApplyMonsterDamage(DamageType::Physical, *monster, Fixed26_6::fromInt(10));
-				FlushNetMessageBuffers();
-				// Damage was already applied locally; consume its loopback echoes
-				// at each turn rather than accumulating an unbounded test backlog.
-				uint8_t sender;
-				void *data;
-				size_t size;
-				while (SNetReceiveMessage(&sender, &data, &size)) { }
+		for (unsigned type = 1; type <= 2; ++type) {
+			unsigned soloTurns = 0;
+			uint32_t soloShare = 0;
+			Fixed26_6 soloNative;
+			for (unsigned count = 1; count <= 8; ++count) {
+				gbActivePlayers = count;
+				const auto scale = PartyScaling::ForSession(ExtendedSessionRules, count);
+				ASSERT_TRUE(scale);
+				Monster *monster = AddMonster({ 40, 40 }, Direction::South, type, false);
+				ASSERT_NE(monster, nullptr);
+				const bool diablo = monster->type().type == MT_DIABLO;
+				ASSERT_EQ(diablo, type == 2);
+				// Spawns roll their health; compare every party against the solo spawn's roll, raised to
+				// 200 points so that whole-point hits and the death threshold do not dominate the pace.
+				if (count == 1)
+					soloNative = Fixed26_6::fromInt(std::max(200, monster->maxHitPoints.whole()));
+				const auto native = soloNative;
+				monster->maxHitPoints = scale->HitPoints(native, false, diablo);
+				monster->hitPoints = monster->maxHitPoints;
+				// Every player deals the same fixed damage per turn; alone, a kill takes about 200 turns.
+				const auto hit = Fixed26_6::fromInt(native.whole() / 200);
+				unsigned turns = 0;
+				while (!monster->hasNoLife() && turns < 100000) {
+					++turns;
+					for (unsigned attacker = 0; attacker < count && !monster->hasNoLife(); ++attacker)
+						ApplyMonsterDamage(DamageType::Physical, *monster, hit);
+					FlushNetMessageBuffers();
+					// Damage was already applied locally; consume its loopback echoes
+					// at each turn rather than accumulating an unbounded test backlog.
+					uint8_t sender;
+					void *data;
+					size_t size;
+					while (SNetReceiveMessage(&sender, &data, &size)) { }
+				}
+				ASSERT_TRUE(monster->hasNoLife());
+				const uint32_t share = scale->Experience(monster->exp(difficulty), false, diablo) / count;
+				if (count == 1) {
+					soloTurns = turns;
+					soloShare = share;
+				} else if (diablo) {
+					// The whole party needs as long as one player alone, and each still earns a solo kill.
+					EXPECT_LE(turns, soloTurns);
+					EXPECT_GE(turns + 1, soloTurns);
+					EXPECT_EQ(share, soloShare);
+				} else {
+					// The party needs (N + 1) / (2N) of the solo time, and each player's experience per
+					// turn stays within 2% of the solo pace before the native per-contributor rounding.
+					EXPECT_LT(turns, soloTurns);
+					const double pool = scale->Experience(monster->exp(difficulty));
+					const double pace = pool / count * soloTurns / (static_cast<double>(soloShare) * turns);
+					EXPECT_NEAR(pace, 1.0, 0.02) << count;
+				}
+				const std::string key = "difficulty" + std::to_string(difficulty) + (diablo ? "_diablo" : "_zombie") + "_party" + std::to_string(count);
+				RecordProperty(key + "_native_hp_raw", native.raw());
+				RecordProperty(key + "_scaled_hp_raw", monster->maxHitPoints.raw());
+				RecordProperty(key + "_turns_fixed_damage_per_player", turns);
+				RecordProperty(key + "_xp_per_contributor_before_caps", share);
 			}
-			ASSERT_TRUE(monster->hasNoLife());
-			const uint32_t share = scale->Experience(monster->exp(difficulty)) / count;
-			if (count == 4) {
-				referenceTurns = turns;
-				referenceShare = share;
-			} else if (count > 4) {
-				EXPECT_EQ(turns, referenceTurns);
-				EXPECT_LE(share, referenceShare);
-				EXPECT_LE(referenceShare - share, 1U);
-			}
-			const std::string key = "difficulty" + std::to_string(difficulty) + "_party" + std::to_string(count);
-			RecordProperty(key + "_native_hp_raw", native.raw());
-			RecordProperty(key + "_scaled_hp_raw", monster->maxHitPoints.raw());
-			RecordProperty(key + "_turns_10_damage_per_player", turns);
-			RecordProperty(key + "_xp_per_contributor_before_caps", share);
 		}
 	}
 }
 
-TEST_F(MonsterSummonsTest, PartyDamageAndEntryCommitsCommuteAtFractionalBoundaries)
+TEST_F(MonsterSummonsTest, PartyDamageAndScaleChangesCommuteAtFractionalBoundaries)
 {
 	InitItemTransfers();
 	CommitPartyLevel(1, 4, 0, 0, 8);
@@ -570,30 +589,40 @@ TEST_F(MonsterSummonsTest, PartyDamageAndEntryCommitsCommuteAtFractionalBoundari
 	monster->maxHitPoints = monster->hitPoints = Fixed26_6::fromInt(100);
 	InitializePartyMonster(*monster);
 	CapturePartyMonsters();
+	ASSERT_EQ(monster->maxHitPoints, Fixed26_6::fromInt(250));
 	const auto initial = GetPartyLevelState(1);
-	const auto damage = [&](uint8_t actor, uint32_t amount) {
-		PartyDamageMessage message { CMD_PARTYMONSTDAMAGE, 1, 4, 0, 1, static_cast<uint16_t>(monster->getId()), amount,
+	// Senders weigh their hits at the scale they see, which may differ from the receiver's.
+	const auto damage = [&](uint8_t actor, uint8_t participants, uint32_t amount) {
+		PartyDamageMessage message { CMD_PARTYMONSTDAMAGE, 1, participants, 0, 1, static_cast<uint16_t>(monster->getId()), amount,
 			monster->partyGeneration, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
 		ReceivePartyMonsterDamage(actor, message);
 	};
-	damage(1, 1);
-	damage(2, 3);
+	damage(1, 4, 1);
+	damage(2, 5, 3);
+	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].damage, 1 * 1008 + 3 * 840);
 	CommitPartyLevel(1, 5, 0, 0, 16);
 	const int32_t expected = monster->hitPoints.raw();
 	const int64_t debt = GetPartyLevelState(1).monsters[monster->getId()].damage;
+	EXPECT_EQ(monster->maxHitPoints, Fixed26_6::fromInt(300));
+	EXPECT_EQ(expected, 300 * 64 - 4);
 	GetPartyLevelState(1) = initial;
-	monster->hitPoints = monster->maxHitPoints = Fixed26_6::fromInt(100);
+	monster->hitPoints = monster->maxHitPoints = Fixed26_6::fromInt(250);
 	monster->partyLastHitPoints = monster->hitPoints;
 	monster->partyParticipants = 4;
 	monster->whoHit = {};
 	CommitPartyLevel(1, 5, 0, 0, 16);
-	damage(2, 3);
-	damage(1, 1);
+	damage(2, 5, 3);
+	damage(1, 4, 1);
 	EXPECT_EQ(monster->hitPoints.raw(), expected);
 	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].damage, debt);
 	EXPECT_EQ(monster->whoHit.bits, 6);
-	CommitPartyLevel(1, 4, 0, 0, 24);
-	EXPECT_EQ(GetPartyLevelState(1).participants, 5);
+	// A smaller party lowers health at once, keeping the same fraction, and growing back restores it.
+	CommitPartyLevel(1, 2, 0, 0, 24);
+	EXPECT_EQ(GetPartyLevelState(1).participants, 2);
+	EXPECT_EQ(monster->maxHitPoints, Fixed26_6::fromInt(150));
+	EXPECT_EQ(monster->hitPoints.raw(), 150 * 64 - 2);
+	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].damage, debt);
+	CommitPartyLevel(1, 5, 0, 0, 32);
 	EXPECT_EQ(monster->hitPoints.raw(), expected);
 }
 
@@ -606,22 +635,28 @@ TEST_F(MonsterSummonsTest, PartySnapshotsRetainFutureDamageAndReceiptWatermarks)
 	monster->maxHitPoints = monster->hitPoints = Fixed26_6::fromInt(100);
 	InitializePartyMonster(*monster);
 	CapturePartyMonsters();
-	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 1, 5, 0, 1, static_cast<uint16_t>(monster->getId()), 128,
-		monster->partyGeneration, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
+	// Player 7 hits a monster it spawned in this slot before this peer saw the spawn.
+	const uint64_t spawn = (static_cast<uint64_t>(MultiplayerSlotEpoch(7)) << 32) | (1U << 3) | 7U;
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 1, 5, MultiplayerSlotEpoch(7), 1, static_cast<uint16_t>(monster->getId()), 128,
+		spawn, 100 * 64, MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
 	ReceivePartyMonsterDamage(7, damage);
 	ASSERT_EQ(GetPartyLevelState(1).pending.size(), 1U);
 	const auto bytes = EncodePartyLevel(GetPartyLevelState(1));
 	const auto restored = DecodePartyLevel(bytes);
 	ASSERT_TRUE(restored);
 	GetPartyLevelState(1) = *restored;
-	CommitPartyLevel(1, 5, 0, 0, 16);
+	ASSERT_EQ(GetPartyLevelState(1).pending.size(), 1U);
+	ASSERT_TRUE(ResetPartyMonster(1, monster->getId(), spawn));
+	DrainPartyDamage(1);
 	EXPECT_TRUE(GetPartyLevelState(1).pending.empty());
-	EXPECT_EQ(monster->hitPoints.raw(), 125 * 64 - 128);
-	const auto after = monster->hitPoints;
+	const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	EXPECT_EQ(state.generation, spawn);
+	EXPECT_EQ(state.damage, 128 * 2 * PartyDamageUnits / 6);
+	EXPECT_EQ(PartyMonsterHitPoints(state, 5).raw(), 300 * 64 - 128);
+	EXPECT_EQ(state.receipts[7], 1U);
 	ReceivePartyMonsterDamage(7, damage);
-	EXPECT_EQ(monster->hitPoints, after);
-	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].receipts[7], 1U);
-	ASSERT_TRUE(ResetPartyMonster(1, monster->getId(), 8));
+	EXPECT_EQ(state.damage, 128 * 2 * PartyDamageUnits / 6);
+	ASSERT_TRUE(ResetPartyMonster(1, monster->getId(), spawn + 8));
 	ReceivePartyMonsterDamage(7, damage);
 	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].flags, PartyMonsterExpected);
 }
@@ -685,10 +720,138 @@ TEST_F(MonsterSummonsTest, PartyScaleCommitCannotReviveFractionalNativeDeath)
 	EXPECT_TRUE(IsPartyMonsterRewardPending(*monster));
 }
 
+TEST_F(MonsterSummonsTest, PartyHealthFollowsDeparturesAndDisconnectionsWithoutLosingProgress)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	monster->maxHitPoints = monster->hitPoints = Fixed26_6::fromInt(100);
+	InitializePartyMonster(*monster);
+	CapturePartyMonsters();
+	ASSERT_EQ(monster->maxHitPoints, Fixed26_6::fromInt(450));
+	PartyDamageMessage damage { CMD_PARTYMONSTDAMAGE, 1, 8, 0, 1, static_cast<uint16_t>(monster->getId()), 90 * 64,
+		monster->partyGeneration, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
+	ReceivePartyMonsterDamage(1, damage);
+	ASSERT_EQ(monster->hitPoints, Fixed26_6::fromInt(360));
+	const int64_t debt = GetPartyLevelState(1).monsters[monster->getId()].damage;
+	// Two players walk to another level and two disconnect in the middle of the fight.
+	Players[4].plractive = false;
+	Players[5].plractive = false;
+	Players[6].setLevel(2);
+	Players[7].setLevel(2);
+	gbBufferMsgs = 1;
+	UpdatePartyParticipants();
+	EXPECT_EQ(GetPartyLevelState(1).participants, 8);
+	EXPECT_EQ(monster->hitPoints, Fixed26_6::fromInt(360));
+	gbBufferMsgs = 0;
+	UpdatePartyParticipants();
+	EXPECT_EQ(GetPartyLevelState(1).participants, 4);
+	EXPECT_EQ(monster->maxHitPoints, Fixed26_6::fromInt(250));
+	EXPECT_EQ(monster->hitPoints, Fixed26_6::fromInt(200));
+	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].damage, debt);
+	// A level nobody committed an entry to does not start counting on its own.
+	const auto *other = FindPartyLevelState(2);
+	EXPECT_TRUE(other == nullptr || other->participants == 0);
+	for (uint8_t id = 1; id < 4; ++id)
+		Players[id].setLevel(2);
+	UpdatePartyParticipants();
+	EXPECT_EQ(GetPartyLevelState(1).participants, 1);
+	EXPECT_EQ(monster->maxHitPoints, Fixed26_6::fromInt(100));
+	EXPECT_EQ(monster->hitPoints, Fixed26_6::fromInt(80));
+	for (auto &player : Players) {
+		player.plractive = true;
+		player.setLevel(1);
+	}
+	UpdatePartyParticipants();
+	EXPECT_EQ(GetPartyLevelState(1).participants, 8);
+	EXPECT_EQ(monster->hitPoints, Fixed26_6::fromInt(360));
+	EXPECT_EQ(GetPartyLevelState(1).monsters[monster->getId()].damage, debt);
+}
+
+TEST_F(MonsterSummonsTest, PartyDeathDependsOnlyOnTheLedgerSoPeersCountingDifferentPartiesAgree)
+{
+	InitItemTransfers();
+	CommitPartyLevel(1, 8, 0, 0, 8);
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, true);
+	ASSERT_NE(monster, nullptr);
+	monster->maxHitPoints = monster->hitPoints = Fixed26_6::fromInt(100);
+	InitializePartyMonster(*monster);
+	CapturePartyMonsters();
+	const auto damage = [&](uint8_t actor, uint8_t participants, uint32_t amount) {
+		PartyDamageMessage message { CMD_PARTYMONSTDAMAGE, 1, participants, 0, 1, static_cast<uint16_t>(monster->getId()), amount,
+			monster->partyGeneration, monster->partyNativeMax.raw(), MT_NZOMBIE, static_cast<uint8_t>(UniqueMonsterType::None), 40, 40 };
+		ReceivePartyMonsterDamage(actor, message);
+	};
+	const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
+	// A peer that already sees itself alone leaves exactly one whole native point.
+	damage(1, 1, 99 * 64);
+	EXPECT_FALSE(IsPartyMonsterDepleted(state));
+	EXPECT_FALSE(monster->hasNoLife());
+	EXPECT_EQ(monster->hitPoints.raw(), 288);
+	// Five raw points at the scale of eight are worth less than one whole point here,
+	// but they take the native remainder below one point, which every peer sees as death.
+	damage(2, 8, 5);
+	EXPECT_TRUE(IsPartyMonsterDepleted(state));
+	EXPECT_NE(state.flags & PartyMonsterDead, 0);
+	EXPECT_EQ(state.killer, 2);
+	EXPECT_EQ(state.deathParticipants, 8);
+	EXPECT_TRUE(monster->hasNoLife());
+}
+
+TEST_F(MonsterSummonsTest, ExtraLootRollsKeepTheNativeDropAndAddIndependentRolls)
+{
+	struct Drop {
+		uint32_t seed;
+		int index;
+	};
+	static std::vector<Drop> drops;
+	TestMonsterLootObserver = [](const Monster &, const Item *item) {
+		if (item != nullptr)
+			drops.push_back({ item->_iSeed, static_cast<int>(item->IDidx) });
+	};
+	Monster *monster = AddMonster({ 40, 40 }, Direction::South, 1, false);
+	ASSERT_NE(monster, nullptr);
+	ASSERT_TRUE(IsPartyRandomLoot(monster->type().type, static_cast<uint8_t>(monster->uniqueType)));
+	unsigned native = 0;
+	unsigned party = 0;
+	for (uint32_t seed = 0; seed < 400; ++seed) {
+		std::array<std::vector<Drop>, 2> results;
+		for (unsigned extended = 0; extended < 2; ++extended) {
+			drops.clear();
+			ActiveItemCount = 0;
+			std::memset(dItem, 0, sizeof(dItem));
+			std::iota(std::begin(ActiveItems), std::end(ActiveItems), 0);
+			monster->rndItemSeed = 7000 + seed;
+			SetRndSeed(123);
+			FinalizePartyMonsterReward(*monster, false, extended != 0 ? 8 : 1, extended != 0 ? 4 : 0);
+			EXPECT_EQ(GetLCGEngineState(), 123U);
+			results[extended] = drops;
+		}
+		native += results[0].size();
+		party += results[1].size();
+		ASSERT_LE(results[0].size(), 1U);
+		if (!results[0].empty()) {
+			ASSERT_FALSE(results[1].empty());
+			EXPECT_EQ(results[1][0].seed, results[0][0].seed);
+			EXPECT_EQ(results[1][0].index, results[0][0].index);
+		}
+	}
+	TestMonsterLootObserver = nullptr;
+	ActiveItemCount = 0;
+	std::memset(dItem, 0, sizeof(dItem));
+	// Five independent rolls per kill instead of one.
+	ASSERT_GT(native, 0U);
+	EXPECT_GE(party, native * 4);
+	EXPECT_LE(party, native * 6);
+	RecordProperty("native_drops_per_400", native);
+	RecordProperty("eight_player_drops_per_400", party);
+}
+
 TEST_F(MonsterSummonsTest, PartyRewardCreditsAdvanceOnceAndPreserveUnrelatedRandomState)
 {
 	InitItemTransfers();
-	CommitPartyLevel(1, 5, 0, 0, 8);
+	CommitPartyLevel(1, 2, 0, 0, 8);
 	for (unsigned death = 1; death <= 4; ++death) {
 		Monster *monster = AddMonster({ static_cast<WorldTileCoord>(40 + death), 40 }, Direction::South, 1, true);
 		ASSERT_NE(monster, nullptr);
@@ -696,15 +859,15 @@ TEST_F(MonsterSummonsTest, PartyRewardCreditsAdvanceOnceAndPreserveUnrelatedRand
 		CapturePartyMonsters();
 		const auto &state = GetPartyLevelState(1).monsters[monster->getId()];
 		PartyMonsterReward reward { CMD_PARTYREWARD, static_cast<uint16_t>(monster->getId()), state.generation,
-			state.nativeMax, state.type, state.unique, 5, static_cast<uint8_t>(40 + death), 40 };
+			state.nativeMax, state.type, state.unique, 2, static_cast<uint8_t>(40 + death), 40 };
 		ASSERT_TRUE(ReservePartyReward(1, reward));
 		const auto seed = GetLCGEngineState();
 		ASSERT_TRUE(CommitPartyReward(1, reward, MyPlayerId));
-		EXPECT_EQ(GetPartyLevelState(1).lootRemainder, death % 4);
+		EXPECT_EQ(GetPartyLevelState(1).lootRemainder, death % 2);
 		EXPECT_EQ(GetLCGEngineState(), seed);
 		const auto experience = MyPlayer->_pExperience;
 		ASSERT_TRUE(CommitPartyReward(1, reward, MyPlayerId));
-		EXPECT_EQ(GetPartyLevelState(1).lootRemainder, death % 4);
+		EXPECT_EQ(GetPartyLevelState(1).lootRemainder, death % 2);
 		EXPECT_EQ(MyPlayer->_pExperience, experience);
 		EXPECT_EQ(GetLCGEngineState(), seed);
 	}

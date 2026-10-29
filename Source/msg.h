@@ -763,6 +763,8 @@ struct PartyLevelState;
 struct PartyDamageMessage;
 struct PartyMonsterReward;
 PartyLevelState &GetPartyLevelState(uint8_t level);
+/** Like GetPartyLevelState, without creating a delta for a level nobody recorded. */
+PartyLevelState *FindPartyLevelState(uint8_t level);
 uint32_t MultiplayerSlotEpoch(uint8_t player);
 uint32_t MultiplayerMembershipDigest();
 void SyncPartyMonsterDelta(uint8_t level, size_t monster);

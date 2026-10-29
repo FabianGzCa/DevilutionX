@@ -355,9 +355,8 @@ size_t OnPartySyncData(const TSyncPartyHeader &header, size_t maxCmdSize, const 
 	    || !IsValidLevelForMultiplayer(header.native.bLevel))
 		return total;
 	const uint8_t levelId = header.native.bLevel;
+	// Peers may briefly count different players on the level; the ledger does not depend on it.
 	auto &level = GetPartyLevelState(levelId);
-	if (level.participants != header.participants)
-		return total;
 	const bool local = CurrentPartyLevel() == levelId && !MyPlayer->_pLvlChanging && !IsLevelEntryResolving();
 	const auto *records = reinterpret_cast<const TSyncPartyMonster *>(&header + 1);
 	uint8_t owner = 255;

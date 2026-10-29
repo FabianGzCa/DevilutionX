@@ -128,7 +128,7 @@ packed 65-byte body carries a phase, a transaction serial, coordinator slot
 epoch, a frozen human membership mask, authority/participant/voter masks, an
 outcome, a level and set-level flag, eight request tickets and eight coordinate
 pairs. Serial, epoch and ticket fields are little endian. A successful placement
-also commits the destination high-water balance before entrants resume. Local
+also commits the destination's balance participant count before entrants resume. Local
 resurrection uses the same placement flow to finish its level-changing state.
 
 An entrant requests admission after loading its map. The lowest connected player

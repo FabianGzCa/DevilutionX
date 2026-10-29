@@ -1016,8 +1016,6 @@ bool DeltaImportData(_cmd_id cmd, uint32_t recvOffset)
 				const auto current = DeltaLevels.find(level);
 				if (current != DeltaLevels.end()) {
 					const auto &previous = current->second.party;
-					if (previous.participants > party->participants)
-						return false;
 					for (size_t actor = 0; actor < previous.spawns.size(); ++actor) {
 						if (previous.spawns[actor] > party->spawns[actor]
 						    || previous.entryEpochs[actor] > party->entryEpochs[actor]
@@ -3736,6 +3734,11 @@ size_t HandleCmd(size_t (*handler)(const TCmdImpl &, const Player &), const Play
 } // namespace
 
 PartyLevelState &GetPartyLevelState(uint8_t level) { return GetDeltaLevel(level).party; }
+PartyLevelState *FindPartyLevelState(uint8_t level)
+{
+	const auto it = DeltaLevels.find(level);
+	return it != DeltaLevels.end() ? &it->second.party : nullptr;
+}
 uint32_t MultiplayerSlotEpoch(uint8_t player) { return player < PlayerStorageCapacity ? ItemTransfers.Epoch(player) : 0; }
 uint32_t MultiplayerMembershipDigest()
 {
@@ -3905,6 +3908,7 @@ bool IsItemTileReserved(Point position)
 void ProcessItemTransfers()
 {
 	if (ItemTransfersEnabled) {
+		UpdatePartyParticipants();
 		ProcessPartyRewards();
 		FlushStagedItemCreations();
 		if (!OwnedItemDrops.empty() && LocalItemTransfers.empty()) {

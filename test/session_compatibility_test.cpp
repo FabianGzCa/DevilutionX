@@ -209,7 +209,7 @@ TEST_F(PeerSessionCompatibility, IncompatibleIdentityNeverAnnouncesPlayer)
 		switch (scenario) {
 		case 0: client.rules.protocolRevision = ExtendedSessionRules.protocolRevision + 1; break;
 		case 1: client.rules.maxPlayers = 4; break;
-		case 2: client.rules.balanceRevision = 2; break;
+		case 2: client.rules.balanceRevision = ExtendedSessionRules.balanceRevision - 1; break;
 		case 3: client.versionMajor = 9; break;
 		case 4: client.isSpawn = 1; break;
 		case 5: client.isHellfire = 1; break;
@@ -430,7 +430,7 @@ TEST(SessionCompatibility, SupportedModesHaveCapacityAndOneAlternative)
 	EXPECT_EQ(SessionPlayerCapacity(ExtendedSessionRules), 8);
 	EXPECT_EQ(AlternateSessionRules(ClassicSessionRules), ExtendedSessionRules);
 	EXPECT_EQ(AlternateSessionRules(ExtendedSessionRules), ClassicSessionRules);
-	for (const SessionRules rules : { SessionRules { 3, 8, 2 }, SessionRules { 2, 8, 1 }, SessionRules { 3, 4, 1 }, SessionRules { 0, 8, 0 } }) {
+	for (const SessionRules rules : { SessionRules { 3, 8, 1 }, SessionRules { 3, 8, 3 }, SessionRules { 2, 8, 2 }, SessionRules { 3, 4, 2 }, SessionRules { 0, 8, 0 } }) {
 		EXPECT_FALSE(IsSupportedSessionRules(rules));
 		EXPECT_EQ(SessionPlayerCapacity(rules), 0);
 		EXPECT_FALSE(AlternateSessionRules(rules));
@@ -480,7 +480,7 @@ TEST(SessionCompatibility, JoinRequestRequiresCorrectKindIdentityAndAddress)
 	ASSERT_TRUE(invalidSource.has_value());
 	EXPECT_EQ(ValidateJoinRequest(Encode(Game()), **invalidSource), GameDataError::InvalidParameters);
 	GameData invalid = Game(true);
-	invalid.rules.balanceRevision = 2;
+	invalid.rules.balanceRevision = ExtendedSessionRules.balanceRevision - 1;
 	auto invalidRules = factory.make_packet<PT_JOIN_REQUEST_EXTENDED>(PLR_BROADCAST, PLR_MASTER, cookie_t { 42 }, Encode(invalid));
 	ASSERT_TRUE(invalidRules.has_value());
 	EXPECT_EQ(ValidateJoinRequest(Encode(Game(true)), **invalidRules), GameDataError::UnsupportedRules);

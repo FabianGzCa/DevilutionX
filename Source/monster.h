@@ -289,7 +289,7 @@ struct Monster { // note: missing field _mAFNum
 	Fixed26_6 partyNativeMax = Fixed26_6::fromInt(0);
 	Fixed26_6 partyLastHitPoints = Fixed26_6::fromInt(0);
 	uint64_t partyGeneration = 0;
-	uint8_t partyParticipants = 4;
+	uint8_t partyParticipants = 1;
 	bool partyDeathStarted = false;
 
 	uint8_t minDamage;

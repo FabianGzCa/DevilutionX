@@ -20,7 +20,7 @@ struct SessionRules {
 };
 
 constexpr SessionRules ClassicSessionRules {};
-constexpr SessionRules ExtendedSessionRules { 3, 8, 1 };
+constexpr SessionRules ExtendedSessionRules { 3, 8, 2 };
 
 struct GameData {
 	int32_t size;

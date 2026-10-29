@@ -629,8 +629,11 @@ TEST_F(MultiplayerGameplayTest, PartyScaleSurvivesLateDamageDeathResurrectionAnd
 	ASSERT_NO_FATAL_FAILURE(Command("party-move", 4, 1));
 	ASSERT_NO_FATAL_FAILURE(Command("party-release-hit", 1));
 	agree();
+	// Four players see 2.5 times the native health; the late hit removed 10 of those points,
+	// and the fifth arrival rescales the remaining fraction to 3 times the native health.
 	EXPECT_EQ(value(0, 0), 5U);
-	EXPECT_EQ(value(0, 4), (native - 10 * 64) * 5 / 4);
+	const uint64_t remaining = native * 5 / 2 - 10 * 64;
+	EXPECT_EQ(value(0, 4), remaining * 6 / 5);
 	const auto after = value(0, 4);
 	ASSERT_NO_FATAL_FAILURE(Command("party-buffer", 7));
 	ASSERT_NO_FATAL_FAILURE(Command("party-export", 7));
@@ -641,8 +644,8 @@ TEST_F(MultiplayerGameplayTest, PartyScaleSurvivesLateDamageDeathResurrectionAnd
 	EXPECT_EQ(value(0, 4), after);
 	ASSERT_NO_FATAL_FAILURE(Command("party-move", 4, 0));
 	agree();
-	EXPECT_EQ(value(0, 0), 5U);
-	EXPECT_EQ(value(0, 4), after);
+	EXPECT_EQ(value(0, 0), 4U);
+	EXPECT_EQ(value(0, 4), remaining);
 	ASSERT_NO_FATAL_FAILURE(Command("party-move", 4, 1));
 	ASSERT_NO_FATAL_FAILURE(Command("party-dead", 4));
 	ASSERT_NO_FATAL_FAILURE(Command("party-move", 5, 1));
@@ -655,12 +658,12 @@ TEST_F(MultiplayerGameplayTest, PartyScaleSurvivesLateDamageDeathResurrectionAnd
 	ASSERT_NO_FATAL_FAILURE(Command("party-move", 7, 1));
 	agree();
 	EXPECT_EQ(value(0, 0), 8U);
-	EXPECT_EQ(value(0, 4), (native - 10 * 64) * 2);
+	EXPECT_EQ(value(0, 4), remaining * 9 / 5);
 	for (unsigned peer = 1; peer < 8; ++peer)
 		ASSERT_NO_FATAL_FAILURE(Command("party-move", peer, 0));
 	agree();
-	EXPECT_EQ(value(0, 0), 8U);
-	EXPECT_EQ(value(0, 4), (native - 10 * 64) * 2);
+	EXPECT_EQ(value(0, 0), 1U);
+	EXPECT_EQ(value(0, 4), remaining * 2 / 5);
 	ASSERT_NO_FATAL_FAILURE(Command("party-kill", 0));
 	agree();
 	EXPECT_EQ(value(0, 4), 0U);
@@ -695,8 +698,11 @@ TEST_F(MultiplayerGameplayTest, EightMeleeAttackersShareBossDeathsLootAndQuestCo
 			std::istringstream common(result.substr(result.find('\n', result.find('\n') + 1) + 1));
 			unsigned king, diablo, missiles, objects, hp, mask;
 			common >> king >> diablo >> missiles >> objects >> hp >> mask;
-			EXPECT_GT(hp, 0U);
-			EXPECT_LT(hp, 100U);
+			// Eight players face 4.5 times the 50 native points, or 8 times for Diablo,
+			// and each of their melee hits removed at least one point.
+			const unsigned scaled = type == 1 ? 225 : 400;
+			EXPECT_LE(hp, scaled - 8);
+			EXPECT_GE(hp, scaled - 16);
 			EXPECT_EQ(mask, 255U);
 		}
 		ASSERT_NO_FATAL_FAILURE(Command("boss-kill", 7));

@@ -15,8 +15,12 @@
 
 namespace devilution {
 
-/** LCM(4,5,6,7,8) keeps normalized raw HP exact across every supported scale. */
-constexpr int64_t PartyDamageUnits = 840;
+/**
+ * Ledger units per native raw hit point. A raw hit point at scale N is worth
+ * 2 * PartyDamageUnits / (N + 1) units, or PartyDamageUnits / N for Diablo;
+ * LCM(1..9) keeps both exact for N = 1..8.
+ */
+constexpr int64_t PartyDamageUnits = 2520;
 constexpr size_t MaxPendingPartyDamage = 512;
 constexpr uint8_t PartyMonsterKnown = 1;
 constexpr uint8_t PartyMonsterDead = 2;
@@ -106,12 +110,18 @@ void SwapPartyRewardLE(PartyMonsterReward &message);
 std::vector<std::byte> EncodePartyLevel(const PartyLevelState &state);
 std::optional<PartyLevelState> DecodePartyLevel(std::span<const std::byte> bytes);
 Fixed26_6 PartyMonsterHitPoints(const PartyMonsterState &state, uint8_t participants);
+/** Ledger units of one raw hit point at a scale; golems always keep the native one. */
+int64_t PartyDamageUnitsPerHitPoint(const PartyMonsterState &state, uint8_t participants);
+/** Less than one whole native hit point remains. Independent of the scale, so every peer agrees. */
+bool IsPartyMonsterDepleted(const PartyMonsterState &state);
 
 void InitPartyBalance();
 void ResetPartyBalance();
 bool IsPartyBalanceEnabled();
 uint8_t CurrentPartyLevel();
 void CommitPartyLevel(uint8_t level, uint8_t participants, uint8_t coordinator, uint32_t epoch, uint32_t serial);
+/** Follow the players present on each occupied level, rescaling health when they arrive or leave. */
+void UpdatePartyParticipants();
 void InitializePartyMonster(Monster &monster);
 uint64_t AssignPartySpawnGeneration(Monster &monster);
 void CapturePartyMonsters();

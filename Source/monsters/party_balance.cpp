@@ -9,6 +9,7 @@
 #include "msg.h"
 #include "multi.h"
 #include "player.h"
+#include "players/level_entry.hpp"
 #include "utils/endian_swap.hpp"
 
 namespace devilution {
@@ -25,10 +26,10 @@ bool ValidInfo(uint16_t type, uint8_t unique)
 void PublishHealth(Monster &monster, PartyMonsterState &state, uint8_t participants)
 {
 	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, std::max<uint8_t>(1, participants));
-	monster.maxHitPoints = scale->HitPoints(Fixed26_6::fromRaw(state.nativeMax), monster.type().type == MT_GOLEM);
+	monster.maxHitPoints = scale->HitPoints(Fixed26_6::fromRaw(state.nativeMax), monster.type().type == MT_GOLEM, state.type == MT_DIABLO);
 	monster.hitPoints = PartyMonsterHitPoints(state, participants);
 	monster.partyLastHitPoints = monster.hitPoints;
-	monster.partyParticipants = (state.flags & PartyMonsterGolem) != 0 ? 4 : std::max<uint8_t>(4, participants);
+	monster.partyParticipants = (state.flags & PartyMonsterGolem) != 0 ? 1 : std::max<uint8_t>(1, participants);
 	monster.whoHit = PlayerExperienceMaskFromByte(state.contributors);
 }
 // Native regeneration changes local health between published values. Keep that change
@@ -38,7 +39,7 @@ void FoldLocalHealth(const Monster &monster, PartyMonsterState &state)
 	if ((state.flags & PartyMonsterDead) != 0 || monster.hitPoints == monster.partyLastHitPoints)
 		return;
 	const int64_t delta = static_cast<int64_t>(monster.partyLastHitPoints.raw()) - monster.hitPoints.raw();
-	state.damage = std::clamp<int64_t>(state.damage + delta * (4 * PartyDamageUnits / monster.partyParticipants), 0, static_cast<int64_t>(state.nativeMax) * PartyDamageUnits);
+	state.damage = std::clamp<int64_t>(state.damage + delta * PartyDamageUnitsPerHitPoint(state, monster.partyParticipants), 0, static_cast<int64_t>(state.nativeMax) * PartyDamageUnits);
 }
 void ApplyReceipt(uint8_t sender, const PartyDamageMessage &message)
 {
@@ -63,13 +64,14 @@ void ApplyReceipt(uint8_t sender, const PartyDamageMessage &message)
 	state.receipts[sender] = message.receipt;
 	if (message.playerDamage != 0)
 		state.contributors |= static_cast<uint8_t>(1U << sender);
-	const auto numerator = (state.flags & PartyMonsterGolem) != 0 ? 4 : std::max<uint8_t>(4, message.participants);
-	const int64_t units = static_cast<int64_t>(message.damage) * (4 * PartyDamageUnits / numerator);
+	// Each hit is weighed at its sender's scale, so the ledger matches on every peer
+	// even while they still disagree about who is present.
+	const int64_t units = static_cast<int64_t>(message.damage) * PartyDamageUnitsPerHitPoint(state, message.participants);
 	state.damage = std::min(static_cast<int64_t>(state.nativeMax) * PartyDamageUnits, state.damage + units);
-	if ((state.flags & PartyMonsterDead) == 0 && PartyMonsterHitPoints(state, level.participants).whole() <= 0) {
+	if ((state.flags & PartyMonsterDead) == 0 && IsPartyMonsterDepleted(state)) {
 		state.flags |= PartyMonsterDead;
 		state.killer = sender;
-		state.deathParticipants = std::max(message.participants, level.participants);
+		state.deathParticipants = message.participants;
 		if ((state.flags & PartyMonsterGolem) != 0)
 			state.flags |= PartyMonsterRewarded;
 	}
@@ -90,9 +92,21 @@ Fixed26_6 PartyMonsterHitPoints(const PartyMonsterState &state, uint8_t particip
 	if ((state.flags & PartyMonsterDead) != 0)
 		return Fixed26_6::fromInt(0);
 	const int64_t remaining = std::max<int64_t>(0, static_cast<int64_t>(state.nativeMax) * PartyDamageUnits - state.damage);
-	const int64_t denominator = 4 * PartyDamageUnits;
-	const int64_t raw = (remaining * ((state.flags & PartyMonsterGolem) != 0 ? 4 : std::max<uint8_t>(4, participants)) + denominator - 1) / denominator;
+	const int64_t units = PartyDamageUnitsPerHitPoint(state, participants);
+	const int64_t raw = (remaining + units - 1) / units;
 	return Fixed26_6::fromRaw(static_cast<int32_t>(std::min<int64_t>(raw, std::numeric_limits<int32_t>::max())));
+}
+int64_t PartyDamageUnitsPerHitPoint(const PartyMonsterState &state, uint8_t participants)
+{
+	if ((state.flags & PartyMonsterGolem) != 0)
+		return PartyDamageUnits;
+	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, std::clamp<uint8_t>(participants, 1, 8));
+	return 2 * PartyDamageUnits / scale->Numerator(state.type == MT_DIABLO);
+}
+bool IsPartyMonsterDepleted(const PartyMonsterState &state)
+{
+	const int64_t remaining = static_cast<int64_t>(state.nativeMax) * PartyDamageUnits - state.damage;
+	return remaining <= 0 || (remaining + PartyDamageUnits - 1) / PartyDamageUnits < Fixed26_6::fromInt(1).raw();
 }
 
 PartyMonsterWire EncodePartyMonster(const PartyMonsterState &state)
@@ -209,7 +223,7 @@ std::optional<PartyLevelState> DecodePartyLevel(std::span<const std::byte> bytes
 		return true;
 	};
 	PartyLevelState state;
-	if (!read(state.participants) || !read(state.lootRemainder) || state.participants > 8 || state.lootRemainder >= 4)
+	if (!read(state.participants) || !read(state.lootRemainder) || state.participants > 8 || state.lootRemainder >= 2)
 		return std::nullopt;
 	for (uint32_t &value : state.entryEpochs) {
 		if (!read(value)) return std::nullopt;
@@ -283,12 +297,38 @@ void CommitPartyLevel(uint8_t level, uint8_t participants, uint8_t coordinator, 
 		return;
 	state.entryEpochs[coordinator] = epoch;
 	state.entrySerials[coordinator] = serial;
-	state.participants = std::max(state.participants, participants);
 	if (CurrentPartyLevel() == level)
 		CapturePartyMonsters();
+	state.participants = participants;
 	DrainPartyDamage(level);
 	if (CurrentPartyLevel() == level)
 		RestorePartyMonsters();
+}
+void UpdatePartyParticipants()
+{
+	if (!Enabled || gbBufferMsgs != 0 || MyPlayer == nullptr)
+		return;
+	for (const auto &player : Players) {
+		const uint8_t levelId = GetLevelForMultiplayer(player);
+		if (!player.plractive || levelId == 0 || !IsValidLevelForMultiplayer(levelId))
+			continue;
+		auto *level = FindPartyLevelState(levelId);
+		const auto present = static_cast<uint8_t>(CountLevelParticipants(Players, levelId));
+		if (level == nullptr || level->participants == 0 || level->participants == present)
+			continue;
+		const bool local = CurrentPartyLevel() == levelId && leveltype != DTYPE_TOWN;
+		if (local && (MyPlayer->_pLvlChanging || IsLevelEntryResolving()))
+			continue;
+		// Capture local healing at the old scale, then publish every monster's remaining
+		// fraction at the new one and refresh the level delta.
+		if (local)
+			CapturePartyMonsters();
+		level->participants = present;
+		if (local)
+			RestorePartyMonsters();
+		for (size_t i = 0; i < level->monsters.size(); ++i)
+			SyncPartyMonsterDelta(levelId, i);
+	}
 }
 
 void InitializePartyMonster(Monster &monster)
@@ -301,7 +341,7 @@ void InitializePartyMonster(Monster &monster)
 			monster.partyGeneration = saved.generation;
 	}
 	monster.partyLastHitPoints = monster.hitPoints;
-	monster.partyParticipants = 4;
+	monster.partyParticipants = 1;
 	monster.partyDeathStarted = false;
 	if (Enabled && gbBufferMsgs == 0 && MyPlayer != nullptr && MyPlayer->pLvlLoad == 0 && leveltype != DTYPE_TOWN) {
 		auto &state = GetPartyLevelState(CurrentPartyLevel()).monsters[monster.getId()];
@@ -374,7 +414,7 @@ void RestorePartyMonsters()
 			monster.maxHitPoints = monster.partyNativeMax;
 			monster.hitPoints = monster.partyNativeMax;
 			monster.partyLastHitPoints = monster.hitPoints;
-			monster.partyParticipants = 4;
+			monster.partyParticipants = 1;
 			ReconcilePartyMonster(monster);
 			continue;
 		}
@@ -445,7 +485,7 @@ void ReceivePartyMonsterDamage(uint8_t sender, const PartyDamageMessage &message
 	    || (target.flags != 0 && target.generation != message.generation);
 	if (futureSpawn && ((message.generation >> 63) != 0 || message.generation <= level.spawns[message.generation & 7U] || (message.generation >> 32) != MultiplayerSlotEpoch(message.generation & 7U)))
 		return;
-	if (level.participants < message.participants || futureSpawn) {
+	if (futureSpawn) {
 		if (std::any_of(level.pending.begin(), level.pending.end(), [&](const auto &pending) { return pending.sender == sender && pending.message.receipt == message.receipt && pending.message.epoch == message.epoch; }))
 			return;
 		if (level.pending.size() >= MaxPendingPartyDamage) {
@@ -610,7 +650,7 @@ bool RestorePartyRewardReceipt(uint8_t level, const PartyMonsterReward &reward)
 	LocalRewardReceipts[level][reward.monster] = reward.generation;
 	const auto &monster = Monsters[reward.monster];
 	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, reward.participants);
-	AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), scale->Experience(monster.exp(sgGameInitInfo.nDifficulty)), PlayerExperienceMaskFromByte(state.contributors));
+	AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), scale->Experience(monster.exp(sgGameInitInfo.nDifficulty), false, monster.type().type == MT_DIABLO), PlayerExperienceMaskFromByte(state.contributors));
 	return true;
 }
 

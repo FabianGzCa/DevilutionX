@@ -4149,13 +4149,14 @@ void FinalizePartyMonsterReward(Monster &monster, bool sendmsg, uint8_t particip
 	const auto scale = PartyScaling::ForSession(ExtendedSessionRules, participants);
 	if (!scale || monster.isPlayerMinion())
 		return;
-	AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), scale->Experience(monster.exp(sgGameInitInfo.nDifficulty)), monster.whoHit);
+	AddPlrMonstExper(monster.level(sgGameInitInfo.nDifficulty), scale->Experience(monster.exp(sgGameInitInfo.nDifficulty), false, monster.type().type == MT_DIABLO), monster.whoHit);
 	const uint32_t previousSeed = GetLCGEngineState();
 	SetRndSeed(monster.rndItemSeed);
 	SpawnLoot(monster, sendmsg);
 	const uint32_t nativeSeed = GetLCGEngineState();
 	if (extraRolls != 0 && IsPartyRandomLoot(monster.type().type, static_cast<uint8_t>(monster.uniqueType))) {
-		SpawnItem(monster, monster.position.tile, sendmsg);
+		for (uint8_t roll = 0; roll < extraRolls; ++roll)
+			SpawnItem(monster, monster.position.tile, sendmsg);
 		SetRndSeed(nativeSeed);
 	}
 	CheckQuestKill(monster, sendmsg);

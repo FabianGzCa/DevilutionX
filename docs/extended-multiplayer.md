@@ -34,13 +34,31 @@ a different version, a different edition, or a different mode.
   game; they see a generic error such as `Unknown packet type 23` or a closed
   connection. Extended builds still join classic games hosted by older builds.
 
-## What changes with five or more players
+## How the game adapts to the party
 
-Nothing changes while four players or fewer are present on a level. When five
-or more players have entered a level, its monsters get more health and give
-more experience, both in proportion to the number of players over four, and
-random loot gets proportionally more rolls. Damage, density and fixed quest
-rewards stay native. The exact rules, and the measurements behind them, are in
+In an extended game, monsters adapt to the number of players on their level:
+the players there now, including dead ones and those still loading the level.
+From the second player on, each player adds half of the native health,
+experience and random loot rolls of every monster: one player sees the native
+values, two see 1.5 times, four 2.5 times and eight 4.5 times. Diablo instead
+grows with every player (eight players face eight times his health), so the
+final fight lasts as long as it does alone.
+
+- **Experience:** the larger pool is shared among the players who hit each
+  monster, as before. Each player therefore gains experience at about the same
+  pace as alone, whether the party has two or eight players.
+- **Loot:** each player finds random items and gold at about the same pace as
+  alone. Fixed quest rewards are not duplicated.
+- **Speed:** a party still clears faster than one player, but not trivially:
+  two players need about 75% of the solo time per monster, four about 63% and
+  eight about 56%. Monster damage, accuracy and numbers stay native, and in
+  automated tests parties of two to eight died less often than one player.
+- **Arrivals and departures:** when someone enters or leaves the level,
+  returns to town or disconnects, every monster's health is adjusted at once
+  and keeps its percentage: a monster at half health stays at half health.
+
+Classic games keep the original rules for one to four players. The exact
+rules, and the measurements behind them, are in
 [Extended party balance](extended-party-balance.md).
 
 Extended games agree on every monster death between all players. In a classic
@@ -68,6 +86,8 @@ your own display. See [Optional player identifiers](player-identifiers.md).
   there has agreed on where the newcomer stands. With eight players on one
   computer this took about half a second; slower connections take longer.
 - The balance was measured with automated players, not with groups of people.
+- Players need builds with the same balance revision. A build with the first
+  revision, where monsters only grew with five or more players, cannot join.
 
 ## Saves and settings
 

@@ -32,10 +32,11 @@ The session identity uses these byte offsets:
 | 24–39 | 16 | Four existing level seeds |
 
 Rules `(0, 0, 0)` identify classic four-player sessions. Extended rules are
-`(3, 8, 1)`. Every other tuple is rejected. Protocol revision 3 adds level balance
+`(3, 8, 2)`. Every other tuple is rejected, including `(3, 8, 1)` from builds
+with the first balance revision. Protocol revision 3 adds level balance
 snapshots, epoch-qualified entry/spawn/damage messages and synchronized monster
 rewards to revision 2's reserved item transfers. Builds using revisions 1 or 2
-cannot join revision 3 sessions. Balance revision 1 retains the mathematical
+cannot join revision 3 sessions. Balance revision 2 retains the mathematical
 [extended party scaling rules](extended-party-balance.md); changing those formulas
 requires a new balance revision. Classic padding at offsets 22–23 is ignored
 because old binaries do not initialize it as an edition field.
